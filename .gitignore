@@ -1,1 +1,18 @@
+# dependencies
 node_modules/
+
+# secrets: the plugin reads ~/.omp/agent/.env, this is only a safety net
+.env
+.env.*
+!.env.example
+
+# omp local state (project-scoped plugin installs, locks)
+.omp/
+
+# lockfile written by the `skills` CLI when installing from this repo
+skills-lock.json
+
+# logs and OS noise
+*.log
+.DS_Store
+Thumbs.db

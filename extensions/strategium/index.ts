@@ -430,14 +430,14 @@ export default function (pi: ExtensionAPI) {
 				// Nerd Font glyphs only with STRATEGIUM_GLYPHS=1; emoji otherwise.
 				const nf = process.env.STRATEGIUM_GLYPHS === "1";
 				const phase = pct >= 100 ? 4 : pct >= 80 ? 3 : pct >= 50 ? 2 : pct >= 25 ? 1 : 0;
-				// Exterminatus: the world is calm, a meteor falls, it burns, and past the booking it is purged.
+				// The world is calm, a meteor falls, it burns, and past the booking it is purged.
 				// Glyphs drawn and checked in Cascadia Code NF: md-earth F01E7, md-meteor F0629, md-fire F0238, md-nuke F06A4.
 				const stageColor = ["39", "39", "214", "202", "160"][phase];
 				const stageGlyph = (nf
 					? ["\u{f01e7}", "\u{f01e7}", "\u{f0629}", "\u{f0238}", "\u{f06a4}"]
 					: ["🌍", "🌍", "🌠", "🔥", "💥"])[phase];
 				const stage = `\x1b[38;5;${stageColor}m${stageGlyph}${nf ? " " : ""}\x1b[39m`;
-				// Imperial gold planet (256-colour 214), reset right after so the rest of the line keeps its colours.
+				// Gold planet (256-colour 214), reset right after so the rest of the line keeps its colours.
 				// Nerd Font md-* glyphs draw two cells wide but count as one, so they get an extra space (seen in the terminal).
 				const planet = `\x1b[38;5;214m${nf ? "\u{f0018} " : "🪐"}\x1b[39m`;
 				// No booking today yet: a run carried over from an earlier day, waiting for its new shift.

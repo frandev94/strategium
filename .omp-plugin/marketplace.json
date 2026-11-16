@@ -1,0 +1,25 @@
+{
+	"name": "strategium",
+	"owner": {
+		"name": "Fran Glez"
+	},
+	"metadata": {
+		"description": "Strategium: orchestrator-mode ticket work for omp"
+	},
+	"plugins": [
+		{
+			"name": "strategium",
+			"description": "Orchestrator-mode ticket work with delegated agents, seals and a booking timer",
+			"source": "./",
+			"version": "0.1.0",
+			"author": {
+				"name": "Fran Glez"
+			},
+			"homepage": "https://github.com/frandev94/strategium",
+			"repository": "https://github.com/frandev94/strategium",
+			"license": "MIT",
+			"category": "development",
+			"tags": ["omp", "plugin", "agents", "orchestration", "workflow"]
+		}
+	]
+}
