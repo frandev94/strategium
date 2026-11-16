@@ -5,7 +5,7 @@ description: Use when a long task, build, run or timer finishes or needs the use
 
 # Strategium alarm (vox-caster)
 
-`bun <plugin>/alarm/vox.ts [50|80|100|done|attention] ["message"]` plays a synthesized sound (no audio files, no dependencies) and exits 0 when playback ends. The level is argv[2], else env `STRATEGIUM_P`, else `done`. With a message (argv[3], else env `STRATEGIUM_MSG`) it also shows a desktop notification titled "Strategium" (Windows toast, macOS notification, Linux `notify-send`), so the user sees it with the terminal hidden. A missing audio player prints one line to stderr; it never fails.
+`bun <plugin>/alarm/vox.ts [50|80|100|done|attention|theme] ["message"]` plays a synthesized sound (no audio files, no dependencies) and exits 0 when playback ends. The level is argv[2], else env `STRATEGIUM_P`, else `done`. With a message (argv[3], else env `STRATEGIUM_MSG`) it also shows a desktop notification titled "Strategium" (Windows toast, macOS notification, Linux `notify-send`), so the user sees it with the terminal hidden. A missing audio player prints one line to stderr; it never fails.
 
 | Level | Sound |
 |---|---|
@@ -14,6 +14,7 @@ description: Use when a long task, build, run or timer finishes or needs the use
 | `100` | extraction: klaxon wails over a deep bell |
 | `done` | task complete: ascending bell fanfare, final deep toll |
 | `attention` | the user is needed: a dark call to war, a horn section in C minor (C, Eb, then a long low G) over war drums |
+| `theme` | the Strategium theme: 15 s, a drop with a dead stop and a chromatic fall; played by hand only, nothing triggers it |
 
 ## Booking alarm and attention
 

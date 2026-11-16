@@ -134,7 +134,7 @@ The state (one JSONL per day plus the run claims) stays outside the repository, 
 
 ### The alarm
 
-`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done` and `attention`; with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
+`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done`, `attention` and `theme` (15 s, played by hand only: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
 
 ```
 bun alarm/vox.ts 100 "the booking is over"

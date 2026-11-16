@@ -134,7 +134,7 @@ El estado (un JSONL por día más las reservas de las runs) vive fuera del repos
 
 ### La alarma
 
-`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras y sin dependencias. Los niveles son `50`, `80`, `100`, `done` y `attention`; con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
+`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras y sin dependencias. Los niveles son `50`, `80`, `100`, `done`, `attention` y `theme` (15 s, solo a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
 
 ```
 bun alarm/vox.ts 100 "la reserva se ha agotado"
