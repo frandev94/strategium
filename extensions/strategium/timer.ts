@@ -44,10 +44,9 @@ export function claim(dir: string, key: string, sid: string, takeover?: string):
 			`${key} is held by omp session ${holder(lock)?.slice(-8)}; end it there, or take it over with that id if that session is gone`,
 		);
 	if (!takeover) throw held();
-	// The takeover id is the last 8 characters of the holder's session id: compare them exactly,
-	// so a short id cannot match a live session that happens to end the same way.
+	// The takeover id is the last 8 characters of the holder's session id, compared in full: a short
+	// id can never match, so it cannot steal a live session that happens to end the same way.
 	const want = takeover.slice(-8);
-	if (want.length !== 8) throw held();
 	const guard = `${lock}.force`;
 	acquireGuard(guard, sid, held);
 	try {
@@ -191,8 +190,13 @@ export function blocks(evs: Ev[], now: Date): { key: string; start: string; end:
 			open.delete(e.key);
 		}
 	}
-	for (const [key, s] of open)
-		out.push({ key, start: s.slice(11, 16), end: "now", min: Math.floor((now.getTime() - ms(s)) / 60_000) });
+	for (const [key, s] of open) {
+		// A block left open in a past day ends with that day, not with now: the time after it is not work.
+		const started = new Date(s);
+		const sameDay = started.toDateString() === now.toDateString();
+		const end = sameDay ? now : new Date(started.getFullYear(), started.getMonth(), started.getDate(), 23, 59, 59);
+		out.push({ key, start: s.slice(11, 16), end: sameDay ? "now" : "23:59", min: Math.floor((end.getTime() - ms(s)) / 60_000) });
+	}
 	return out;
 }
 

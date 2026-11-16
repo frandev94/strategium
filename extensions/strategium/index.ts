@@ -25,15 +25,16 @@ import { childEnv } from "./env";
 // Ownership of a ticket is an atomic claim file (see claim() in timer.ts), held while the session lives.
 type Run = { key: string; theatre: string; sid: string; repo?: string };
 
-const D = process.env.STRATEGIUM_STATE_DIR || path.join(homedir(), ".omp", "agent", "state", "strategium");
-const RUNS = path.join(D, "runs");
+// Read on every use: the environment can change it, and a test points it somewhere of its own.
+const stateDir = () => process.env.STRATEGIUM_STATE_DIR || path.join(homedir(), ".omp", "agent", "state", "strategium");
+const runsDir = () => path.join(stateDir(), "runs");
 const CAPTAIN_REASON =
 	"Strategium: the Captain does not edit repository files. Delegate this change to a battle-brother agent.";
 
-const today = () => dayFile(D, new Date());
-const runFile = (sid: string) => path.join(RUNS, `${sid}.json`);
+const today = () => dayFile(stateDir(), new Date());
+const runFile = (sid: string) => path.join(runsDir(), `${sid}.json`);
 // The session's heartbeat (local ISO time), rewritten every minute while it lives; see closeGap.
-const beatFile = (sid: string) => path.join(RUNS, `${sid}.beat`);
+const beatFile = (sid: string) => path.join(runsDir(), `${sid}.beat`);
 
 /** Write through a temp file and rename, so a reader in another session never sees half a file. */
 function writeAtomic(file: string, data: string): void {
@@ -67,7 +68,7 @@ function readRun(sid: string): Run | undefined {
 function ownRun(sid: string): Run | undefined {
 	const run = readRun(sid);
 	if (!run) return undefined;
-	if (holds(D, run.key, sid)) return run;
+	if (holds(stateDir(), run.key, sid)) return run;
 	rmSync(runFile(sid), { force: true });
 	rmSync(beatFile(sid), { force: true });
 	return undefined;
@@ -78,13 +79,13 @@ function writeRun(run: Run): void {
 }
 
 function allRuns(): Run[] {
-	if (!existsSync(RUNS)) return [];
-	return readdirSync(RUNS)
+	if (!existsSync(runsDir())) return [];
+	return readdirSync(runsDir())
 		.filter(f => f.endsWith(".json"))
 		// A truncated run file must not break `status` for every other session.
 		.map(f => {
 			try {
-				return JSON.parse(readFileSync(path.join(RUNS, f), "utf8")) as Run;
+				return JSON.parse(readFileSync(path.join(runsDir(), f), "utf8")) as Run;
 			} catch {
 				return undefined;
 			}
@@ -101,7 +102,7 @@ const shortSid = (sid: string) => sid.slice(-8);
  * and its report books minutes that were never worked.
  */
 function openFile(key: string): string | undefined {
-	for (const file of [today(), dayFile(D, new Date(Date.now() - 86_400_000))])
+	for (const file of [today(), dayFile(stateDir(), new Date(Date.now() - 86_400_000))])
 		if (openKeys(load(file)).includes(key)) return file;
 	return undefined;
 }
@@ -109,7 +110,7 @@ function openFile(key: string): string | undefined {
 const isOpen = (key: string) => openFile(key) !== undefined;
 
 function startKey(key: string, booked?: number, prior?: number): void {
-	mkdirSync(D, { recursive: true, mode: 0o700 });
+	mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
 	const file = today();
 	const evs = load(file);
 	// ponytail: booked fallback reads only today's file; a run spanning midnight needs `start` with booked.
@@ -149,7 +150,7 @@ function shift(run: Run, booked?: number): string {
 /** Manual correction: `min` minutes added to (or, negative, taken from) today's time for the run's ticket. */
 function addMin(run: Run, min: number): string {
 	if (!Number.isInteger(min) || min === 0) throw new Error("add needs a whole number of minutes, e.g. 30 or -15");
-	mkdirSync(D, { recursive: true, mode: 0o700 });
+	mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
 	append(today(), { ts: nowIso(), event: "adjust", key: run.key, prior: min });
 	return `ADDED ${min > 0 ? "+" : ""}${min} min to ${run.key} (now ${Math.floor(elapsedMin(load(today()), run.key, new Date()))} min today)`;
 }
@@ -167,15 +168,17 @@ function closeGap(run: Run, force = false): string | undefined {
 	const beat = lastBeat(run.sid);
 	if (!force && (!beat || Date.now() - new Date(beat).getTime() < GAP_MS)) return undefined;
 	const at = beat ?? nowIso();
-	const file = dayFile(D, new Date(at));
-	if (!openKeys(load(file)).includes(run.key)) return undefined;
+	// The stop goes in the file that holds the start: a start left open in another day would grow
+	// its elapsed for ever and book minutes that were never worked.
+	const file = openFile(run.key);
+	if (!file) return undefined;
 	append(file, { ts: at, event: "stop", key: run.key });
 	return at;
 }
 
 /** Claim `key` for session `sid`. A ticket held by a crashed session is taken over by naming its id in `takeover`. */
 function begin(sid: string, key: string, theatre: string, booked: number, spent?: number, takeover?: string): void {
-	claim(D, key, sid, takeover);
+	claim(stateDir(), key, sid, takeover);
 	const other = allRuns().find(r => r.key === key && r.sid !== sid);
 	if (other) {
 		// Force: the ticket changes hands, so its open block ends here whatever the heartbeat gap is.
@@ -186,7 +189,7 @@ function begin(sid: string, key: string, theatre: string, booked: number, spent?
 	const mine = readRun(sid);
 	if (mine && mine.key !== key) {
 		stopKey(mine.key);
-		release(D, mine.key, sid);
+		release(stateDir(), mine.key, sid);
 	}
 	writeRun({ key, theatre, sid, repo: mine?.key === key ? mine.repo : other?.repo });
 	beat(sid);
@@ -212,7 +215,7 @@ function statusLines(): string {
 function fullStatus(sid: string): string {
 	const runs = allRuns().map(r => {
 		// A run whose session is gone (crash) still has its file: say so, or the user counts it twice.
-		const stale = holds(D, r.key, r.sid) ? "" : " (stale: its session is gone)";
+		const stale = holds(stateDir(), r.key, r.sid) ? "" : " (stale: its session is gone)";
 		return `RUN ${r.key} theatre=${r.theatre} repo=${r.repo ?? "none"} session=${shortSid(r.sid)}${r.sid === sid ? " (this session)" : ""}${stale}`;
 	});
 	return [statusLines(), ...runs].join("\n");
@@ -226,11 +229,11 @@ function endRun(sid: string, key?: string, takeover?: string): string {
 	if (!run) return "ERROR no run to end in this session";
 	if (run.sid !== sid) {
 		if (!takeover) return `ERROR ${run.key} belongs to session ${shortSid(run.sid)}; end it there, or take it over with that id`;
-		claim(D, run.key, sid, takeover);
+		claim(stateDir(), run.key, sid, takeover);
 		closeGap(run);
 	}
 	stopKey(run.key);
-	release(D, run.key, sid);
+	release(stateDir(), run.key, sid);
 	rmSync(runFile(run.sid), { force: true });
 	rmSync(beatFile(run.sid), { force: true });
 	return `ENDED ${run.key}`;
@@ -239,7 +242,7 @@ function endRun(sid: string, key?: string, takeover?: string): string {
 function report(date?: string): string {
 	// The date comes from the model: only a plain day file, never a path.
 	if (date !== undefined && !DAY_RE.test(date)) throw new Error(`bad date ${date}; expected YYYY-MM-DD`);
-	const file = date ? path.join(D, `${date}.jsonl`) : today();
+	const file = date ? path.join(stateDir(), `${date}.jsonl`) : today();
 	const evs = load(file);
 	// A past day ends at its midnight, so a block left open then does not grow until now.
 	const now = date && date !== path.basename(today(), ".jsonl") ? new Date(`${date}T23:59:59`) : new Date();
@@ -466,7 +469,7 @@ export default function (pi: ExtensionAPI) {
 			// Reopened after a crash or kill: the time it was gone is not work.
 			closeGap(own);
 			try {
-				claim(D, own.key, sid);
+				claim(stateDir(), own.key, sid);
 			} catch {
 				rmSync(runFile(sid), { force: true });
 				rmSync(beatFile(sid), { force: true });
@@ -546,7 +549,7 @@ export default function (pi: ExtensionAPI) {
 		const run = ownRun(sid);
 		if (!run) return;
 		stopKey(run.key);
-		release(D, run.key, sid);
+		release(stateDir(), run.key, sid);
 	});
 
 	// ponytail: bash writes are not guarded; parse bash commands if the Captain ever edits through bash
