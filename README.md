@@ -6,7 +6,7 @@ This is an **omp** plugin: it is installed, updated and run with omp, and it tar
 
 The plugin ships three things:
 
-| | |
+| Part | What it is |
 |---|---|
 | **Extension** | the `strategium` tool and the `/strategium` command: booking timer, per-session ticket claims, edit guard |
 | **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor` |
@@ -51,7 +51,7 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 
 ### Requirements
 
-| | |
+| Needs | Why |
 |---|---|
 | `bun` | runs the alarm script and the test suite |
 | `git` | worktrees, branches, commits |
