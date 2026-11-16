@@ -19,13 +19,13 @@ El plugin trae tres cosas:
 La sesión principal es el **Capitán**: nunca edita código de producto. Planifica, delega, custodia los sellos y lleva el reloj. Tú eres el **Maestro de Capítulo**: solo tú concedes un sello (Plan, UI, MR, Commit).
 
 ```
-Muster → Auspex → Scriptorium → Encampment → Skirmish → Inquisition → Extraction
+Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition → Extraction
 ```
 
 1. **Muster** — el ticket, los minutos reservados y los sellos.
 2. **Auspex** — los scouts mapean el código que toca el ticket.
 3. **Scriptorium** — el librarian escribe una especificación, de 1 a 5 slices y una Merge bar.
-4. **Encampment** — una rama por slice, un worktree por slice en paralelo.
+4. **Deployment** — una rama por slice, un worktree por slice en paralelo.
 5. **Skirmish** — un `battle-brother` implementa cada slice con los tests primero; un `apothecary` intenta romper los tests nuevos.
 6. **Inquisition** — un `inquisitor` revisa el diff contra la Merge bar; un `sonic` ejecuta las comprobaciones del repo.
 7. **Extraction** — el commit y la merge request, después de tu sello.
@@ -39,7 +39,7 @@ flowchart TB
     M --> A["Auspex<br/>scout"]
     A --> B["Scriptorium<br/>librarian → plan"]
     B --> S1{{"seal Plan"}}
-    S1 --> D["Encampment<br/>rama + worktree por slice"]
+    S1 --> D["Deployment<br/>rama + worktree por slice"]
     D --> E["Skirmish<br/>battle-brother → veteran<br/>apothecary rompe los tests"]
     E --> I["Inquisition<br/>inquisitor · sonic<br/>security-reviewer si toca auth"]
     I --> S2{{"seal UI"}}

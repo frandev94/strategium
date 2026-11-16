@@ -93,7 +93,7 @@ When the ticket has commits or uncommitted work from an earlier session, run the
 - Muster: record the starting state (`git log origin/main..HEAD --oneline`, `git status --short | wc -l`) in `local://<KEY>-auspex.md`.
 - Auspex: scouts map what is done and what is left, not the whole codebase. Large transcripts are read by tail range only (e.g. `:-300`), and a scout writes its partial result before reading more.
 - Scriptorium: the librarian plans only the remaining work; slice 1 finishes and verifies the in-flight work so the tree is green first.
-- Encampment: no new branch and no drop pods over a dirty tree; slices run in place, one at a time, unless the work splits into files with no overlap.
+- Deployment: no new branch and no drop pods over a dirty tree; slices run in place, one at a time, unless the work splits into files with no overlap.
 - Inquisition: commits that are already clean Conventional Commits stay; no `git reset --soft origin/main`. New work goes in as new commits on top.
 - Seals as the user chooses (e.g. UI and Commit per card).
 
@@ -118,7 +118,7 @@ When the ticket has commits or uncommitted work from an earlier session, run the
 - Challenge gaps: scope beyond the ticket, slices without a check. Fixes go back to the same librarian (`write agent://<id>`).
 - `[seal] Plan`: show the slices and the Merge bar. Nothing is built before the OK.
 
-### 3. Encampment [captain]
+### 3. Deployment [captain]
 - Branch `<type>/<KEY>-<short-name>` from `origin/main` in the main checkout.
 - Each `parallel: yes` slice gets a drop pod: `git worktree add ../<repo>-worktrees/<KEY>-<slice> -b <branch>-<slice>`, never inside the repo or a workspace glob.
 - For node repos, add a `node_modules` junction (Windows: `cmd /c mklink /J`) or symlink to the main checkout's `node_modules`.
