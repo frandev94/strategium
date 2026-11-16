@@ -95,7 +95,7 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 /strategium end                  cierra la run
 ```
 
-La **reserva** es el presupuesto de tiempo del ticket. El temporizador suena al 50 %, 80 % y 100 % de la reserva; al 100 % el Capitán deja de lanzar agentes e informa de lo que está hecho y de lo que queda.
+La **reserva** es el presupuesto de tiempo del ticket. El temporizador suena al 50 %, 80 % y 100 % de la reserva — el umbral más alto que cruza, así que una run que empieza pasado el 50 % va directamente al siguiente. Al 100 % el Capitán deja de lanzar agentes e informa de lo que está hecho y de lo que queda.
 
 Cada sesión es dueña de un ticket, con una reserva atómica, así que varias sesiones de omp pueden trabajar en tickets distintos a la vez. El Capitán no puede editar el repositorio del ticket: `edit` y `write` están bloqueados dentro del repo de la run y de su carpeta `<repo>-worktrees`, y `ast_edit` queda bloqueado en toda la sesión mientras la run está abierta.
 

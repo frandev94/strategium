@@ -95,7 +95,7 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 /strategium end                  close the run
 ```
 
-The **booking** is the time budget of the ticket. The timer fires at 50 %, 80 % and 100 % of it; at 100 % the Captain stops starting agents and reports what is done and what is left.
+The **booking** is the time budget of the ticket. The timer fires at 50 %, 80 % and 100 % of it — the highest threshold it crosses, so a run that starts past 50 % goes straight to the next one. At 100 % the Captain stops starting agents and reports what is done and what is left.
 
 Every session owns one ticket, claimed atomically, so several omp sessions can work on different tickets at the same time. The Captain cannot edit the ticket's repository: `edit` and `write` are blocked inside the run's repo and its `<repo>-worktrees` folder, and `ast_edit` is blocked for the whole session while the run is open.
 

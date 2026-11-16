@@ -76,7 +76,7 @@ Parallel tickets: each omp session owns one run (its ticket, edit guard, footer 
 Shifts: a booking is per day, so each day is its own shift. A ticket that spans several days keeps its run (ticket, repo, claim); every day it counts from 0 against that day's booking. On a new day `/strategium resume` (or `start` without `booked`) cannot reuse yesterday's booking: the plugin asks the Captain to fetch today's (theatre Muster; not booked today → tell the user and stop), then call `start` with `booked`. `/strategium resume <min>` or `start` with `booked` sets it directly.
 Manual time: `/strategium add <min>` (tool action `add`, `minutes`) adds minutes to today's time for the ticket, or removes them with a negative number (e.g. work done away from the keyboard, a forgotten pause). Only for minutes the user names. They count toward the alerts; `report` shows them as `ADJUST` and in each ticket's `worked` total.
 
-Every minute the plugin checks the booking. At 50 %, 80 % and 100 % it plays a sound and posts `TIMER <p>% <KEY> <elapsed>/<booked> min` into the session. On that message:
+Every minute the plugin checks the booking. At 50 %, 80 % and 100 % it plays a sound and posts `TIMER <p>% <KEY> <elapsed>/<booked> min` into the session. It reports the highest threshold crossed since the last alert, so a run that starts past one skips it. On that message:
 - **50 %:** tell the user.
 - **80 %:** tell the user and compare with the pending todo items. If the rest will not fit, say so now, with the reason.
 - **100 % (extraction):**
