@@ -49,21 +49,21 @@ With no theatre, skip all external writes: the delivery is the branch with its c
 - Never edit product code or tests, and never run builds or test suites. Repo work goes to agents (`task` tool with `agent:` set). The plugin blocks `edit`/`write` on the run's repo and its `-worktrees` folder in the main session, and `ast_edit` for the whole session while the run is open; never work around it through bash.
 - Allowed for the Captain: read and grep; git read commands, `git worktree add/remove`, `git merge` of slice branches, `git reset --soft`; commits through the eval `commit` namespace; the `strategium` tool; writing `local://` files and the theatre's records.
 - Every todo item starts with the agent that does it: `[captain]`, `[scout]`, `[librarian]`, `[battle-brother]`, `[veteran]`, `[apothecary]`, `[inquisitor]`, `[security-reviewer]`, `[sonic]`, `[task]`, `[seal]` (waits for the user). Todo phases are the stations below, in order, each named after its station (`Muster`, `Auspex`…): the footer shows the active phase's name as the station. A return reopens the phase of the station it returns to (see Returns).
-- Glyph todo tags: only when the prompt says "Use glyph todo tags" (the user's terminal has a Nerd Font), put the agent's glyph before its name, e.g. `󰗚 librarian · Plan remaining work as slices → local://<KEY>-plan.md`. Copy glyphs from this table only; never guess a codepoint. Keep the name next to the glyph. Never put glyphs in tickets, MRs, commits or code.
+- Build the todo with `todo.ts` from this skill's directory, never by hand: it tags each task with its agent, checks the agent names and the duplicates the todo tool would refuse, and owns the glyph table. Write the stations as unindented lines and their tasks indented below (`agent: text` or `[agent] text`), then pass each printed JSON line to `todo` as it is:
 
-  | Tag | Glyph | Nerd Font name |
-  |---|---|---|
-  | captain | 󰡗 | md-chess_king U+F0857 |
-  | scout | 󰐷 | md-radar U+F0437 |
-  | librarian | 󰗚 | md-book_open_page_variant U+F05DA |
-  | battle-brother | 󱢾 | md-shield_sword U+F18BE |
-  | veteran | 󰞇 | md-sword_cross U+F0787 |
-  | apothecary | 󰛯 | md-medical_bag U+F06EF |
-  | inquisitor | 󰊛 | md-gavel U+F029B |
-  | security-reviewer | 󰶚 | md-shield_search U+F0D9A |
-  | sonic | 󰚌 | md-skull U+F068C (servo-skull) |
-  | task | 󰑴 | md-school U+F0474 |
-  | seal | 󰑺 | md-seal U+F047A |
+  ```bash
+  bun "$(realpath skill://strategium)/todo.ts" --glyphs <<'EOF'
+  Muster
+    captain: Muster
+  Auspex
+    scout: Map the code the objective touches
+  Scriptorium
+    librarian: Plan as slices → local://<KEY>-plan.md
+    seal: Plan
+  EOF
+  ```
+
+  `--glyphs` only when the prompt says "Use glyph todo tags" (the user's terminal has a Nerd Font); it gives `<glyph> librarian · Plan…` instead of `[librarian] Plan…`. `--append` prints one `append` call per station instead of one `init`, for a return. Never put glyphs in tickets, MRs, commits or code.
 - Agents:
 
   | Role | `agent:` | Preferred model / effort (fallback) |
@@ -131,7 +131,7 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 
 - **Rally or redraft:** if the code can satisfy the slice's acceptance check as written, it is a rally; if it cannot, the slice was cut wrong and it is a redraft. Never spend a rally on a slice that cannot pass.
 - **A return past a granted seal breaks the seal**: ask for it again when the flow reaches it (`[seal] UI (2)`). The user may waive it when the change does not touch what was sealed.
-- **Reopen the station you return to**: `todo append` its items to that phase and `todo start` its task, so the panel shows the run going back.
+- **Reopen the station you return to**: `todo append` its new tasks to that phase (`todo.ts --append`) and `todo start` the first of them, so the panel shows the run going back. Never reopen a completed task.
 - **A return never rewrites what already passed**: Merge bar items that were PASS stay PASS.
 - A slice rewritten by a redraft is a new slice with its own rally budget.
 
@@ -144,7 +144,7 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 2. Seals: ask with `ask` which seals apply. Defaults checked: Plan, UI (only if the objective changes UI), MR (only when the theatre delivers one). Optional: before each commit. Without ticketing, Plan cannot be unchecked. Record them as `[seal]` todo items.
 3. Booking, in the same `ask` as the seals. With ticketing: the booked minutes (from the theatre, editable) and the minutes already worked today that the timer has not tracked (`strategium` `status` shows what it already has; **[theatre]** proposes a figure from its records, with no theatre propose 0). Without ticketing: one optional booking field, empty by default; left empty, the run is untimed.
 4. `strategium` `begin` with `key` and `theatre`, plus `booked` and `spent` for a timed run. If elapsed is already ≥ the booking, apply the 100 % rule now, before any agent starts: say so with the reason and continue only on the user's explicit order.
-5. `todo init` with the stations below and their tagged items.
+5. `todo init` with the stations below and their tagged items, built with `todo.ts`.
 
 ### 1. Auspex [scout]
 - **[theatre]** Find the repo. Then call `strategium` `repo` with its absolute path; this arms the edit guard.
