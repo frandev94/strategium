@@ -1,7 +1,7 @@
 // Builds the `todo` payload of a Strategium run: one phase per station, each task tagged with its agent,
 // as plain tags (`[librarian] Plan`) or Nerd Font glyph tags (`<glyph> librarian · Plan`).
 //
-// Usage: bun todo.ts [--glyphs] [--append] [file]   (the list comes from the file, else from stdin)
+// Usage: bun todo.ts [--append] [file]   (the list comes from the file, else from stdin; glyph tags when STRATEGIUM_GLYPHS=1)
 //
 // The list: a station per unindented line, its tasks indented below as `agent: text` or `[agent] text`.
 // Blank lines and lines starting with # are skipped.
@@ -13,6 +13,9 @@
 //     seal: Plan
 //
 // Prints one JSON object per todo call: `init` for the whole list, or with --append one `append` per station.
+
+/** Glyph tags on or off: the same switch as the footer. */
+export const glyphsFromEnv = (env: Record<string, string | undefined> = process.env): boolean => env.STRATEGIUM_GLYPHS === "1";
 
 /** The agents a task can name, with their Nerd Font glyph (codepoints checked in the Nerd Fonts glyphnames.json). */
 export const AGENTS: Record<string, string> = {
@@ -68,7 +71,7 @@ if (import.meta.main) {
 	const file = args.find(a => !a.startsWith("--"));
 	try {
 		const text = file ? await Bun.file(file).text() : await Bun.stdin.text();
-		const calls = buildTodo(text, { glyphs: args.includes("--glyphs"), append: args.includes("--append") });
+		const calls = buildTodo(text, { glyphs: glyphsFromEnv(), append: args.includes("--append") });
 		for (const call of calls) console.log(JSON.stringify(call));
 	} catch (err) {
 		console.error(`todo: ${err instanceof Error ? err.message : String(err)}`);

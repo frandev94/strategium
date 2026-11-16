@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { whereFrom } from "../../extensions/strategium/index";
-import { buildTodo } from "./todo";
+import { buildTodo, glyphsFromEnv } from "./todo";
 
 const stations = `
 Muster
@@ -30,6 +30,37 @@ describe("the todo of a run", () => {
 			"\u{f05da} librarian · Plan as slices",
 			"\u{f047a} seal · Plan",
 		]);
+	});
+
+	test("glyphs come from STRATEGIUM_GLYPHS=1 only", () => {
+		expect(glyphsFromEnv({ STRATEGIUM_GLYPHS: "1" })).toBe(true);
+		expect(glyphsFromEnv({})).toBe(false);
+		expect(glyphsFromEnv({ STRATEGIUM_GLYPHS: "0" })).toBe(false);
+		for (const v of ["true", "", "2"]) expect(glyphsFromEnv({ STRATEGIUM_GLYPHS: v })).toBe(false);
+	});
+
+	describe("the CLI", () => {
+		const script = `${import.meta.dir}/todo.ts`;
+		const run = (glyphs: string | undefined, ...args: string[]) => {
+			const env: Record<string, string | undefined> = { ...process.env };
+			if (glyphs === undefined) delete env.STRATEGIUM_GLYPHS;
+			else env.STRATEGIUM_GLYPHS = glyphs;
+			const r = Bun.spawnSync(["bun", script, ...args], { stdin: Buffer.from("Muster\n  captain: Muster\n"), env });
+			return r.stdout.toString();
+		};
+
+		test("STRATEGIUM_GLYPHS=1 prints the glyph tag", () => {
+			const out = run("1");
+			expect(out).toContain("\u{f18bc} captain · Muster");
+			expect(out).not.toContain("[captain]");
+		});
+
+		test("unset or 0 prints the plain tag", () => {
+			expect(run(undefined)).toContain("[captain] Muster");
+			expect(run("0")).toContain("[captain] Muster");
+		});
+
+		test("the --glyphs flag is gone", () => expect(run(undefined, "--glyphs")).toContain("[captain] Muster"));
 	});
 
 	test("the footer recognises the seal in both kinds of tag", () => {
