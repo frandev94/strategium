@@ -1,7 +1,8 @@
 // Strategium vox-caster: synthesizes every sound from scratch (no samples) and plays it.
-// Usage: bun vox.ts [50|80|100|done|attention|theme]  (level: argv[2], else env STRATEGIUM_P, else done; theme is 15 s, by hand only)
+// Usage: bun vox.ts [50|80|100|done|attention|theme]  (level: argv[2], else env STRATEGIUM_P, else done; theme is 15 s, when a run ends, or by hand)
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv } from "../extensions/strategium/env";
@@ -278,7 +279,7 @@ const DESIGN: Record<Level, (b: Buf) => void> = {
 	"done": b => { [330, 392, 494, 659].forEach((hz, i) => bell(b, i * 0.28, hz, 0.55, 1.2)); bell(b, 1.2, 165, 0.8, 2); cant(b, 1.3, 2, 0.08, 0.2, 2); },
 	// attention: a dark call to war, horn section in C minor (C - Eb - low G) over war drums
 	"attention": warCall,
-	// theme: the 15 s Strategium theme (a drop, a dead stop, a chromatic fall, one last hit); by hand only
+	// theme: the 15 s Strategium theme (a drop, a dead stop, a chromatic fall, one last hit); when a run ends, or by hand
 	"theme": theme,
 };
 
@@ -339,7 +340,8 @@ if (import.meta.main) {
 	try {
 		if (msg) toast(msg);
 		const dir = join(tmpdir(), "strategium-vox");
-		const file = join(dir, `${level}.wav`);
+		// The name follows the synthesizer's source, so an edited sound never plays from a stale cache. ponytail: old WAVs stay in tmp; prune them if the folder ever grows.
+		const file = join(dir, `${level}-${createHash("sha256").update(readFileSync(import.meta.path)).digest("hex").slice(0, 12)}.wav`);
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		if (!existsSync(file)) {
 			try {
