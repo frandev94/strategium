@@ -33,7 +33,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 ## 3. Skills
 `omp skill list --json` must contain:
 - core (from agent-skills): `spec-driven-development`, `planning-and-task-breakdown`, `incremental-implementation`, `test-driven-development`, `code-review-and-quality`, `code-simplification`, `debugging-and-error-recovery`, `frontend-ui-engineering`, `source-driven-development`, `doubt-driven-development`;
-- from this plugin: `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-ui`, `strategium-study`;
+- from this plugin: `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-ui`, `strategium-study`, `strategium-release`;
 - public skills `strategium-ui` uses (UI slices are blocked while one is missing). Install user-level with the `skills` CLI (`npx -y skills add <repo> -g -y -s <skill>`; skills land in `~/.agents/skills`, which omp reads):
 
   | Skill | Repo |
@@ -51,6 +51,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 ## 4. Tools
 - `bun --version` (alarm script). Missing → point to https://bun.sh; the timer still works without sound.
 - `git --version` (worktrees, commits).
+- `git-cliff --version`: only needed to cut plugin releases (`strategium-release`); optional, report if missing.
 - Theatre-specific CLIs named in the theatre skill (e.g. an issue-tracker or forge CLI): check `--version` and report.
 
 ## 4b. omp isolation

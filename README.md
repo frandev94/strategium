@@ -12,7 +12,7 @@ The plugin ships three things:
 |---|---|
 | **Extension** | the `strategium` tool and the `/strategium` command: per-session claims, edit guard, optional booking timer |
 | **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, plus the bundled `scout` and `sonic` |
-| **Skills** | `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-study`, `strategium-ui` |
+| **Skills** | `strategium`, `strategium-alarm`, `strategium-release`, `strategium-setup`, `strategium-study`, `strategium-ui` |
 
 ## How a run works
 
