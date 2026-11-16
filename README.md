@@ -1,5 +1,7 @@
 # strategium
 
+> Español: [README.es.md](README.es.md)
+
 Turn an omp session into a **Strategium**: the main session plans and delegates, specialised agents build and review, and you keep the seals.
 
 This is an **omp** plugin: it is installed, updated and run with omp, and it targets no other coding agent.
@@ -9,7 +11,7 @@ The plugin ships three things:
 | Part | What it is |
 |---|---|
 | **Extension** | the `strategium` tool and the `/strategium` command: booking timer, per-session ticket claims, edit guard |
-| **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor` |
+| **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, plus the bundled `scout` and `sonic` |
 | **Skills** | `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-study`, `strategium-ui` |
 
 ## How a run works
@@ -27,6 +29,29 @@ Muster → Auspex → Briefing → Deployment → Engagement → Inquisition →
 5. **Engagement** — a `battle-brother` implements each slice test-first; an `apothecary` tries to break the new tests.
 6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar; a `sonic` runs the repo's checks.
 7. **Extraction** — the commit and the merge request, after your seal.
+
+```mermaid
+flowchart TB
+  U["You · Chapter Master<br/>you grant the seals"] -->|"/strategium ticket"| C
+  subgraph run["Main session · the Captain"]
+    C["Captain<br/>strategium tool + /strategium<br/>never edits code"]
+    C --> M["Muster<br/>ticket · booked minutes · seals"]
+    M --> A["Auspex<br/>scout"]
+    A --> B["Briefing<br/>librarian → plan"]
+    B --> S1{{"seal Plan"}}
+    S1 --> D["Deployment<br/>branch + worktree per slice"]
+    D --> E["Engagement<br/>battle-brother → veteran<br/>apothecary breaks the tests"]
+    E --> I["Inquisition<br/>inquisitor · sonic<br/>security-reviewer when it touches auth"]
+    I --> S2{{"seal UI"}}
+    S2 --> X["Extraction<br/>commit + MR"]
+    X --> S3{{"seal MR"}}
+    S3 --> F["After-action<br/>day report"]
+  end
+  T["Booking timer<br/>50% · 80% · 100%"] -.->|warns| C
+  T --> V["vox-caster<br/>sound + notification"]
+  G["Edit guard<br/>edit · write · ast_edit"] -.->|blocks| C
+  R["State per day<br/>JSONL + claims per ticket"] --- C
+```
 
 Station names, agent names and alerts have their own voice. Tickets, commit messages and merge requests stay plain and professional.
 
@@ -53,10 +78,10 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 
 | Needs | Why |
 |---|---|
-| `bun` | runs the alarm script and the test suite |
+| `bun` | runs the alarm script, the timer alarms and the test suite |
 | `git` | worktrees, branches, commits |
-| `agent-skills` plugin | the skills the agents autoload (`omp plugin install agent-skills@addy-agent-skills`) |
-| `ponytail` plugin | optional, smallest-diff mode for every agent |
+| `agent-skills` plugin | the skills the agents autoload (`omp plugin marketplace add addyosmani/agent-skills`, then `omp plugin install agent-skills@addy-agent-skills`) |
+| `ponytail` plugin | recommended, smallest-diff mode for every agent |
 | `obsidian-second-brain` plugin | optional, theatres that keep records in Obsidian |
 
 ## Usage
@@ -72,14 +97,14 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 
 The **booking** is the time budget of the ticket. The timer fires at 50 %, 80 % and 100 % of it; at 100 % the Captain stops starting agents and reports what is done and what is left.
 
-Every session owns one ticket, claimed atomically, so several omp sessions can work on different tickets at the same time. The Captain cannot edit the ticket's repository: `edit`, `write` and `ast_edit` are blocked inside the run's repo and its worktrees.
+Every session owns one ticket, claimed atomically, so several omp sessions can work on different tickets at the same time. The Captain cannot edit the ticket's repository: `edit` and `write` are blocked inside the run's repo and its `<repo>-worktrees` folder, and `ast_edit` is blocked for the whole session while the run is open.
 
 ### Configuration
 
 | Variable | Meaning |
 |---|---|
 | `STRATEGIUM_THEATRE` | default theatre for `/strategium` |
-| `STRATEGIUM_ALARM` | command run when the timer fires, e.g. `bun /path/to/strategium/alarm/vox.ts` |
+| `STRATEGIUM_ALARM` | command run when the timer fires, e.g. `bun /path/to/strategium/alarm/vox.ts`; quote a path with spaces (`bun "C:/my tools/vox.ts"`) |
 | `STRATEGIUM_STATE_DIR` | where the session state lives (default `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | `1` to use Nerd Font glyphs instead of emoji |
 
