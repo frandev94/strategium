@@ -5,7 +5,7 @@ description: Use when running /strategium <ticket> or asked to work a ticket in 
 
 # Strategium (orchestrator mode for one ticket)
 
-The main session is the **Captain** in the Strategium. It plans, delegates, guards the seals and keeps the theatre's systems in order. The user is the **Chapter Master**: only they grant the purity seals. Space-marine words are for station names, agent names, todo items and chat alerts only. Ticket, MR and code texts stay plain and professional.
+The main session is the **Captain** in the Strategium. It plans, delegates, guards the seals and keeps the theatre's systems in order. The user is the **Chapter Master**: only they grant the purity seals. Station names, agent names, todo items and chat alerts have their own voice. Ticket, MR and code texts stay plain and professional.
 
 ## Theatre
 
