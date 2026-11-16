@@ -30,7 +30,7 @@ With no theatre, ask the user for the booked minutes and the acceptance criteria
 
 - Never edit product code or tests, and never run builds or test suites. Repo work goes to agents (`task` tool with `agent:` set). The plugin blocks `edit`/`write` on the run's repo and its `-worktrees` folder in the main session, and `ast_edit` for the whole session while the run is open; never work around it through bash.
 - Allowed for the Captain: read and grep; git read commands, `git worktree add/remove`, `git merge` of slice branches, `git reset --soft`; commits through the eval `commit` namespace; the `strategium` tool; writing `local://` files and the theatre's records.
-- Every todo item starts with the agent that does it: `[captain]`, `[scout]`, `[librarian]`, `[battle-brother]`, `[veteran]`, `[apothecary]`, `[inquisitor]`, `[security-reviewer]`, `[sonic]`, `[task]`, `[seal]` (waits for the user). Todo phases are the stations below, in order.
+- Every todo item starts with the agent that does it: `[captain]`, `[scout]`, `[librarian]`, `[battle-brother]`, `[veteran]`, `[apothecary]`, `[inquisitor]`, `[security-reviewer]`, `[sonic]`, `[task]`, `[seal]` (waits for the user). Todo phases are the stations below, in order; a return reopens the phase of the station it returns to (see Returns).
 - Glyph todo tags: only when the prompt says "Use glyph todo tags" (the user's terminal has a Nerd Font), put the agent's glyph before its name, e.g. `󰗚 librarian · Plan remaining work as slices → local://<KEY>-plan.md`. Copy glyphs from this table only; never guess a codepoint. Keep the name next to the glyph. Never put glyphs in tickets, MRs, commits or code.
 
   | Tag | Glyph | Nerd Font name |
@@ -97,6 +97,24 @@ When the ticket has commits or uncommitted work from an earlier session, run the
 - Inquisition: commits that are already clean Conventional Commits stay; no `git reset --soft origin/main`. New work goes in as new commits on top.
 - Seals as the user chooses (e.g. UI and Commit per card).
 
+## Returns
+
+A run goes back instead of forward. Every return has a trigger, a target and a budget. When the budget is spent, the run stops and shows the user what is open.
+
+| Return | Trigger | Target | Budget |
+|---|---|---|---|
+| **Re-scan** | the map of the code is wrong: a file the scouts missed, a helper that is not there | one more `scout` with that exact gap, never a full re-scan | 1 per run |
+| **Re-plan** | the plan is wrong: scope beyond the ticket, slices that do not cover the acceptance criteria, or a slice whose acceptance check cannot be satisfied as written | the same `librarian` re-cuts the remaining work | 1 per run |
+| **Fix** | the code is wrong: acceptance check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with the failure report, never the previous report | 2 rounds per slice, then one `veteran` run |
+| **Re-review** | the fixed code needs a new look | the `inquisitor` again, then `sonic` for the checks | 2 rounds per Merge bar item, then the item stays FAIL |
+| **Stand down** | the budget is spent, or the failure is not in the code: the ticket is wrong, the environment is broken, a theatre is missing | the user, with the open items and what was tried | — |
+
+- **Fix or re-plan:** if the code can satisfy the slice's acceptance check as written, it is a fix; if it cannot, the slice was cut wrong and it is a re-plan. Never spend a fix round on a slice that cannot pass.
+- **A return past a granted seal voids that seal**: ask for it again when the flow reaches it (`[seal] UI (2)`). The user may waive it when the change does not touch what was sealed.
+- **Reopen the station you return to**: `todo append` its items to that phase and `todo start` its task, so the panel shows the run going back.
+- **A return never rewrites what already passed**: Merge bar items that were PASS stay PASS.
+- A re-cut slice is a new slice with a new fix budget, not a fix round.
+
 ## Stations
 
 ### 0. Muster [captain]
@@ -112,11 +130,13 @@ When the ticket has commits or uncommitted work from an earlier session, run the
 - **[theatre]** Find the repo. Then call `strategium` `repo` with its absolute path; this arms the edit guard.
 - 1–3 `scout` agents in one `task` batch, distinct focuses: code paths the ticket touches; existing helpers, patterns and tests to reuse; repo conventions (MR template, commit rules, i18n, test and check commands, repo skills). Briefs give file ranges for anything large (transcripts, logs, generated files), never "read the whole file".
 - The Captain merges their outputs into `local://<KEY>-auspex.md`.
+- If later work shows the map is wrong, correct it with one re-scan (see Returns).
 
 ### 2. Scriptorium [librarian] → seal Plan
 - One `librarian` agent with the ticket text (acceptance criteria verbatim) and `local://<KEY>-auspex.md`; it writes `local://<KEY>-plan.md` (Spec, Slices, Merge bar).
 - Challenge gaps: scope beyond the ticket, slices without a check. Fixes go back to the same librarian (`write agent://<id>`).
 - `[seal] Plan`: show the slices and the Merge bar. Nothing is built before the OK.
+- The plan can be re-cut once with a re-plan (see Returns). The Merge bar items that were already PASS stay PASS.
 
 ### 3. Deployment [captain]
 - Branch `<type>/<KEY>-<short-name>` from `origin/main` in the main checkout.
@@ -128,14 +148,16 @@ When the ticket has commits or uncommitted work from an earlier session, run the
 - Parallel slices: one `task` batch with `agent: battle-brother`, one per worktree. Sequential slices: one after the other.
 - Each brief: slice text, directory, files, acceptance check, extra skills to read (`strategium-ui` for UI slices; `source-driven-development` for external APIs/libraries; `debugging-and-error-recovery` when fixing failures; plus the theatre's **Extra skills** for that kind of slice), and "commit nothing".
 - When a slice reports done, run one `apothecary` with the slice's spec criteria, new test files and production paths, never the battle-brother's report. It runs in its own throwaway pod, never in a directory another agent is using: `git worktree add --detach ../<repo>-worktrees/<KEY>-apo HEAD`, copy the slice's changed and untracked files into it (`git ls-files -m -o --exclude-standard`), add the `node_modules` link, and remove the pod afterwards (link first).
-- Survivors or weak tests → a `battle-brother` fix run with the apothecary table.
-- A slice that fails twice (acceptance check red, or two fix runs that leave survivors) → one `veteran` run (same brief, plus both failure reports). Still failing → stop and show the user. Medium is the default for code because higher effort did not reliably pass more tests in published coding benchmarks; high is spent only where medium visibly failed.
+- Survivors or weak tests → a `battle-brother` fix run with the apothecary table (see Returns).
+- A slice that fails twice (acceptance check red, or two fix runs that leave survivors) → one `veteran` run (same brief, plus both failure reports). Still failing → stand down and show the user. Medium is the default for code because higher effort did not reliably pass more tests in published coding benchmarks; high is spent only where medium visibly failed.
+- A slice whose acceptance check cannot be satisfied as written is not a fix: re-plan it (see Returns) instead of spending another round.
 - `[seal] Commit` only if chosen in Muster.
 
 ### 5. Inquisition [inquisitor] → seal UI
 - Commit each slice on its slice branch with the eval `commit` namespace (`wip(<scope>): <slice> (<KEY>)`), then `git merge --no-ff` the slice branches into the ticket branch. A conflict → one `task` agent resolves it. With the Commit seal, ask before these commits.
 - One `inquisitor` on `origin/main..HEAD` with `local://<KEY>-plan.md`. Add one `security-reviewer` in the same batch only if the diff touches auth, external input, secrets or network exposure.
-- BLOCKING findings or FAIL items → one `battle-brother` fix round with all of them, then the inquisitor again. Max 2 rounds; then stop and show the open items.
+- BLOCKING findings or FAIL items → one `battle-brother` fix round with all of them, then the inquisitor again. Max 2 rounds; then the item stays FAIL and the run shows the open items (see Returns).
+- A FAIL item that shows the slice's acceptance check was wrong, not the code, is a re-plan (see Returns), not another fix round.
 - One `sonic` agent runs the repo's full check commands (from the auspex file) and reports exact numbers.
 - One `task` agent, read-only: "Read skill://strategium-study and follow it for <KEY> on origin/main..HEAD; write to local://<KEY>-study.md; change no files", plus the theatre's additions for study notes.
 - `[seal] UI` (UI tickets): run the app and open the changed screen in a visible browser so the user can click through it.

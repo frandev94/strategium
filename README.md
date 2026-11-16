@@ -55,6 +55,20 @@ flowchart TB
 
 Station names, agent names and alerts have their own voice. Tickets, commit messages and merge requests stay plain and professional.
 
+### Going back
+
+A run goes back instead of forward, and every return has a trigger, a target and a budget. When the budget is spent, the run stops and shows you what is open.
+
+| Return | Trigger | Target | Budget |
+|---|---|---|---|
+| **Re-scan** | the map of the code is wrong | one more `scout` with that exact gap | 1 per run |
+| **Re-plan** | the plan is wrong, or a slice's acceptance check cannot be satisfied as written | the same `librarian` re-cuts the remaining work | 1 per run |
+| **Fix** | the code is wrong: check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with the failure report | 2 rounds per slice, then one `veteran` run |
+| **Re-review** | the fixed code needs a new look | the `inquisitor` again | 2 rounds per Merge bar item |
+| **Stand down** | the budget is spent, or the failure is not in the code | you, with the open items | — |
+
+If the code can satisfy the slice's check as written, it is a fix; if it cannot, the slice was cut wrong and it is a re-plan. A return past a granted seal voids that seal and asks for it again. What already passed stays passed.
+
 ## Install
 
 **As a marketplace plugin:**
