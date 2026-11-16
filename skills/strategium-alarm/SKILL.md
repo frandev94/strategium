@@ -14,7 +14,7 @@ description: Use when a long task, build, run or timer finishes or needs the use
 | `100` | extraction: klaxon wails over a deep bell |
 | `done` | task complete: ascending bell fanfare, final deep toll |
 | `attention` | the user is needed: a dark call to war, a horn section in C minor (C, Eb, then a long low G) over war drums |
-| `theme` | the Strategium theme: 15 s, a drop with a dead stop and a chromatic fall; played by hand only, nothing triggers it |
+| `theme` | the Strategium theme: 15 s, a drop with a dead stop and a chromatic fall; plays when the session's run ends (`strategium` `end`, `/strategium end`); also by hand |
 
 ## Booking alarm and attention
 

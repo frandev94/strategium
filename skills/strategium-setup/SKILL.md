@@ -32,7 +32,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 
 ## 3. Skills
 `omp skill list --json` must contain:
-- core (from agent-skills): `spec-driven-development`, `planning-and-task-breakdown`, `incremental-implementation`, `test-driven-development`, `code-review-and-quality`, `code-simplification`, `debugging-and-error-recovery`, `frontend-ui-engineering`, `source-driven-development`;
+- core (from agent-skills): `spec-driven-development`, `planning-and-task-breakdown`, `incremental-implementation`, `test-driven-development`, `code-review-and-quality`, `code-simplification`, `debugging-and-error-recovery`, `frontend-ui-engineering`, `source-driven-development`, `doubt-driven-development`;
 - from this plugin: `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-ui`, `strategium-study`;
 - public skills `strategium-ui` uses (UI slices are blocked while one is missing). Install user-level with the `skills` CLI (`npx -y skills add <repo> -g -y -s <skill>`; skills land in `~/.agents/skills`, which omp reads):
 
@@ -52,6 +52,10 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 - `bun --version` (alarm script). Missing → point to https://bun.sh; the timer still works without sound.
 - `git --version` (worktrees, commits).
 - Theatre-specific CLIs named in the theatre skill (e.g. an issue-tracker or forge CLI): check `--version` and report.
+
+## 4b. omp isolation
+- `omp config get task.isolation.enabled` must be `true` and `omp config get task.isolation.merge` must be `branch`: Strategium slices run isolated and land on the run's branch.
+- When missing, offer `omp config set task.isolation.enabled true` and `omp config set task.isolation.merge branch` in the same `ask`, and say that the task tool shows `isolated` only in sessions started afterwards.
 
 ## 5. `.env` (`~/.omp/agent/.env`; omp loads it into every session for keys not already set in the process environment)
 

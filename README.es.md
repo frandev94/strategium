@@ -25,7 +25,7 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 1. **Muster** — el objetivo, los sellos y, con ticketing, la reserva.
 2. **Auspex** — los scouts mapean el código que toca el objetivo.
 3. **Scriptorium** — el librarian escribe una especificación, de 1 a 5 slices y una Merge bar.
-4. **Deployment** — una rama por slice, un worktree por slice en paralelo.
+4. **Deployment** — una rama para la run, los slices declarados con sus ficheros; cada agente aislado trabaja en su propio checkout de omp.
 5. **Skirmish** — un `battle-brother` implementa cada slice con los tests primero; un `apothecary` intenta romper los tests nuevos.
 6. **Inquisition** — un `inquisitor` revisa el diff contra la Merge bar; un `sonic` ejecuta las comprobaciones del repo.
 7. **Extraction** — el commit y la merge request, después de tu sello.
@@ -39,7 +39,7 @@ flowchart TB
     M --> A["Auspex<br/>scout"]
     A --> B["Scriptorium<br/>librarian → plan"]
     B --> S1{{"seal Plan"}}
-    S1 --> D["Deployment<br/>rama + worktree por slice"]
+    S1 --> D["Deployment<br/>una rama + slices declarados"]
     D --> E["Skirmish<br/>battle-brother → veteran<br/>apothecary rompe los tests"]
     E --> I["Inquisition<br/>inquisitor · sonic<br/>security-reviewer si toca auth"]
     I --> S2{{"seal UI"}}
@@ -63,8 +63,8 @@ Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un de
 |---|---|---|---|
 | **Recon** | el mapa del código está equivocado | un `scout` más con ese hueco concreto | 1 por run |
 | **Redraft** | el plan está equivocado, o el check de un slice no se puede cumplir tal cual está escrito | el mismo `librarian` reescribe el trabajo restante | 1 por run |
-| **Rally** | el código está equivocado: check rojo, supervivientes del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con el informe del fallo | 2 rondas por slice, luego un `veteran` |
-| **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez | 2 rondas por item del Merge bar |
+| **Rally** | el código está equivocado: check rojo, supervivientes del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con todos los IDs de hallazgos abiertos en un solo brief, nunca el informe anterior | 2 rondas por slice, luego un `veteran` |
+| **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez, solo sobre los IDs de hallazgos abiertos y el rango del arreglo, y luego `sonic` para los checks | 2 rondas por item del Merge bar |
 | **Stand down** | se agotó el presupuesto, o el fallo no está en el código | tú, con los puntos abiertos | — |
 
 Si el código puede cumplir el check del slice tal como está escrito, es un rally; si no puede, el slice se cortó mal y es un redraft. Una vuelta que pasa por delante de un sello ya concedido rompe el sello y hay que pedirlo otra vez. Lo que ya pasó, sigue pasado.
@@ -113,7 +113,7 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 
 El texto libre necesita las comillas, para no chocar nunca con un subcomando. Sin ticket, el librarian propone los criterios de aceptación y tú los confirmas en el sello Plan, que no se puede saltar.
 
-Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. El Capitán no puede editar el repositorio de la run: `edit` y `write` están bloqueados dentro del repo de la run y de su carpeta `<repo>-worktrees`, y `ast_edit` queda bloqueado en toda la sesión mientras la run está abierta.
+Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. Cerrar una sesión pausa su run y libera la reserva; al reabrir esa sesión la recupera y la reanuda sola, salvo que tú la hubieras pausado (`/strategium pause`, acción `stop`, el stand down). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy. El Capitán no puede editar el repositorio de la run: mientras la run está abierta `edit` y `ast_edit` se ocultan de la sesión principal, `write` está bloqueado dentro del repo de la run y de su carpeta `<repo>-worktrees`, los ejecutores de tests y builds por bash y las escrituras de ficheros por bash están bloqueados (solo pasan las redirecciones a `$TEMP`), se rechazan los agentes fuera del plantel de Strategium y se rechazan los battle-brothers hasta que se declaren los slices del plan (`strategium` `slices`; los slices en paralelo no pueden compartir un fichero).
 
 ### Ticketing (opcional)
 
@@ -134,7 +134,7 @@ El estado (un JSONL por día más las reservas de las runs) vive fuera del repos
 
 ### La alarma
 
-`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras y sin dependencias. Los niveles son `50`, `80`, `100`, `done`, `attention` y `theme` (15 s, solo a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
+`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras y sin dependencias. Los niveles son `50`, `80`, `100`, `done`, `attention` y `theme` (15 s, suena cuando termina la run de la sesión, o a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
 
 ```
 bun alarm/vox.ts 100 "la reserva se ha agotado"

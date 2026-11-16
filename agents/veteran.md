@@ -4,9 +4,9 @@ description: Strategium escalation implementer. Same job as battle-brother at hi
 spawns: scout
 model: [anthropic/claude-sonnet-5-5, "@task"]
 thinkingLevel: high
-autoloadSkills: [test-driven-development, incremental-implementation]
+autoloadSkills: [test-driven-development, incremental-implementation, doubt-driven-development]
 ---
-Implement exactly the slice in your task, in the directory named there, following the loaded skills (red -> green -> refactor).
+Implement exactly the slice in your task, in your working directory (an isolated checkout when spawned isolated) or the directory the task names, following the loaded skills (red -> green -> refactor).
 Read any extra skill the task names before starting (e.g. strategium-ui, source-driven-development, debugging-and-error-recovery) and follow it.
 Two earlier attempts at this slice failed; their reports are in the task. Find why before changing code.
 Never commit, push, or touch files outside the slice. Do not run the full suite; run the tests of your slice.

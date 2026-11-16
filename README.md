@@ -25,7 +25,7 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 1. **Muster** — the objective, the seals and, with ticketing, the booking.
 2. **Auspex** — scouts map the code the objective touches.
 3. **Scriptorium** — the librarian writes a spec, 1–5 slices and a Merge bar.
-4. **Deployment** — one branch per slice, one worktree per parallel slice.
+4. **Deployment** — one branch for the run, the slices declared with their files; each isolated agent works in its own omp checkout.
 5. **Skirmish** — a `battle-brother` implements each slice test-first; an `apothecary` tries to break the new tests.
 6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar; a `sonic` runs the repo's checks.
 7. **Extraction** — the commit and the merge request, after your seal.
@@ -39,7 +39,7 @@ flowchart TB
     M --> A["Auspex<br/>scout"]
     A --> B["Scriptorium<br/>librarian → plan"]
     B --> S1{{"seal Plan"}}
-    S1 --> D["Deployment<br/>branch + worktree per slice"]
+    S1 --> D["Deployment<br/>one branch + slices declared"]
     D --> E["Skirmish<br/>battle-brother → veteran<br/>apothecary breaks the tests"]
     E --> I["Inquisition<br/>inquisitor · sonic<br/>security-reviewer when it touches auth"]
     I --> S2{{"seal UI"}}
@@ -63,8 +63,8 @@ A run goes back instead of forward, and every return has a trigger, a target and
 |---|---|---|---|
 | **Recon** | the map of the code is wrong | one more `scout` with that exact gap | 1 per run |
 | **Redraft** | the plan is wrong, or a slice's acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work | 1 per run |
-| **Rally** | the code is wrong: check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with the failure report | 2 rounds per slice, then one `veteran` run |
-| **Retrial** | the fixed code needs a new look | the `inquisitor` again | 2 rounds per Merge bar item |
+| **Rally** | the code is wrong: check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with every open finding ID in one brief, never the previous report | 2 rounds per slice, then one `veteran` run |
+| **Retrial** | the fixed code needs a new look | the `inquisitor` again on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item |
 | **Stand down** | the budget is spent, or the failure is not in the code | you, with the open items | — |
 
 If the code can satisfy the slice's check as written, it is a rally; if it cannot, the slice was cut wrong and it is a redraft. A return past a granted seal breaks the seal, and it is asked for again. What already passed stays passed.
@@ -113,7 +113,7 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 
 Free text needs the quotes, so it never clashes with a subcommand. Without a ticket, the librarian proposes the acceptance criteria and you confirm them at seal Plan, which cannot be skipped.
 
-Every session owns one run, claimed atomically, so several omp sessions can work on different objectives at the same time. The Captain cannot edit the run's repository: `edit` and `write` are blocked inside the run's repo and its `<repo>-worktrees` folder, and `ast_edit` is blocked for the whole session while the run is open.
+Every session owns one run, claimed atomically, so several omp sessions can work on different objectives at the same time. Closing a session pauses its run and releases the claim; reopening that session takes it back and resumes it on its own, unless you had paused it (`/strategium pause`, action `stop`, the stand down). A timed run on a new day stays paused until today's booking is given. The Captain cannot edit the run's repository: while the run is open `edit` and `ast_edit` are hidden from the main session, `write` is blocked inside the run's repo and its `<repo>-worktrees` folder, bash test and build runners and bash file writes are blocked (only redirects into `$TEMP` pass), agents outside the Strategium roster are refused, and battle-brothers are refused until the plan's slices are declared (`strategium` `slices`; parallel slices must not share a file).
 
 ### Ticketing (optional)
 
@@ -134,7 +134,7 @@ The state (one JSONL per day plus the run claims) stays outside the repository, 
 
 ### The alarm
 
-`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done`, `attention` and `theme` (15 s, played by hand only: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
+`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done`, `attention` and `theme` (15 s, plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
 
 ```
 bun alarm/vox.ts 100 "the booking is over"
