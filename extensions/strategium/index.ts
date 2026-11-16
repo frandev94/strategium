@@ -17,6 +17,7 @@ import {
 	openKeys,
 	overlapMin,
 	release,
+	type Ev,
 } from "./timer";
 import { childEnv } from "./env";
 
@@ -339,6 +340,42 @@ export function editTargets(name: string, input: Record<string, unknown>): strin
 	return out;
 }
 
+/** The footer line for a run: dot, planet, key, station, then its time or booking. */
+function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: number): string {
+	const key = run.key;
+	const pct = bk ? Math.floor((el / bk) * 100) : 0;
+	// Same shape as other plugins' footer lines: dot, icon, grey "name:", value. Dot: grey paused, green/yellow/red by booking use.
+	const dot = !running ? "\x1b[38;5;243m○" : pct >= 100 ? "\x1b[31m●" : pct >= 80 ? "\x1b[33m●" : "\x1b[32m●";
+	// Nerd Font glyphs only with STRATEGIUM_GLYPHS=1; emoji otherwise.
+	const nf = process.env.STRATEGIUM_GLYPHS === "1";
+	const phase = pct >= 100 ? 4 : pct >= 80 ? 3 : pct >= 50 ? 2 : pct >= 25 ? 1 : 0;
+	// The world is calm, a meteor falls, it burns, and past the booking it is purged.
+	// Glyphs drawn and checked in Cascadia Code NF: md-earth F01E7, md-meteor F0629, md-fire F0238, md-nuke F06A4.
+	const stageColor = ["39", "39", "214", "202", "160"][phase];
+	const stageGlyph = (nf
+		? ["\u{f01e7}", "\u{f01e7}", "\u{f0629}", "\u{f0238}", "\u{f06a4}"]
+		: ["🌍", "🌍", "🌠", "🔥", "💥"])[phase];
+	const stage = `\x1b[38;5;${stageColor}m${stageGlyph}${nf ? " " : ""}\x1b[39m`;
+	// Gold planet (256-colour 214), reset right after so the rest of the line keeps its colours.
+	// Nerd Font md-* glyphs draw two cells wide but count as one, so they get an extra space (seen in the terminal).
+	const planet = `\x1b[38;5;214m${nf ? "\u{f0018} " : "🪐"}\x1b[39m`;
+	// A run without a booking only counts time. A timed run with no booking today waits for its new shift.
+	const value = run.untimed && bookedMin(evs, key) === undefined
+		? running ? `${el} min` : "paused"
+		: bookedMin(evs, key) === undefined
+			? "new day: /strategium resume"
+			: `${stage} ${el}/${bk} min (${pct}%)${running ? "" : " paused"}`;
+	// Where the run is: a seal waiting for the user (⏳, md-timer_sand F051F, in yellow), a return (↩, md-undo
+	// F054C) or just the station. Codepoints checked in the Nerd Fonts glyphnames.json.
+	const w = run.where;
+	const where = !w
+		? ""
+		: w.seal
+			? ` · \x1b[33m${nf ? "\u{f051f} " : "⏳"} seal ${w.seal}\x1b[39m`
+			: ` · ${w.back ? (nf ? "\u{f054c}  " : "↩ ") : ""}${w.station}`;
+	return `${dot}\x1b[39m ${planet} \x1b[38;5;248mstrategium: \x1b[39m${key}${where} · ${value}`;
+}
+
 export default function (pi: ExtensionAPI) {
 	const z = pi.zod;
 	// Set by session_start; tool and command actions call it so the footer updates at once, not on the
@@ -511,6 +548,19 @@ export default function (pi: ExtensionAPI) {
 				rmSync(beatFile(sid), { force: true });
 			}
 		}
+		// Only the owning session alerts for its key, so each alert fires once.
+		const maybeAlert = (file: string, evs: Ev[], key: string, now: Date, el: number, bk: number) => {
+			const p = dueAlert(evs, key, now);
+			if (p === undefined) return;
+			append(file, { ts: nowIso(), event: "alert", key, p });
+			ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}`, p === 100 ? "warning" : "info");
+			const alarmError = signal(String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`);
+			if (alarmError) ctx.ui.notify(`Strategium: ${alarmError}`, "warning");
+			pi.sendMessage(
+				{ customType: "strategium-timer", content: `TIMER ${p}% ${key} ${el}/${bk} min`, display: true, attribution: "agent" },
+				{ deliverAs: "aside", triggerTurn: true },
+			);
+		};
 		const tick = () => {
 			try {
 				const found = ownRun(sid);
@@ -534,49 +584,9 @@ export default function (pi: ExtensionAPI) {
 				const now = new Date();
 				const el = Math.floor(elapsedMin(evs, key, now));
 				const bk = bookedMin(evs, key) ?? 0;
-				const pct = bk ? Math.floor((el / bk) * 100) : 0;
-				// Same shape as other plugins' footer lines: dot, icon, grey "name:", value. Dot: grey paused, green/yellow/red by booking use.
-				const dot = !running ? "\x1b[38;5;243m○" : pct >= 100 ? "\x1b[31m●" : pct >= 80 ? "\x1b[33m●" : "\x1b[32m●";
-				// Nerd Font glyphs only with STRATEGIUM_GLYPHS=1; emoji otherwise.
-				const nf = process.env.STRATEGIUM_GLYPHS === "1";
-				const phase = pct >= 100 ? 4 : pct >= 80 ? 3 : pct >= 50 ? 2 : pct >= 25 ? 1 : 0;
-				// The world is calm, a meteor falls, it burns, and past the booking it is purged.
-				// Glyphs drawn and checked in Cascadia Code NF: md-earth F01E7, md-meteor F0629, md-fire F0238, md-nuke F06A4.
-				const stageColor = ["39", "39", "214", "202", "160"][phase];
-				const stageGlyph = (nf
-					? ["\u{f01e7}", "\u{f01e7}", "\u{f0629}", "\u{f0238}", "\u{f06a4}"]
-					: ["🌍", "🌍", "🌠", "🔥", "💥"])[phase];
-				const stage = `\x1b[38;5;${stageColor}m${stageGlyph}${nf ? " " : ""}\x1b[39m`;
-				// Gold planet (256-colour 214), reset right after so the rest of the line keeps its colours.
-				// Nerd Font md-* glyphs draw two cells wide but count as one, so they get an extra space (seen in the terminal).
-				const planet = `\x1b[38;5;214m${nf ? "\u{f0018} " : "🪐"}\x1b[39m`;
-				// A run without a booking only counts time. A timed run with no booking today waits for its new shift.
-				const value = run.untimed && bookedMin(evs, key) === undefined
-					? running ? `${el} min` : "paused"
-					: bookedMin(evs, key) === undefined
-						? "new day: /strategium resume"
-						: `${stage} ${el}/${bk} min (${pct}%)${running ? "" : " paused"}`;
-				// Where the run is: a seal waiting for the user (⏳, md-timer_sand F051F, in yellow), a return (↩, md-undo
-				// F054C) or just the station. Codepoints checked in the Nerd Fonts glyphnames.json.
-				const w = run.where;
-				const where = !w
-					? ""
-					: w.seal
-						? ` · \x1b[33m${nf ? "\u{f051f} " : "⏳"} seal ${w.seal}\x1b[39m`
-						: ` · ${w.back ? (nf ? "\u{f054c}  " : "↩ ") : ""}${w.station}`;
-				ctx.ui.setStatus("strategium", `${dot}\x1b[39m ${planet} \x1b[38;5;248mstrategium: \x1b[39m${key}${where} · ${value}`);
-				if (!running) return;
-				// Only the owning session alerts for its key, so each alert fires once.
-				const p = dueAlert(evs, key, now);
-				if (p === undefined) return;
-				append(file, { ts: nowIso(), event: "alert", key, p });
-				ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}`, p === 100 ? "warning" : "info");
-				const alarmError = signal(String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`);
-				if (alarmError) ctx.ui.notify(`Strategium: ${alarmError}`, "warning");
-				pi.sendMessage(
-					{ customType: "strategium-timer", content: `TIMER ${p}% ${key} ${el}/${bk} min`, display: true, attribution: "agent" },
-					{ deliverAs: "aside", triggerTurn: true },
-				);
+				ctx.ui.setStatus("strategium", renderFooter(run, evs, running, el, bk));
+				// A paused run never alerts.
+				if (running) maybeAlert(file, evs, key, now, el, bk);
 			} catch (err) {
 				ctx.ui.notify(`Strategium timer: ${err instanceof Error ? err.message : String(err)}`, "warning");
 			}
