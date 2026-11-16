@@ -104,16 +104,16 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 | Return | Trigger | Target | Budget |
 |---|---|---|---|
 | **Recon** | the map of the code is wrong: a file the scouts missed, a helper that is not there | one more `scout` with that exact gap, never a full sweep again | 1 per run |
-| **Palimpsest** | the plan is wrong: scope beyond the ticket, slices that do not cover the acceptance criteria, or a slice whose acceptance check cannot be satisfied as written | the same `librarian` scrapes the remaining work and writes it again; what already passed stays underneath | 1 per run |
+| **Redraft** | the plan is wrong: scope beyond the ticket, slices that do not cover the acceptance criteria, or a slice whose acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work; what already passed stays as it is | 1 per run |
 | **Rally** | the code is wrong: acceptance check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with the failure report, never the previous report | 2 rounds per slice, then one `veteran` run |
 | **Retrial** | the fixed code needs a new look | the `inquisitor` again, then `sonic` for the checks | 2 rounds per Merge bar item, then the item stays FAIL |
 | **Stand down** | the budget is spent, or the failure is not in the code: the ticket is wrong, the environment is broken, a theatre is missing | the user, with the open items and what was tried | — |
 
-- **Rally or palimpsest:** if the code can satisfy the slice's acceptance check as written, it is a rally; if it cannot, the slice was cut wrong and it is a palimpsest. Never spend a rally on a slice that cannot pass.
+- **Rally or redraft:** if the code can satisfy the slice's acceptance check as written, it is a rally; if it cannot, the slice was cut wrong and it is a redraft. Never spend a rally on a slice that cannot pass.
 - **A return past a granted seal breaks the seal**: ask for it again when the flow reaches it (`[seal] UI (2)`). The user may waive it when the change does not touch what was sealed.
 - **Reopen the station you return to**: `todo append` its items to that phase and `todo start` its task, so the panel shows the run going back.
 - **A return never rewrites what already passed**: Merge bar items that were PASS stay PASS.
-- A slice rewritten by a palimpsest is a new slice with its own rally budget.
+- A slice rewritten by a redraft is a new slice with its own rally budget.
 
 ## Stations
 
@@ -136,7 +136,7 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 - One `librarian` agent with the ticket text (acceptance criteria verbatim) and `local://<KEY>-auspex.md`; it writes `local://<KEY>-plan.md` (Spec, Slices, Merge bar).
 - Challenge gaps: scope beyond the ticket, slices without a check. Fixes go back to the same librarian (`write agent://<id>`).
 - `[seal] Plan`: show the slices and the Merge bar. Nothing is built before the OK.
-- The plan can be rewritten once with a palimpsest (see Returns). The Merge bar items that were already PASS stay PASS.
+- The plan can be redrafted once (see Returns). The Merge bar items that were already PASS stay PASS.
 
 ### 3. Deployment [captain]
 - Branch `<type>/<KEY>-<short-name>` from `origin/main` in the main checkout.
@@ -150,14 +150,14 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 - When a slice reports done, run one `apothecary` with the slice's spec criteria, new test files and production paths, never the battle-brother's report. It runs in its own throwaway pod, never in a directory another agent is using: `git worktree add --detach ../<repo>-worktrees/<KEY>-apo HEAD`, copy the slice's changed and untracked files into it (`git ls-files -m -o --exclude-standard`), add the `node_modules` link, and remove the pod afterwards (link first).
 - Survivors or weak tests → a rally: a `battle-brother` fix run with the apothecary table (see Returns).
 - A slice that fails twice (acceptance check red, or two fix runs that leave survivors) → one `veteran` run (same brief, plus both failure reports). Still failing → stand down and show the user. Medium is the default for code because higher effort did not reliably pass more tests in published coding benchmarks; high is spent only where medium visibly failed.
-- A slice whose acceptance check cannot be satisfied as written is not a rally: rewrite it with a palimpsest (see Returns) instead of spending another round.
+- A slice whose acceptance check cannot be satisfied as written is not a rally: redraft it (see Returns) instead of spending another round.
 - `[seal] Commit` only if chosen in Muster.
 
 ### 5. Inquisition [inquisitor] → seal UI
 - Commit each slice on its slice branch with the eval `commit` namespace (`wip(<scope>): <slice> (<KEY>)`), then `git merge --no-ff` the slice branches into the ticket branch. A conflict → one `task` agent resolves it. With the Commit seal, ask before these commits.
 - One `inquisitor` on `origin/main..HEAD` with `local://<KEY>-plan.md`. Add one `security-reviewer` in the same batch only if the diff touches auth, external input, secrets or network exposure.
 - BLOCKING findings or FAIL items → a rally with all of them, then a retrial by the inquisitor. Max 2 rounds; then the item stays FAIL and the run shows the open items (see Returns).
-- A FAIL item that shows the slice's acceptance check was wrong, not the code, is a palimpsest (see Returns), not another rally.
+- A FAIL item that shows the slice's acceptance check was wrong, not the code, is a redraft (see Returns), not another rally.
 - One `sonic` agent runs the repo's full check commands (from the auspex file) and reports exact numbers.
 - One `task` agent, read-only: "Read skill://strategium-study and follow it for <KEY> on origin/main..HEAD; write to local://<KEY>-study.md; change no files", plus the theatre's additions for study notes.
 - `[seal] UI` (UI tickets): run the app and open the changed screen in a visible browser so the user can click through it.

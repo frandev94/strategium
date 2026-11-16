@@ -62,12 +62,12 @@ A run goes back instead of forward, and every return has a trigger, a target and
 | Return | Trigger | Target | Budget |
 |---|---|---|---|
 | **Recon** | the map of the code is wrong | one more `scout` with that exact gap | 1 per run |
-| **Palimpsest** | the plan is wrong, or a slice's acceptance check cannot be satisfied as written | the same `librarian` scrapes the remaining work and writes it again | 1 per run |
+| **Redraft** | the plan is wrong, or a slice's acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work | 1 per run |
 | **Rally** | the code is wrong: check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with the failure report | 2 rounds per slice, then one `veteran` run |
 | **Retrial** | the fixed code needs a new look | the `inquisitor` again | 2 rounds per Merge bar item |
 | **Stand down** | the budget is spent, or the failure is not in the code | you, with the open items | — |
 
-If the code can satisfy the slice's check as written, it is a rally; if it cannot, the slice was cut wrong and it is a palimpsest. A return past a granted seal breaks the seal, and it is asked for again. What already passed stays passed.
+If the code can satisfy the slice's check as written, it is a rally; if it cannot, the slice was cut wrong and it is a redraft. A return past a granted seal breaks the seal, and it is asked for again. What already passed stays passed.
 
 ## Install
 
