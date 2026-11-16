@@ -1,0 +1,190 @@
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const lockPath = (dir: string, key: string) => join(dir, "claims", `${key.replace(/[^\w.-]/g, "_")}.lock`);
+const holder = (lock: string) => {
+	try {
+		return readFileSync(lock, "utf8");
+	} catch {
+		return undefined;
+	}
+};
+
+/**
+ * Claim `key` for session `sid` with an exclusive create, so two sessions starting the same ticket at once
+ * cannot both win. A live holder keeps it.
+ * `takeover` (the holder crashed) is the holder's id as reported by the refusal (its last 8 characters are
+ * enough). Under an exclusive `<lock>.force` guard the lock is replaced only if it still names that holder:
+ * a compare-and-swap, so of several sessions taking over the same dead holder exactly one wins, and a holder
+ * that changed in between is never stolen.
+ */
+export function claim(dir: string, key: string, sid: string, takeover?: string): void {
+	const lock = lockPath(dir, key);
+	mkdirSync(join(dir, "claims"), { recursive: true });
+	const create = () => writeFileSync(lock, sid, { flag: "wx" });
+	try {
+		return create();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+	}
+	if (holder(lock) === sid) return;
+	const held = () =>
+		new Error(
+			`${key} is held by omp session ${holder(lock)?.slice(-8)}; end it there, or take it over with that id if that session is gone`,
+		);
+	if (!takeover) throw held();
+	const guard = `${lock}.force`;
+	try {
+		writeFileSync(guard, sid, { flag: "wx" });
+	} catch {
+		throw held();
+	}
+	try {
+		const now = holder(lock);
+		if (!now || !now.endsWith(takeover)) throw held();
+		rmSync(lock, { force: true });
+		create();
+	} finally {
+		rmSync(guard, { force: true });
+	}
+}
+
+/** True while `sid` holds `key`; a session checks it before acting on its ticket. */
+export function holds(dir: string, key: string, sid: string): boolean {
+	return holder(lockPath(dir, key)) === sid;
+}
+
+/** Release `key` if `sid` holds it. */
+export function release(dir: string, key: string, sid: string): void {
+	if (holds(dir, key, sid)) rmSync(lockPath(dir, key), { force: true });
+}
+
+/**
+ * `prior`: minutes worked on `key` today before tracking started (estimate, set by `begin`).
+ * `adjust` events carry a manual correction in `prior` (plus or minus minutes, set by `add`).
+ */
+export type Ev = {
+	ts: string;
+	event: "start" | "stop" | "alert" | "adjust";
+	key: string;
+	booked?: number;
+	prior?: number;
+	p?: number;
+};
+const isSpan = (e: Ev) => e.event === "start" || e.event === "stop";
+
+export const THRESHOLDS = [50, 80, 100];
+
+const pad = (n: number) => String(n).padStart(2, "0");
+const ms = (ts: string) => new Date(ts).getTime();
+
+/** Minutes spent on `key`: every `prior` and adjustment, plus every start->stop span; an open start runs to `now`. */
+export function elapsedMin(evs: Ev[], key: string, now: Date): number {
+	let total = 0;
+	let open: number | undefined;
+	for (const e of evs) {
+		if (e.key !== key) continue;
+		if (e.event === "start" || e.event === "adjust") total += (e.prior ?? 0) * 60_000;
+		if (e.event === "start" && open === undefined) open = ms(e.ts);
+		else if (e.event === "stop" && open !== undefined) {
+			total += ms(e.ts) - open;
+			open = undefined;
+		}
+	}
+	if (open !== undefined) total += now.getTime() - open;
+	return Math.max(0, total / 60_000);
+}
+
+/** `booked` of the last start of `key` that carries one. */
+export function bookedMin(evs: Ev[], key: string): number | undefined {
+	for (let i = evs.length - 1; i >= 0; i--) {
+		const e = evs[i];
+		if (e.key === key && e.event === "start" && e.booked !== undefined) return e.booked;
+	}
+	return undefined;
+}
+
+/** Keys whose last start/stop event is a start (several when tickets run in parallel). */
+export function openKeys(evs: Ev[]): string[] {
+	const last = new Map<string, string>();
+	for (const e of evs) if (isSpan(e)) last.set(e.key, e.event);
+	return [...last].filter(([, ev]) => ev === "start").map(([k]) => k);
+}
+
+/** Minutes during which two or more keys were open at once (events in time order, as `load` returns them). */
+export function overlapMin(evs: Ev[], now: Date): number {
+	const open = new Set<string>();
+	let total = 0;
+	let since = 0;
+	for (const e of evs.filter(isSpan)) {
+		const t = ms(e.ts);
+		if (open.size >= 2) total += t - since;
+		since = t;
+		if (e.event === "start") open.add(e.key);
+		else open.delete(e.key);
+	}
+	if (open.size >= 2) total += now.getTime() - since;
+	return total / 60_000;
+}
+
+/** Highest newly crossed threshold, or undefined. After a gap only the highest fires, once. */
+export function dueAlert(evs: Ev[], key: string, now: Date): number | undefined {
+	const booked = bookedMin(evs, key);
+	if (!booked) return undefined;
+	const el = elapsedMin(evs, key, now);
+	let reached = 0;
+	for (const p of THRESHOLDS) if (el >= (booked * p) / 100) reached = p;
+	let alerted = 0;
+	for (const e of evs) if (e.key === key && e.event === "alert" && (e.p ?? 0) > alerted) alerted = e.p ?? 0;
+	return reached > alerted ? reached : undefined;
+}
+
+/** Work blocks of the day; HH:MM times, an open block ends in "now". */
+export function blocks(evs: Ev[], now: Date): { key: string; start: string; end: string; min: number }[] {
+	const out: { key: string; start: string; end: string; min: number }[] = [];
+	const open = new Map<string, string>();
+	for (const e of evs) {
+		if (e.event === "start" && !open.has(e.key)) open.set(e.key, e.ts);
+		else if (e.event === "stop" && open.has(e.key)) {
+			const s = open.get(e.key) as string;
+			out.push({ key: e.key, start: s.slice(11, 16), end: e.ts.slice(11, 16), min: Math.floor((ms(e.ts) - ms(s)) / 60_000) });
+			open.delete(e.key);
+		}
+	}
+	for (const [key, s] of open)
+		out.push({ key, start: s.slice(11, 16), end: "now", min: Math.floor((now.getTime() - ms(s)) / 60_000) });
+	return out;
+}
+
+export function dayFile(dir: string, d: Date): string {
+	return join(dir, `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.jsonl`);
+}
+
+/**
+ * Day events in time order. A gap closed at a session's last heartbeat is appended late with an earlier timestamp,
+ * so the file is not always chronological; the sort is stable, so same-second events keep their file order.
+ */
+export function load(file: string): Ev[] {
+	if (!existsSync(file)) return [];
+	return readFileSync(file, "utf8")
+		.split(/\r?\n/)
+		.filter(l => l.trim())
+		.map(l => JSON.parse(l) as Ev)
+		.sort((a, b) => ms(a.ts) - ms(b.ts));
+}
+
+export function append(file: string, ev: Ev): void {
+	appendFileSync(file, `${JSON.stringify(ev)}\n`);
+}
+
+/** Local time with offset, seconds precision (toISOString is UTC). */
+export function nowIso(d: Date = new Date()): string {
+	const off = -d.getTimezoneOffset();
+	const sign = off >= 0 ? "+" : "-";
+	const a = Math.abs(off);
+	return (
+		`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+		`T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+		`${sign}${pad(Math.floor(a / 60))}:${pad(a % 60)}`
+	);
+}

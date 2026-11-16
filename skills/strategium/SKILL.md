@@ -1,0 +1,151 @@
+---
+name: strategium
+description: Use when running /strategium <ticket> or asked to work a ticket in orchestrator mode; the main session only plans, delegates to scout/librarian/battle-brother/apothecary/inquisitor/sonic agents and runs the user's seals and the booking timer. A theatre skill adds the organisation's systems.
+---
+
+# Strategium (orchestrator mode for one ticket)
+
+The main session is the **Captain** in the Strategium. It plans, delegates, guards the seals and keeps the theatre's systems in order. The user is the **Chapter Master**: only they grant the purity seals. Space-marine words are for station names, agent names, todo items and chat alerts only. Ticket, MR and code texts stay plain and professional.
+
+## Theatre
+
+The prompt names a theatre skill (e.g. `skill://strategium-<name>`), or says "no theatre". Read the theatre skill first; if it cannot be read, tell the user and run with no theatre. The theatre supplies the steps marked **[theatre]**:
+- **Muster:** the work source, the booked minutes, ticket text and acceptance criteria, status changes, chat language.
+- **Repo:** where repos live.
+- **Delivery:** commit, MR and pipeline conventions.
+- **Records:** where the log goes; how time is booked.
+- **House rules:** the rules that override this skill.
+- **Extra skills:** skills that briefs must name on top of the core's (per slice kind, study notes).
+
+With no theatre, ask the user for the booked minutes and the acceptance criteria, skip all external writes, and stop after the UI seal with a commit.
+
+## Requirements
+
+- Plugin `agent-skills@addy-agent-skills`, which provides the skills the agents autoload and the briefs name. Install it with `omp plugin marketplace add addyosmani/agent-skills` and then `omp plugin install agent-skills@addy-agent-skills`.
+- Install or check everything with `/skill:strategium-setup` (plugin link, dependencies, tools, `.env`).
+- Agents name a Claude model first, then fall back (another vendor where it helps, then the role aliases `@plan`, `@task`, `@slow`; the bundled agents use `@smol`), so each machine's `modelRoles` decides when the preferred provider is missing.
+- Optional: env `STRATEGIUM_THEATRE` (default theatre for `/strategium`) and env `STRATEGIUM_ALARM` (a command to run as the alarm sound).
+
+## Captain's rules
+
+- Never edit product code or tests, and never run builds or test suites. Repo work goes to agents (`task` tool with `agent:` set). The plugin blocks `edit`/`write`/`ast_edit` on the run's repo and its `-worktrees` folder in the main session; never work around it through bash.
+- Allowed for the Captain: read and grep; git read commands, `git worktree add/remove`, `git merge` of slice branches, `git reset --soft`; commits through the eval `commit` namespace; the `strategium` tool; writing `local://` files and the theatre's records.
+- Every todo item starts with the agent that does it: `[captain]`, `[scout]`, `[librarian]`, `[battle-brother]`, `[veteran]`, `[apothecary]`, `[inquisitor]`, `[security-reviewer]`, `[sonic]`, `[task]`, `[seal]` (waits for the user). Todo phases are the stations below, in order.
+- Glyph todo tags: only when the prompt says "Use glyph todo tags" (the user's terminal has a Nerd Font), put the agent's glyph before its name, e.g. `󰗚 librarian · Plan remaining work as slices → local://<KEY>-plan.md`. Copy glyphs from this table only; never guess a codepoint. Keep the name next to the glyph. Never put glyphs in tickets, MRs, commits or code.
+
+  | Tag | Glyph | Nerd Font name |
+  |---|---|---|
+  | captain | 󰡗 | md-chess_king U+F0857 |
+  | scout | 󰐷 | md-radar U+F0437 |
+  | librarian | 󰗚 | md-book_open_page_variant U+F05DA |
+  | battle-brother | 󱢾 | md-shield_sword U+F18BE |
+  | veteran | 󰞇 | md-sword_cross U+F0787 |
+  | apothecary | 󰛯 | md-medical_bag U+F06EF |
+  | inquisitor | 󰊛 | md-gavel U+F029B |
+  | security-reviewer | 󰶚 | md-shield_search U+F0D9A |
+  | sonic | 󰚌 | md-skull U+F068C (servo-skull) |
+  | task | 󰑴 | md-school U+F0474 |
+  | seal | 󰑺 | md-seal U+F047A |
+- Agents:
+
+  | Role | `agent:` | Preferred model / effort (fallback) |
+  |---|---|---|
+  | Scouts | `scout` | `@smol` / medium (read-only, no bash, cannot write files) |
+  | Librarian | `librarian` | claude-opus-5-5 / high (`@plan`) |
+  | Battle-Brother | `battle-brother` | claude-sonnet-5-5 / medium (`@task`) |
+  | Veteran | `veteran` | claude-sonnet-5-5 / high (`@task`); escalation only |
+  | Apothecary | `apothecary` | claude-sonnet-5-5 / high (`@task`) |
+  | Inquisitor | `inquisitor` | claude-opus-5-5 / high (gpt-6-astra, then `@slow`) |
+  | Sentinel | `security-reviewer` | bundled, `@slow` unless overridden |
+  | Servitor | `sonic` | `@smol` / medium |
+  | Adept | `task` | `@task` / auto |
+
+  Never use agents with edit tools as reviewers (e.g. plugin `code-reviewer`, `test-engineer`, `security-auditor`).
+- Custom agents autoload their skills. Every brief still names any extra skill to READ (`Read skill://<name> first and follow it`) and asks for a final `Skills used` section.
+- omp restarts and plugin reloads abort every running agent and every supervised service (dev servers, mocks). Before one, send running agents "Wrap up: stop at a safe point, write your state to local://<KEY>-<agent>-state.md, report"; after it, re-spawn each from that file (or `history://<old id>` tail) and clean up locks or servers they left.
+- Heavy checks (full test suites, e2e, builds) run in one worktree one agent at a time; the Captain serializes them. Before an agent waits on a lock, check who holds it; an agent waiting on a lock looks stalled in `proc://`.
+- `proc://` progress percentages are self-reported by the agent, not measured; judge progress by its reports and files, not the number.
+- Call `strategium` `attention` with a one-line message whenever the user must act and no `ask` is open: a seal is ready (plan, UI, MR), a blocker or a failed check needs a decision, a pipeline finished, the run ended. `ask` already signals on its own. Do not use it for progress updates.
+
+## Timer (servo-skull)
+
+Tool `strategium`: `begin | repo | start | stop | status | report | end`. User commands: `/strategium pause | resume | status | end`. The footer shows `● 🪐 strategium: <KEY> <stage> <elapsed>/<booked> min (<pct>%)`: the dot is green under 80 %, yellow from 80 %, red from 100 %, grey `○ … paused` while paused; the stage icon follows the booking: blue world under 50 %, amber meteor from 50 %, orange fire from 80 %, red nuke from 100 %. With `STRATEGIUM_GLYPHS=1` the icons are Nerd Font glyphs. Elapsed includes the `spent` minutes given to `begin`, and `report` lists them apart as `PRIOR` (an estimate, not a measured block).
+
+Parallel tickets: each omp session owns one run (its ticket, edit guard, footer and alerts), held through an atomic claim. To work two tickets at once, run each in its own omp session; both timers count at the same time. A `begin` for a ticket another session holds fails and names that session's id. Closing a session pauses its ticket and releases the claim, so another session's `begin` can take it. Only when the user says the holder crashed, pass that id as `takeover` (begin or end); it replaces the holder only if it is still that one. A session whose ticket was taken over drops its run and stops acting on it. `status` lists every run; `report` adds an `OVERLAP` line with the minutes two tickets ran at once, which the user splits before booking time.
+
+Shifts: a booking is per day, so each day is its own shift. A ticket that spans several days keeps its run (ticket, repo, claim); every day it counts from 0 against that day's booking. On a new day `/strategium resume` (or `start` without `booked`) cannot reuse yesterday's booking: the plugin asks the Captain to fetch today's (theatre Muster; not booked today → tell the user and stop), then call `start` with `booked`. `/strategium resume <min>` or `start` with `booked` sets it directly.
+Manual time: `/strategium add <min>` (tool action `add`, `minutes`) adds minutes to today's time for the ticket, or removes them with a negative number (e.g. work done away from the keyboard, a forgotten pause). Only for minutes the user names. They count toward the alerts; `report` shows them as `ADJUST` and in each ticket's `worked` total.
+
+Every minute the plugin checks the booking. At 50 %, 80 % and 100 % it plays a sound and posts `TIMER <p>% <KEY> <elapsed>/<booked> min` into the session. On that message:
+- **50 %:** tell the user.
+- **80 %:** tell the user and compare with the pending todo items. If the rest will not fit, say so now, with the reason.
+- **100 % (extraction):**
+  - start no new agents;
+  - send running agents (`write agent://<id>`) "Wrap up: stop at a safe point, do not commit, report state";
+  - call `strategium` `stop`;
+  - report what is done and what is left;
+  - continue only on the user's explicit order.
+- A standing order recorded in Muster ("continue past the booking") replaces the extraction steps for that run: on TIMER 100 % tell the user in one line, record the order with the reason, and keep going; no wrap-up messages, no `stop`. The user withdraws it at any time.
+
+## Resume (ticket already in progress)
+
+When the ticket has commits or uncommitted work from an earlier session, run the stations with these changes:
+- Muster: record the starting state (`git log origin/main..HEAD --oneline`, `git status --short | wc -l`) in `local://<KEY>-auspex.md`.
+- Auspex: scouts map what is done and what is left, not the whole codebase. Large transcripts are read by tail range only (e.g. `:-300`), and a scout writes its partial result before reading more.
+- Briefing: the librarian plans only the remaining work; slice 1 finishes and verifies the in-flight work so the tree is green first.
+- Deployment: no new branch and no drop pods over a dirty tree; slices run in place, one at a time, unless the work splits into files with no overlap.
+- Inquisition: commits that are already clean Conventional Commits stay; no `git reset --soft origin/main`. New work goes in as new commits on top.
+- Seals as the user chooses (e.g. UI and Commit per card).
+
+## Stations
+
+### 0. Muster [captain]
+0. Requirements: `read skill://test-driven-development`, `skill://spec-driven-development` and `skill://code-review-and-quality`. If any read fails, stop and tell the user to install `agent-skills@addy-agent-skills` (see Requirements). Agents silently skip unknown autoload skills, so this check is the only guard.
+   Then read every skill the theatre lists under **Extra skills**. A missing one blocks the kind of work it covers (all slices, UI slices, study notes): tell the user, point to `/skill:strategium-setup`, and do not start that work without it. Never drop it from a brief silently.
+1. **[theatre]** Booked minutes, ticket text, acceptance criteria and status change. Not booked → stop.
+2. Seals: ask with `ask` which seals apply. Defaults checked: Plan, UI (only if the ticket changes UI), MR. Optional: before each commit. Record them as `[seal]` todo items.
+3. Time already worked: minutes spent on this ticket today that the timer has not tracked (`strategium` `status` shows what it already has). **[theatre]** proposes a figure from its records; with no theatre, propose 0. Confirm it with the user in the same `ask` as the seals (editable number).
+4. `strategium` `begin` with `key`, `booked`, `spent` and `theatre`. If elapsed is already ≥ the booking, apply the 100 % rule now, before any agent starts: say so with the reason and continue only on the user's explicit order.
+5. `todo init` with the stations below and their tagged items.
+
+### 1. Auspex scan [scout]
+- **[theatre]** Find the repo. Then call `strategium` `repo` with its absolute path; this arms the edit guard.
+- 1–3 `scout` agents in one `task` batch, distinct focuses: code paths the ticket touches; existing helpers, patterns and tests to reuse; repo conventions (MR template, commit rules, i18n, test and check commands, repo skills). Briefs give file ranges for anything large (transcripts, logs, generated files), never "read the whole file".
+- The Captain merges their outputs into `local://<KEY>-auspex.md`.
+
+### 2. Briefing [librarian] → seal Plan
+- One `librarian` agent with the ticket text (acceptance criteria verbatim) and `local://<KEY>-auspex.md`; it writes `local://<KEY>-plan.md` (Spec, Slices, Merge bar).
+- Challenge gaps: scope beyond the ticket, slices without a check. Fixes go back to the same librarian (`write agent://<id>`).
+- `[seal] Plan`: show the slices and the Merge bar. Nothing is built before the OK.
+
+### 3. Deployment [captain]
+- Branch `<type>/<KEY>-<short-name>` from `origin/main` in the main checkout.
+- Each `parallel: yes` slice gets a drop pod: `git worktree add ../<repo>-worktrees/<KEY>-<slice> -b <branch>-<slice>`, never inside the repo or a workspace glob.
+- For node repos, add a `node_modules` junction (Windows: `cmd /c mklink /J`) or symlink to the main checkout's `node_modules`.
+- `parallel: no` slices run in the main checkout, one at a time.
+
+### 4. Engagement [battle-brother] [apothecary]
+- Parallel slices: one `task` batch with `agent: battle-brother`, one per worktree. Sequential slices: one after the other.
+- Each brief: slice text, directory, files, acceptance check, extra skills to read (`strategium-ui` for UI slices; `source-driven-development` for external APIs/libraries; `debugging-and-error-recovery` when fixing failures; plus the theatre's **Extra skills** for that kind of slice), and "commit nothing".
+- When a slice reports done, run one `apothecary` with the slice's spec criteria, new test files and production paths, never the battle-brother's report. It runs in its own throwaway pod, never in a directory another agent is using: `git worktree add --detach ../<repo>-worktrees/<KEY>-apo HEAD`, copy the slice's changed and untracked files into it (`git ls-files -m -o --exclude-standard`), add the `node_modules` link, and remove the pod afterwards (link first).
+- Survivors or weak tests → a `battle-brother` fix run with the apothecary table.
+- A slice that fails twice (acceptance check red, or two fix runs that leave survivors) → one `veteran` run (same brief, plus both failure reports). Still failing → stop and show the user. Medium is the default for code because higher effort did not reliably pass more tests in published coding benchmarks; high is spent only where medium visibly failed.
+- `[seal] Commit` only if chosen in Muster.
+
+### 5. Inquisition [inquisitor] → seal UI
+- Commit each slice on its slice branch with the eval `commit` namespace (`wip(<scope>): <slice> (<KEY>)`), then `git merge --no-ff` the slice branches into the ticket branch. A conflict → one `task` agent resolves it. With the Commit seal, ask before these commits.
+- One `inquisitor` on `origin/main..HEAD` with `local://<KEY>-plan.md`. Add one `security-reviewer` in the same batch only if the diff touches auth, external input, secrets or network exposure.
+- BLOCKING findings or FAIL items → one `battle-brother` fix round with all of them, then the inquisitor again. Max 2 rounds; then stop and show the open items.
+- One `sonic` agent runs the repo's full check commands (from the auspex file) and reports exact numbers.
+- One `task` agent, read-only: "Read skill://strategium-study and follow it for <KEY> on origin/main..HEAD; write to local://<KEY>-study.md; change no files", plus the theatre's additions for study notes.
+- `[seal] UI` (UI tickets): run the app and open the changed screen in a visible browser so the user can click through it.
+- After the seal, turn the wip commits into Conventional Commits with `git reset --soft origin/main` + the eval `commit` namespace (the branch is unpushed).
+
+### 6. Extraction [captain] → seal MR
+- **[theatre]** Delivery: MR title and description, including a `## Merge bar` checklist ticked from the inquisitor's PASS items; show it to the user: `[seal] MR`. After the OK: push once, open the MR as draft, watch the pipeline as a background bash job, and mark it ready when green.
+- Remove the drop pods: junction or symlink first, then `git worktree remove`, then the slice branches.
+
+### 7. After-action report [captain]
+- `strategium` `end`.
+- **[theatre]** Records.
+- `strategium` `report` gives the day's real blocks for time booking; the theatre says when and how to book them.

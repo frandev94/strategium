@@ -1,0 +1,10 @@
+{
+  "name": "strategium",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "omp plugin: orchestrator-mode ticket work with delegated agents, seals and a booking timer",
+  "scripts": { "test": "bun test" },
+  "omp": { "extensions": ["./extensions/strategium/index.ts"] }
+}
