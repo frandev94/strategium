@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { editTargets } from "./index";
+import { bashBlock, checkSlices, editTargets } from "./index";
 
 // The edit tool has five wire contracts; the guard must see the file in every one of them,
 // or the Captain edits the repository it is not allowed to touch.
@@ -46,5 +46,149 @@ describe("files a tool call would write", () => {
 		expect(editTargets("write", { path: "src/a.ts", content: "x" })).toEqual(["src/a.ts"]);
 		expect(editTargets("read", { path: "src/a.ts" })).toEqual([]);
 		expect(editTargets("edit", {})).toEqual([]);
+	});
+});
+
+describe("bash during a run", () => {
+	const allowed = [
+		"git log --oneline origin/main..HEAD",
+		'git commit -m "make it build"',
+		'bun "$(realpath skill://strategium)/todo.ts" --glyphs <<\'EOF\'\nMuster\n  captain: run bun test\nEOF',
+		"git diff --stat 2>&1 | tail -3",
+		"ls x > /dev/null",
+		'git show HEAD > "$TEMP/agent-previews/x.diff"',
+		"omp config set task.isolation.enabled true",
+		"git worktree add ../r-worktrees/k-s1 -b b",
+	];
+	test.each(allowed)("allows %s", cmd => expect(bashBlock(cmd)).toBeUndefined());
+
+	test.each(["bun test", "cd x && npm run build", "pnpm test", "npx tsc", "pytest -q"])("blocks the runner %s", cmd =>
+		expect(bashBlock(cmd)).toContain("runs no builds or test suites"),
+	);
+
+	const writes = [
+		"rm -f README.md",
+		"echo x > src/a.ts",
+		"cat a | tee b",
+		"sed -i s/a/b/ f",
+		"git checkout -- f",
+		"git restore f",
+		"git reset --hard",
+		"git clean -fd",
+		"git stash",
+	];
+	test.each(writes)("blocks the write %s", cmd => expect(bashBlock(cmd)).toContain("writes no files through bash"));
+});
+
+const RUNNER_MSG = "runs no builds or test suites";
+const WRITE_MSG = "writes no files through bash";
+
+describe("bash runners, every alternative", () => {
+	const runners = [
+		"bun test", "bun run build", "bunx tsc", "npx jest", "npm test", "npm t", "npm run x", "npm run-script x", "npm exec x", "npm build",
+		"pnpm test", "yarn build", "tsc -p .", "jest", "vitest run", "pytest", "cargo test", "cargo build", "go test ./...", "go build",
+		"gradle build", "mvn package", "dotnet test", "dotnet build", "playwright test",
+		"a&&bun test", "(bun test)", "`bun test`", "x; bun test", "x | bun test",
+		"bun.cmd test", "npm.cmd test", "pnpm.exe test", "npx.exe x", "bunx.exe x", "cargo.exe test", "go.exe test", "dotnet.exe build",
+		"bun.exe test", "./node_modules/.bin/jest", "node_modules/.bin/tsc -p .", "/usr/bin/pytest", "C:\\tools\\bun.exe test", "node_modules\\.bin\\vitest.cmd run",
+		"CI=1 bun test", "FOO=a BAR=b npx jest", "env NODE_ENV=test bun test", "time bun test", "exec pytest", "if bun test; then x; fi", "x\nbun test",
+		"echo $(bun test)", "xargs jest", "timeout 60 bun test", "sudo npm test",
+		"time -p bun test", "env -i bun test", "xargs -n1 jest",
+		"while true; do bun test; done", "{ bun test; }", "! bun test", "nohup bun test", "if x; then bun test; fi",
+		"if x; then :; else bun test; fi", "if x; then :; elif bun test; then :; fi", "until bun test; do :; done",
+		"timeout -k 5 60 bun test", "xargs -I{} bun test",
+		"nice bun test", "nice -n 5 bun test", "stdbuf -oL bun test", "setsid bun test", "doas npm test", "watch bun test",
+	];
+	test.each(runners)("blocks %s", cmd => expect(bashBlock(cmd)).toContain(RUNNER_MSG));
+
+	test("a runner name inside a word or a quoted string is not a runner", () => {
+		expect(bashBlock("echo tsconfig")).toBeUndefined();
+		expect(bashBlock('git commit -m "run bun test"')).toBeUndefined();
+		expect(bashBlock("echo 'a > b'")).toBeUndefined();
+	});
+
+	test("a runner name that is only an argument, a path component or a pattern is not a runner", () => {
+		for (const cmd of [
+			"cat jest.config.js", "grep -rn jest src", "rg tsc extensions", "git log -- src/tsc.ts", "cat src/tsc.ts", "git log -S tsc",
+			"cat .github/workflows/playwright.yml", "head -5 ./jest", "ls node_modules/.bin/tsc", "echo bun test > /dev/null",
+			"git show HEAD:src/tsc.ts", "git ls-files src/tsc", "ls tests/pytest", "cat ../x/mvn", "grep -n pytest README.md",
+			"git log --grep jest", "find . -name 'jest*'", "cat docs/npm test.md", "ls vitest.config.ts", "git diff -- test/jest/a.ts", "bun.lock test",
+			"command -v jest", "which tsc", "type pytest",
+		]) expect([cmd, bashBlock(cmd)]).toEqual([cmd, undefined]);
+	});
+});
+
+describe("bash writes, every pattern", () => {
+	const writes = [
+		"mv a b", "cp a b", "touch a", "truncate -s0 a", "ln -s a b", "rmdir d", "tee f",
+		"x; rm a", "x & rm a", "(rm a)", "x\nrm a", "echo $(rm a)", "echo `rm a`", "x && mv a b", "x | tee f",
+		"perl -i -pe s/a/b/ f", "perl -pi -e s/a/b/ f", "sed -ni p f", "sed --in-place s/a/b/ f",
+		"git apply p.diff", "git am p.mbox", "git rm f", "git mv a b", "git checkout HEAD -- f",
+		"cat <<EOF > src/a.ts\nx\nEOF", "echo x >& src/a.ts", "echo x >> src/a.ts", "echo x 2> src/a.ts",
+		"git -C ../r reset --hard", "git -c core.x=1 clean -fd", "git -C d -c k=v stash", "git -C d restore f",
+		"git --no-pager reset --hard", "git -p clean -fd",
+		"git checkout .", "git checkout -- .",
+		"git --git-dir=x reset --hard",
+		'echo x > "src/a.ts"', "echo x >> 'src/a.ts'",
+	];
+	test.each(writes)("blocks %s", cmd => expect(bashBlock(cmd)).toContain(WRITE_MSG));
+
+	const allowed = [
+		"git add -A", "git switch main", "git merge --no-ff b", "git branch -D b", "git reset --soft origin/main", "git reset -q", "git reset",
+		"git checkout main", "git checkout -b x", "git -C ../r log", "git -c k=v status", "git commit -m 'x'",
+		'echo x > "${TEMP}/x"', "echo x > $TMP/x", "echo x > $TMPDIR/x", "echo x > /tmp/x", "echo x > %TEMP%/x", "echo x > out://x", "echo x > local://x",
+		"echo x >> /dev/null", "ls 2>&1", "ls 2>&1 >/dev/null", "ls 2>&-",
+		"cat <<-EOF\n\tbun test > a\n\tEOF",
+		"cat <<EOF\nrm -rf x > y\nEOF",
+		"git checkout --detach",
+		"cat <<EOF\nEOFX\nrm f\nEOF",
+		"cat <<EOF\nx\nEOFX\nrm f\nEOF",
+	];
+	test.each(allowed)("allows %s", cmd => expect(bashBlock(cmd)).toBeUndefined());
+});
+
+describe("checkSlices", () => {
+	const s = (id: string, files: string[], parallel = true) => ({ id, parallel, files });
+	test("a folder overlaps its files, a name prefix does not", () => {
+		expect(checkSlices([s("A", ["src"]), s("B", ["src/a.ts"])])).toBe("slices A and B both touch src; mark one parallel: false");
+		expect(checkSlices([s("A", ["src/a.ts"]), s("B", ["src"])])).toContain("both touch");
+		expect(checkSlices([s("A", ["src/a"]), s("B", ["src/ab"])])).toBeUndefined();
+	});
+	test("paths are normalised", () => {
+		for (const f of ["./a", "a/", " a", "a\\"]) expect(checkSlices([s("A", ["a"]), s("B", [f])])).toContain("both touch a;");
+	});
+	test("any file of either slice counts", () => {
+		expect(checkSlices([s("A", ["x", "y"]), s("B", ["z", "y"])])).toContain("both touch y;");
+	});
+	test("sequential slices may share files", () => {
+		expect(checkSlices([s("A", ["a"], false), s("B", ["a"])])).toBeUndefined();
+		expect(checkSlices([s("A", ["a"], false), s("B", ["a"], false)])).toBeUndefined();
+	});
+	test("overlap is found between non-adjacent parallel slices", () => {
+		expect(checkSlices([s("A", ["a"]), s("M", ["m"], false), s("B", ["a"])])).toContain("slices A and B");
+	});
+	test("the first error in the plan's order wins", () => {
+		expect(checkSlices([])).toBe("slices needs at least one slice");
+		expect(checkSlices([s(" ", [])])).toBe("every slice needs an id");
+		expect(checkSlices([s("A", []), s("A", ["a"])])).toBe("slice A lists no files");
+		expect(checkSlices([s("A", ["a"]), s("A", [])])).toBe("duplicate slice id A");
+		expect(checkSlices([s("A", ["a"]), s("A", ["a"])])).toBe("duplicate slice id A");
+	});
+	test.skipIf(process.platform === "linux")("case folds off Linux", () => {
+		expect(checkSlices([s("A", ["Alarm/Vox.ts"]), s("B", ["alarm/vox.ts"])])).toContain("both touch alarm/vox.ts");
+	});
+});
+
+describe("runner binaries by path", () => {
+	test.each(["./node_modules/.bin/jest", "node_modules/.bin/tsc -p .", "/usr/bin/pytest", "bun.exe test", "C:\\tools\\bun.exe test", "node_modules\\.bin\\vitest.cmd run", "./node_modules/.bin/npx.cmd tsc"])(
+		"blocks %s",
+		cmd => expect(bashBlock(cmd)).toContain(RUNNER_MSG),
+	);
+});
+
+describe("checkSlices, a trailing slash", () => {
+	test("a folder written with a trailing slash overlaps the files in it", () => {
+		const s = (id: string, files: string[]) => ({ id, parallel: true, files });
+		expect(checkSlices([s("A", ["src/"]), s("B", ["src/a.ts"])])).toBe("slices A and B both touch src; mark one parallel: false");
 	});
 });

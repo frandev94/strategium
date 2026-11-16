@@ -27,7 +27,18 @@ import { childEnv } from "./env";
 // `untimed`: the run has no booking. Its time is counted, but there are no alerts, no stand down and no new shift.
 // `where`: the station the run is at, read from the todo (see whereFrom), so the footer shows it after a restart too.
 type Where = { station: string; back?: true; seal?: string };
-type Run = { key: string; theatre: string; sid: string; repo?: string; untimed?: true; where?: Where };
+type Slice = { id: string; parallel: boolean; files: string[] };
+// `hidden`: the tools hidden from the Captain for this run, put back when it ends. `slices`: the plan's slices as declared.
+// `launched`: the parallel slices went out together in one task call.
+// `closedBy`: the session closed with the run going, so the next session resumes it.
+type Run = { key: string; theatre: string; sid: string; repo?: string; untimed?: true; where?: Where; hidden?: string[]; slices?: Slice[]; launched?: true; closedBy?: "shutdown" };
+// What the extension reads from the host's session context: the real one has more.
+type SessionCtx = {
+	sessionManager: { getSessionId(): string };
+	ui: { notify(message: string, level?: "info" | "warning" | "error"): void; setStatus(key: string, value: string | undefined): void };
+	setInterval(fn: () => void, ms: number): unknown;
+	agent?: { kind?: string };
+};
 type Phase = { name: string; tasks: { content: string; status: string }[] };
 
 /**
@@ -143,10 +154,14 @@ function startKey(key: string, booked?: number, prior?: number, untimed = false)
 	append(file, { ts: nowIso(), event: "start", key, ...(bk === undefined ? {} : { booked: bk }), ...(prior ? { prior } : {}) });
 }
 
-function stopKey(key: string): boolean {
+// `reason`: "shutdown" marks the stop of a closing session, so the reopened session knows to resume; a stop the user asked for has none.
+type StopEv = Ev & { reason?: "shutdown" };
+
+function stopKey(key: string, reason?: "shutdown"): boolean {
 	const file = openFile(key);
 	if (!file) return false;
-	append(file, { ts: nowIso(), event: "stop", key });
+	const stop: StopEv = { ts: nowIso(), event: "stop", key, ...(reason ? { reason } : {}) };
+	append(file, stop);
 	return true;
 }
 
@@ -218,7 +233,10 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	const untimed = booked === undefined;
 	// Begun again on the same key, the run keeps the station it was at.
 	const keep = mine?.key === key ? mine : undefined;
-	writeRun({ key, theatre, sid, repo: keep ? keep.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}), ...(keep?.where ? { where: keep.where } : {}) });
+	// Begun again on the same key, every stored field stays except the booking mode.
+	const { untimed: _u, ...kept } = keep ?? {};
+	// A run begun under another key still hands its hidden tools on, or end could never restore them.
+	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: keep ? keep.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
 	startKey(key, booked, spent, untimed);
 }
@@ -300,7 +318,8 @@ function alarmCmd(cmd: string): string[] {
 
 /**
  * Run STRATEGIUM_ALARM with the level in STRATEGIUM_P and a desktop-notification text in STRATEGIUM_MSG.
- * Levels: 50 | 80 | 100 for the booking timer, "attention" when the user is needed. Unset → silent.
+ * Levels: 50 | 80 | 100 for the booking timer, "attention" when the user is needed, "theme" when the session's run ends.
+ * Unset → silent.
  * Returns the reason when the alarm could not be started, so it is not a silent no-sound.
  */
 function signal(level: string, msg: string): string | undefined {
@@ -319,6 +338,75 @@ function signal(level: string, msg: string): string | undefined {
 	} catch (err) {
 		return `the alarm failed: ${err instanceof Error ? err.message : String(err)}`;
 	}
+}
+
+// The agents the Captain may spawn during a run.
+const ROSTER = ["scout", "librarian", "battle-brother", "veteran", "apothecary", "inquisitor", "security-reviewer", "sonic", "task"];
+const agentName = (a: string) => a.toLowerCase().split(/[:/]/).pop()!;
+const SLICES_REASON = "Strategium: declare the plan's slices first: strategium action slices, with each slice's id, parallel flag and files.";
+// Tool input arrives as unknown; anything that is not an object reads as empty.
+const asObj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
+
+// Windows and macOS filesystems ignore case; Linux does not.
+const normFile = (f: string) => {
+	const n = f.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+	return process.platform === "linux" ? n : n.toLowerCase();
+};
+const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+
+/** The reason the declared slices are unusable, if any: parallel slices must not share a file. */
+export function checkSlices(slices: Slice[]): string | undefined {
+	if (!slices.length) return "slices needs at least one slice";
+	const ids = new Set<string>();
+	for (const s of slices) {
+		if (!s.id.trim()) return "every slice needs an id";
+		if (ids.has(s.id)) return `duplicate slice id ${s.id}`;
+		ids.add(s.id);
+		if (!s.files.length) return `slice ${s.id} lists no files`;
+	}
+	const parallel = slices.filter(s => s.parallel);
+	for (const [i, a] of parallel.entries()) {
+		for (const b of parallel.slice(i + 1)) {
+			const bFiles = b.files.map(normFile);
+			const file = a.files.map(normFile).find(f => bFiles.some(g => overlaps(f, g)));
+			if (file !== undefined) return `slices ${a.id} and ${b.id} both touch ${file}; mark one parallel: false`;
+		}
+	}
+	return undefined;
+}
+
+// A runner is a command word, never an argument: it starts the command or follows ; & | ( ` or a newline, behind VAR=x
+// assignments and wrappers (env, time, sudo, then...). It may be named by path (./node_modules/.bin/jest, /usr/bin/pytest,
+// C:\tools\bun.exe) and carry .exe or .cmd on Windows.
+const EXT = String.raw`(?:\.exe|\.cmd)?`;
+const RUNNER = new RegExp(
+	String.raw`(?:^|[;&|(\n\x60])\s*` +
+		String.raw`(?:(?:\w+=\S*|(?:env|time|exec|nohup|sudo|xargs|nice|stdbuf|setsid|doas|watch)(?:\s+-\S+(?:\s+\d\S*)?)*|then|do|else|elif|if|while|until|!|\{|timeout(?:\s+-\S+(?:\s+\d\S*)?)*\s+\d\w*)\s+)*` +
+		String.raw`(?:[^\s;&|()\x60"'<>=]*[\\/])?` +
+		String.raw`(?:bun${EXT}\s+(?:test|run)\b|bunx${EXT}\s|npx${EXT}\s|(?:npm|pnpm|yarn)${EXT}\s+(?:test|t|run|run-script|exec|build)\b` +
+		String.raw`|(?:tsc|jest|vitest|pytest|gradle|mvn|playwright)${EXT}\b|(?:cargo|go|dotnet)${EXT}\s+(?:test|build)\b)`,
+);
+const WRITE_WORD = /(^|[;&|(\n]|\$\(|`)\s*(rm|rmdir|mv|cp|touch|truncate|tee|ln)\b/;
+// git's global options (-C dir, -c k=v, --git-dir=x) come before the subcommand and must not hide it.
+const WRITE_GIT = /\bgit\s+(?:(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?|-\w)\s+)*(checkout\s+(\S+\s+)?--(?=\s|$)|checkout\s+\.(?=\s|$)|(restore|reset\s+--hard|clean|stash|apply|am|rm|mv)\b)/;
+// A redirect, unless it goes to a file descriptor, /dev/null or a scratch place.
+const WRITE_REDIRECT = /\d*>>?(?!>)(?!\s*(?:&[\d-]|\/dev\/null\b|["']?(?:\$\{?(?:TEMP|TMP|TMPDIR)\}?|\/tmp\/|%TEMP%|(?:out|local):\/\/)))/;
+
+/**
+ * Why a bash command is not allowed for the Captain during a run: test and build runners, and file writes.
+ * Undefined when it may run.
+ */
+// ponytail: a pattern list, not a shell parser; it stops slips, not a determined workaround.
+export function bashBlock(command: string): string | undefined {
+	// Heredoc bodies are data; quoted strings are blanked, except a quoted redirect target.
+	const cmd = command
+		// The opener line stays (its redirect writes the file); only the body lines go.
+		.replace(/<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2(?=\n|$)/g, "<<HEREDOC$3")
+		.replace(/(>>?\s*)?('[^']*'|"[^"]*")/g, (m, redir) => (redir ? m : '""'));
+	if (RUNNER.test(cmd)) return "Strategium: the Captain runs no builds or test suites. Delegate the check to a sonic agent.";
+	if (WRITE_WORD.test(cmd) || /\bsed\s+(-\w*i|--in-place)/.test(cmd) || /\bperl\s+-\w*i/.test(cmd) || WRITE_GIT.test(cmd) || WRITE_REDIRECT.test(cmd))
+		return "Strategium: the Captain writes no files through bash during a run. Delegate the change to an agent; scratch output may only be redirected into $TEMP.";
+	return undefined;
 }
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
@@ -378,18 +466,93 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 
 export default function (pi: ExtensionAPI) {
 	const z = pi.zod;
-	// Set by session_start; tool and command actions call it so the footer updates at once, not on the
+	// Set by the session handler; tool and command actions call it so the footer updates at once, not on the
 	// next minute. It belongs to this instance: a module loaded twice would cross the sessions.
 	let refreshFooter: (() => void) | undefined;
+	// The latest session context and whether its timer runs: tick reads the session on every call, so a switch to a new session is followed.
+	let live: SessionCtx | undefined;
+	// omp switches sessions by mutating one SessionManager, so the previous id has to be kept as a string.
+	let liveSid: string | undefined;
+	let timerSet = false;
+
+	const HIDDEN_TOOLS = ["edit", "ast_edit"];
+	const bareName = (n: string) => n.replace(/^_+/, "");
+	async function hideCaptainTools(): Promise<string[]> {
+		const active = pi.getActiveTools();
+		const hide = active.filter(n => HIDDEN_TOOLS.includes(bareName(n)));
+		if (hide.length) await pi.setActiveTools(active.filter(n => !hide.includes(n)));
+		return hide;
+	}
+	async function restoreTools(names?: string[]): Promise<void> {
+		if (names?.length) await pi.setActiveTools([...new Set([...pi.getActiveTools(), ...names])]);
+	}
+
+	/** End the session's run. When it was its own, the tools come back and the Strategium theme plays; a takeover end does neither. */
+	async function finish(sid: string, ctx: SessionCtx, key?: string, takeover?: string): Promise<string> {
+		const mine = ownRun(sid);
+		const result = endRun(sid, key, takeover);
+		if (mine && result === `ENDED ${mine.key}`) {
+			await restoreTools(mine.hidden);
+			const err = signal("theme", `${mine.key}: run ended`);
+			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+		}
+		return result;
+	}
+
+	// Only the owning session alerts for its key, so each alert fires once.
+	const maybeAlert = (ctx: SessionCtx, file: string, evs: Ev[], key: string, now: Date, el: number, bk: number) => {
+		const p = dueAlert(evs, key, now);
+		if (p === undefined) return;
+		append(file, { ts: nowIso(), event: "alert", key, p });
+		ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}`, p === 100 ? "warning" : "info");
+		const alarmError = signal(String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`);
+		if (alarmError) ctx.ui.notify(`Strategium: ${alarmError}`, "warning");
+		pi.sendMessage(
+			{ customType: "strategium-timer", content: `TIMER ${p}% ${key} ${el}/${bk} min`, display: true, attribution: "agent" },
+			{ deliverAs: "aside", triggerTurn: true },
+		);
+	};
+	const tick = () => {
+		const ctx = live;
+		if (!ctx) return;
+		try {
+			const sid = sidOf(ctx);
+			const found = ownRun(sid);
+			if (!found) return ctx.ui.setStatus("strategium", undefined);
+			// A gap in our own heartbeats means the machine slept: close the block at the last beat and stay paused.
+			const gap = closeGap(found);
+			if (gap) {
+				const at = gap.slice(11, 16);
+				ctx.ui.notify(
+					`Strategium: ${found.key} paused at ${at}; this session was silent since then (sleep or freeze). /strategium resume to continue.`,
+					"warning",
+				);
+				signal("attention", `${found.key}: paused at ${at} after a silent gap; resume when you are back`);
+			}
+			beat(sid);
+			const file = today();
+			const evs = load(file);
+			const key = found.key;
+			const running = isOpen(key);
+			const now = new Date();
+			const el = Math.floor(elapsedMin(evs, key, now));
+			const bk = bookedMin(evs, key) ?? 0;
+			ctx.ui.setStatus("strategium", renderFooter(found, evs, running, el, bk));
+			// A paused run never alerts.
+			if (running) maybeAlert(ctx, file, evs, key, now, el, bk);
+		} catch (err) {
+			ctx.ui.notify(`Strategium timer: ${err instanceof Error ? err.message : String(err)}`, "warning");
+		}
+	};
 	pi.setLabel("Strategium");
 
 	pi.registerTool({
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run).",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), slices (slices). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). slices (slices: [{id, parallel, files}]: the plan's slices; parallel slices must not share a file; required before any battle-brother).",
 		parameters: z.object({
-			action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention"]),
+			action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "slices"]),
 			key: z.string().optional(),
 			booked: z.number().int().positive().optional(),
 			spent: z.number().int().nonnegative().optional(),
@@ -399,6 +562,7 @@ export default function (pi: ExtensionAPI) {
 			takeover: z.string().optional(),
 			message: z.string().optional(),
 			minutes: z.number().int().optional(),
+			slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()) })).optional(),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
@@ -408,6 +572,9 @@ export default function (pi: ExtensionAPI) {
 					case "begin": {
 						if (!params.key) throw new Error("begin needs key");
 						begin(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover);
+						const run = ownRun(sid)!;
+						const hid = await hideCaptainTools();
+						writeRun({ ...run, hidden: [...new Set([...(run.hidden ?? []), ...hid])] });
 						return text(statusLines());
 					}
 					case "repo": {
@@ -439,13 +606,24 @@ export default function (pi: ExtensionAPI) {
 					case "report":
 						return text(report(params.date));
 					case "end":
-						return text(endRun(sid, params.key, params.takeover));
+						return text(await finish(sid, ctx, params.key, params.takeover));
 					case "attention": {
 						const key = ownRun(sid)?.key;
 						const msg = params.message?.trim() || "Your attention is needed";
 						const err = signal("attention", key ? `${key}: ${msg}` : msg);
 						if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
-						return text(err ? `ERROR ${err}` : `ATTENTION ${msg}`);
+						// Without STRATEGIUM_ALARM the call makes no sound; say so, so the Captain does not count on it.
+						const silent = process.env.STRATEGIUM_ALARM?.trim() ? "" : " (silent: STRATEGIUM_ALARM is not set; see /skill:strategium-setup)";
+						return text(err ? `ERROR ${err}` : `ATTENTION ${msg}${silent}`);
+					}
+					case "slices": {
+						const run = ownRun(sid);
+						if (!run) return text("ERROR no active run in this session");
+						const slices = params.slices ?? [];
+						const err = checkSlices(slices);
+						if (err) return text(`ERROR ${err}`);
+						writeRun({ ...run, slices, launched: undefined });
+						return text(`SLICES ${slices.map(s => s.id + (s.parallel ? " (parallel)" : "")).join(", ")}`);
 					}
 				}
 			} catch (err) {
@@ -504,7 +682,7 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(fullStatus(sid), "info");
 						return;
 					case "end":
-						ctx.ui.notify(endRun(sid), "info");
+						ctx.ui.notify(await finish(sid, ctx), "info");
 						// undefined removes the line; "" would leave an empty one under the other plugins' lines.
 						ctx.ui.setStatus("strategium", undefined);
 						return;
@@ -524,88 +702,83 @@ export default function (pi: ExtensionAPI) {
 			}
 			const objective = raw.startsWith('"') ? `"${parsed[1]}"` : parsed[1];
 			const theatre = (parsed[2] ?? process.env.STRATEGIUM_THEATRE ?? "none").replace(/^strategium-/, "");
-			const glyphs = process.env.STRATEGIUM_GLYPHS === "1" ? " Use glyph todo tags." : "";
 			pi.sendUserMessage(
-				(theatre === "none"
+				theatre === "none"
 					? `Read skill://strategium and run it for the objective ${objective} with no theatre.`
-					: `Read skill://strategium and run it for the objective ${objective} with theatre skill://strategium-${theatre}.`) + glyphs,
+					: `Read skill://strategium and run it for the objective ${objective} with theatre skill://strategium-${theatre}.`,
 			);
 		},
 	});
 
-	pi.on("session_start", (_e, ctx) => {
+	const onSession = async (_e: unknown, ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
+		// omp emits session_switch, not session_start, for a session opened in the same process: follow the latest one.
+		const prevSid = liveSid;
+		live = ctx;
 		const sid = sidOf(ctx);
+		liveSid = sid;
+		// A session without a run does not inherit the previous session's hidden tools.
+		if (prevSid && prevSid !== sid && !readRun(sid)) await restoreTools(readRun(prevSid)?.hidden);
 		// A resumed session takes its ticket back, unless another session claimed it meanwhile.
 		const own = readRun(sid);
+		let held = false;
 		if (own) {
 			// Reopened after a crash or kill: the time it was gone is not work.
-			closeGap(own);
+			const died = closeGap(own) !== undefined;
 			try {
 				claim(stateDir(), own.key, sid);
+				held = true;
 			} catch {
 				rmSync(runFile(sid), { force: true });
 				rmSync(beatFile(sid), { force: true });
 			}
-		}
-		// Only the owning session alerts for its key, so each alert fires once.
-		const maybeAlert = (file: string, evs: Ev[], key: string, now: Date, el: number, bk: number) => {
-			const p = dueAlert(evs, key, now);
-			if (p === undefined) return;
-			append(file, { ts: nowIso(), event: "alert", key, p });
-			ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}`, p === 100 ? "warning" : "info");
-			const alarmError = signal(String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`);
-			if (alarmError) ctx.ui.notify(`Strategium: ${alarmError}`, "warning");
-			pi.sendMessage(
-				{ customType: "strategium-timer", content: `TIMER ${p}% ${key} ${el}/${bk} min`, display: true, attribution: "agent" },
-				{ deliverAs: "aside", triggerTurn: true },
-			);
-		};
-		const tick = () => {
-			try {
-				const found = ownRun(sid);
-				if (!found) return ctx.ui.setStatus("strategium", undefined);
-				// A gap in our own heartbeats means the machine slept: close the block at the last beat and stay paused.
-				const gap = closeGap(found);
-				if (gap) {
-					const at = gap.slice(11, 16);
-					ctx.ui.notify(
-						`Strategium: ${found.key} paused at ${at}; this session was silent since then (sleep or freeze). /strategium resume to continue.`,
-						"warning",
-					);
-					signal("attention", `${found.key}: paused at ${at} after a silent gap; resume when you are back`);
+			// A reload closes the session and opens it again; the run goes on by itself, across days too. A run the
+			// user stopped carries no mark and stays paused. The heartbeat is renewed so tick does not read the gap
+			// as a freeze. The mark is spent on every path.
+			if (held) {
+				const resume = died || own.closedBy === "shutdown";
+				if (own.closedBy) writeRun({ ...own, closedBy: undefined });
+				if (resume) {
+					try {
+						shift(own);
+						beat(sid);
+					} catch (err) {
+						ctx.ui.notify(
+							err instanceof NewShift ? `Strategium: ${own.key} needs today's booking; /strategium resume <min>` : `Strategium: ${err instanceof Error ? err.message : String(err)}`,
+							"warning",
+						);
+					}
 				}
-				beat(sid);
-				const run = found;
-				const file = today();
-				const evs = load(file);
-				const key = run.key;
-				const running = isOpen(key);
-				const now = new Date();
-				const el = Math.floor(elapsedMin(evs, key, now));
-				const bk = bookedMin(evs, key) ?? 0;
-				ctx.ui.setStatus("strategium", renderFooter(run, evs, running, el, bk));
-				// A paused run never alerts.
-				if (running) maybeAlert(file, evs, key, now, el, bk);
-			} catch (err) {
-				ctx.ui.notify(`Strategium timer: ${err instanceof Error ? err.message : String(err)}`, "warning");
 			}
-		};
+		}
 		refreshFooter = tick;
-		ctx.setInterval(tick, 60_000);
+		if (!timerSet) {
+			timerSet = true;
+			ctx.setInterval(tick, 60_000);
+		}
 		tick();
-	});
+		// A run that is still ours keeps the editing tools hidden after a restart.
+		// ponytail: a session whose run is taken over keeps the tools hidden until it restarts.
+		if (held && own?.hidden?.length) await pi.setActiveTools(pi.getActiveTools().filter(n => !own.hidden!.includes(n)));
+	};
+	pi.on("session_start", onSession);
+	pi.on("session_switch", onSession);
 
 	// Closing the session pauses its ticket and releases the claim; the run file stays so a resumed session
 	// (or another session's `begin`, which adopts its repo) picks it up.
 	pi.on("session_shutdown", (_e, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
 		refreshFooter = undefined;
+		live = undefined;
+		liveSid = undefined;
+		timerSet = false;
 		const sid = sidOf(ctx);
 		const run = ownRun(sid);
 		if (!run) return;
-		stopKey(run.key);
+		// Marked on the run, not read from a day file: a reload after midnight resumes too. A run the user had stopped is not marked.
+		const stopped = stopKey(run.key, "shutdown");
 		release(stateDir(), run.key, sid);
+		if (stopped) writeRun({ ...run, closedBy: "shutdown" });
 	});
 
 	// The todo phases are the stations: keep where the run is, so the footer shows it at once and after a restart.
@@ -619,7 +792,17 @@ export default function (pi: ExtensionAPI) {
 		refreshFooter?.();
 	});
 
-	// ponytail: bash writes are not guarded; parse bash commands if the Captain ever edits through bash
+	// The Captain's roster: during a run only these agents may be spawned, and no battle-brother before the slices.
+	pi.on("before_subagent_spawn", (e, ctx) => {
+		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager) return;
+		const run = ownRun(sidOf(ctx));
+		if (!run) return;
+		const agent = agentName(String(asObj(e).agent ?? "task"));
+		if (!ROSTER.includes(agent)) return { block: true, reason: `Strategium: during a run only these agents may be spawned: ${ROSTER.join(", ")}.` };
+		if (agent === "battle-brother" && run.repo && !run.slices) return { block: true, reason: SLICES_REASON };
+	});
+
+	// ponytail: bash is a pattern list (see bashBlock); the edit tools are hidden and write/edit targets are checked below.
 	pi.on("tool_call", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub") return;
 		const run = ownRun(sidOf(ctx));
@@ -629,10 +812,26 @@ export default function (pi: ExtensionAPI) {
 			const err = signal("attention", `${run.key}: your answer is needed`);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 		}
-		const repo = run?.repo;
-		if (!repo) return;
+		if (!run?.repo) return;
+		const repo = run.repo;
 		if (name === "ast_edit") return { block: true, reason: CAPTAIN_REASON };
-		const targets = editTargets(name, e.input as Record<string, unknown>);
+		if (name === "bash") {
+			const why = bashBlock(String(asObj(e.input).command ?? ""));
+			if (why) return { block: true, reason: why };
+		}
+		if (name === "task") {
+			const input = asObj(e.input);
+			const items = Array.isArray(input.tasks) ? input.tasks : [input];
+			const n = items.filter(item => agentName(String(asObj(item).agent ?? "task")) === "battle-brother").length;
+			if (n > 0 && !run.slices) return { block: true, reason: SLICES_REASON };
+			if (n > 0 && !run.launched) {
+				const par = run.slices!.filter(s => s.parallel).map(s => s.id);
+				if (par.length >= 2 && n < par.length)
+					return { block: true, reason: `Strategium: launch every parallel slice (${par.join(", ")}) in one task call; this call has ${n} battle-brother(s).` };
+				writeRun({ ...run, launched: true });
+			}
+		}
+		const targets = editTargets(name, asObj(e.input));
 		if (!targets.length) return;
 		// Windows and macOS filesystems ignore case; Linux does not.
 		const norm = (p: string) => (process.platform === "linux" ? p : p.toLowerCase());

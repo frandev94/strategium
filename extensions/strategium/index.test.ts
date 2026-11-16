@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { whereFrom } from "./index";
-import { load, openKeys } from "./timer";
+import { claim, load, lockPath, openKeys } from "./timer";
 
 // The extension registers itself on a host. A fake one is enough: it hands back the tool it
 // registered and does nothing else.
@@ -11,7 +11,7 @@ type Tool = { name: string; execute: (id: string, params: Record<string, unknown
 
 const schema = () => {
 	const s: Record<string, unknown> = {};
-	for (const m of ["optional", "int", "positive", "nonnegative", "describe"]) s[m] = () => s;
+	for (const m of ["optional", "int", "positive", "nonnegative", "describe", "array", "boolean"]) s[m] = () => s;
 	return s;
 };
 
@@ -21,16 +21,24 @@ function fakePi() {
 	const handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]> = {};
 	const sent: string[] = [];
 	const calls: [unknown, unknown][] = [];
+	let active = ["read", "bash", "edit", "write", "task"];
 	const zod = {
 		object: () => schema(),
 		string: () => schema(),
 		number: () => schema(),
 		enum: () => schema(),
+		array: () => schema(),
+		boolean: () => schema(),
 	};
 	return {
 		pi: {
 			zod,
 			setLabel: () => {},
+			getActiveTools: () => active,
+			setActiveTools: async (n: string[]) => {
+				active = n;
+			},
+			getAllTools: () => [],
 			registerTool: (t: Tool) => tools.push(t),
 			registerCommand: (name: string, cmd: { handler: (args: string, ctx: unknown) => Promise<void> }) => (commands[name] = cmd),
 			on: (event: string, fn: (e: unknown, ctx: unknown) => unknown) => ((handlers[event] ??= []).push(fn)),
@@ -42,6 +50,10 @@ function fakePi() {
 		handlers,
 		sent,
 		calls,
+		activeTools: () => active,
+		setActive: (n: string[]) => {
+			active = n;
+		},
 	};
 }
 
@@ -71,7 +83,7 @@ function setup(sid = "sess-0001", shared?: string) {
 	// No test sounds the user's real alarm.
 	delete process.env.STRATEGIUM_ALARM;
 	delete process.env.STRATEGIUM_GLYPHS;
-	const { pi, tools, commands, handlers, sent, calls } = fakePi();
+	const { pi, tools, commands, handlers, sent, calls, activeTools, setActive } = fakePi();
 	// What the footer and the alert had seen the moment each notification went out.
 	const seen: { via: string; footer: string; events: number }[] = [];
 	const sendMessage = pi.sendMessage;
@@ -96,7 +108,7 @@ function setup(sid = "sess-0001", shared?: string) {
 	const todo = (phases: unknown) => handlers.tool_result[0]({ toolName: "todo", isError: false, details: { phases } }, ctx);
 	// The last footer line, without its colours.
 	const shown = () => (footer.at(-1) ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-	return { dir, call, command, sent, calls, seen, footer, notes, commands, handlers, ctx, start, todo, shown };
+	return { dir, call, command, sent, calls, seen, footer, notes, commands, handlers, ctx, start, todo, shown, activeTools, setActive };
 }
 
 describe("the strategium tool", () => {
@@ -348,5 +360,658 @@ describe("the booking alert in the footer", () => {
 		await call({ action: "stop" });
 		start();
 		expect(shown()).toContain("strategium: dark-mode · paused");
+	});
+});
+
+// The Captain's limits: what the plugin takes away while a run is open.
+describe("the Captain's limits", () => {
+	type Host = { handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]>; ctx: unknown };
+	type Verdict = { block?: true; reason?: string } | undefined;
+	const toolCall = (s: Host, toolName: string, input: unknown) => s.handlers.tool_call[0]({ toolName, input }, s.ctx) as Verdict;
+	const spawn = (s: Host, agent?: string) => s.handlers.before_subagent_spawn[0]({ agent }, s.ctx) as Verdict;
+	const brothers = (n: number) => ({ tasks: Array.from({ length: n }, () => ({ agent: "battle-brother", isolated: true })) });
+	const disjoint = [
+		{ id: "S1", parallel: true, files: ["a.ts"] },
+		{ id: "S2", parallel: true, files: ["b.ts"] },
+	];
+
+	test("begin hides edit and end brings it back", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		expect(s.activeTools()).toEqual(["read", "bash", "write", "task"]);
+		await s.call({ action: "end" });
+		expect(s.activeTools()).toContain("edit");
+	});
+
+	test("an agent outside the roster is refused during a run, allowed without one", async () => {
+		const s = setup();
+		expect(spawn(s, "code-reviewer")).toBeUndefined();
+		await s.call({ action: "begin", key: "K-1" });
+		expect(spawn(s, "code-reviewer")?.block).toBe(true);
+		expect(spawn(s, "scout")).toBeUndefined();
+		expect(spawn(s)).toBeUndefined();
+	});
+
+	test("a battle-brother is refused until the slices are declared", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		expect(toolCall(s, "task", brothers(1))?.reason).toContain("declare the plan's slices first");
+		expect(spawn(s, "battle-brother")?.reason).toContain("declare the plan's slices first");
+		expect(toolCall(s, "task", { tasks: [{ agent: "scout" }] })).toBeUndefined();
+	});
+
+	test("every parallel slice launches in one call; later calls pass", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		expect(await s.call({ action: "slices", slices: disjoint })).toBe("SLICES S1 (parallel), S2 (parallel)");
+		expect(toolCall(s, "task", brothers(1))?.reason).toContain("launch every parallel slice (S1, S2) in one task call; this call has 1 battle-brother(s).");
+		expect(toolCall(s, "task", brothers(2))).toBeUndefined();
+		expect(toolCall(s, "task", brothers(1))).toBeUndefined();
+	});
+
+	test("bash runners and writes are blocked while the run has a repo", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		expect(toolCall(s, "bash", { command: "bun test" })).toBeUndefined();
+		await s.call({ action: "repo", repo: s.dir });
+		expect(toolCall(s, "bash", { command: "bun test" })?.block).toBe(true);
+		expect(toolCall(s, "bash", { command: "git log" })).toBeUndefined();
+		expect(toolCall(s, "bash", undefined)).toBeUndefined();
+	});
+
+	test("slices are checked: empty, ids, files and overlap", async () => {
+		const s = setup();
+		expect(await s.call({ action: "slices", slices: disjoint })).toBe("ERROR no active run in this session");
+		await s.call({ action: "begin", key: "K-1" });
+		expect(await s.call({ action: "slices", slices: [] })).toBe("ERROR slices needs at least one slice");
+		expect(await s.call({ action: "slices", slices: [{ id: "", parallel: false, files: ["a"] }] })).toBe("ERROR every slice needs an id");
+		expect(await s.call({ action: "slices", slices: [disjoint[0], disjoint[0]] })).toBe("ERROR duplicate slice id S1");
+		expect(await s.call({ action: "slices", slices: [{ id: "S1", parallel: true, files: [] }] })).toBe("ERROR slice S1 lists no files");
+	});
+
+	test.skipIf(process.platform === "linux")("overlap is found across case and separators", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		const out = await s.call({
+			action: "slices",
+			slices: [
+				{ id: "S1", parallel: true, files: ["alarm/vox.ts"] },
+				{ id: "S2", parallel: true, files: ["ALARM\\vox.ts"] },
+			],
+		});
+		expect(out).toBe("ERROR slices S1 and S2 both touch alarm/vox.ts; mark one parallel: false");
+	});
+
+	describe("the theme when the run ends", () => {
+		// The alarm command appends "<level>|<message>" to a file; the spawn is asynchronous, so poll.
+		const recorder = (dir: string) => {
+			const out = join(dir, "alarm.log");
+			const script = join(dir, "rec.ts");
+			writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_MSG}\\n`);\n');
+			process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
+			return async (want: number) => {
+				for (let i = 0; i < 100; i++) {
+					const lines = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
+					if (lines.length >= want) return lines;
+					await Bun.sleep(50);
+				}
+				return existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
+			};
+		};
+		afterEach(() => delete process.env.STRATEGIUM_ALARM);
+
+		test("the tool's end plays it once", async () => {
+			const s = setup();
+			const lines = recorder(s.dir);
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "end" });
+			expect(await lines(1)).toEqual(["theme|K-1: run ended"]);
+		});
+
+		test("/strategium end plays it too", async () => {
+			const s = setup();
+			const lines = recorder(s.dir);
+			await s.call({ action: "begin", key: "K-1" });
+			await s.command("end");
+			expect(await lines(1)).toEqual(["theme|K-1: run ended"]);
+			expect(s.activeTools()).toContain("edit");
+		});
+
+		test("an end that fails plays nothing", async () => {
+			const s = setup();
+			const lines = recorder(s.dir);
+			expect(await s.call({ action: "end" })).toContain("ERROR");
+			await Bun.sleep(300);
+			expect(await lines(0)).toEqual([]);
+		});
+	});
+});
+
+// omp opens a new session in the same process on "approve and execute": it emits session_switch, not session_start.
+describe("footer after a switch", () => {
+	test("the footer follows the new session and later refreshes keep it", async () => {
+		const s = setup("sess-B");
+		await s.call({ action: "begin", key: "omp-native" });
+		const other = fakeCtx("sess-A", s.dir, [], s.footer);
+		s.handlers.session_start[0]({}, other);
+		expect(s.shown()).toBe("");
+		await s.handlers.session_switch[0]({}, s.ctx);
+		expect(s.shown()).toContain("omp-native");
+		await s.call({ action: "status" });
+		expect(s.shown()).toContain("omp-native");
+	});
+
+	test("a switch adds no second timer", async () => {
+		const s = setup("sess-B");
+		let timers = 0;
+		s.ctx.setInterval = () => ++timers;
+		await s.handlers.session_start[0]({}, s.ctx);
+		await s.handlers.session_switch[0]({}, s.ctx);
+		expect(timers).toBe(1);
+	});
+
+	// omp switches by mutating one SessionManager (setSessionFile): the id changes under the same object.
+	const shared = (sid: string, dir: string, footer: string[]) => {
+		const sm = { sid, getSessionId: () => sm.sid };
+		return { sm, ctx: { ...fakeCtx(sid, dir, [], footer), sessionManager: sm } };
+	};
+
+	test("switching to a session with no run gives the editing tools back", async () => {
+		const s = setup("sess-A");
+		await s.call({ action: "begin", key: "omp-native" });
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer);
+		await s.handlers.session_start[0]({}, ctx);
+		expect(s.activeTools()).toEqual(["read", "bash", "write", "task"]);
+		sm.sid = "sess-B";
+		await s.handlers.session_switch[0]({}, ctx);
+		expect(s.activeTools()).toEqual(["read", "bash", "write", "task", "edit"]);
+	});
+
+	test("the footer follows the switch when the session manager is shared", async () => {
+		const s = setup("sess-B");
+		await s.call({ action: "begin", key: "omp-native" });
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer);
+		await s.handlers.session_start[0]({}, ctx);
+		expect(s.shown()).toBe("");
+		sm.sid = "sess-B";
+		await s.handlers.session_switch[0]({}, ctx);
+		expect(s.shown()).toContain("omp-native");
+		await s.call({ action: "status" });
+		expect(s.shown()).toContain("omp-native");
+	});
+});
+
+describe("attention without an alarm", () => {
+	test("says it was silent and points at the setup skill", async () => {
+		const { call } = setup();
+		expect(await call({ action: "attention", message: "seal ready" })).toBe(
+			"ATTENTION seal ready (silent: STRATEGIUM_ALARM is not set; see /skill:strategium-setup)",
+		);
+	});
+
+	test("with an alarm set, it is not called silent", async () => {
+		const { call } = setup();
+		process.env.STRATEGIUM_ALARM = `"${process.execPath}" -e ""`;
+		try {
+			expect(await call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready");
+		} finally {
+			delete process.env.STRATEGIUM_ALARM;
+		}
+	});
+});
+
+// A reload of omp closes the session and opens it again: the run goes on by itself, unless the user stopped it.
+describe("resume after a reload", () => {
+	const reload = async (s: { handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]>; ctx: unknown }) => {
+		await s.handlers.session_shutdown[0]({}, s.ctx);
+		await s.handlers.session_start[0]({}, s.ctx);
+	};
+
+	test("a run closed by the shutdown runs again on start", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.call({ action: "begin", key: "dark-mode" });
+		setSystemTime(new Date(2026, 10, 16, 9, 1, 0));
+		await reload(s);
+		expect(await s.call({ action: "status" })).toContain("dark-mode 1 min (no booking) running");
+		expect(s.shown()).not.toContain("paused");
+	});
+
+	test("a run the user paused stays paused", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.call({ action: "begin", key: "dark-mode" });
+		await s.command("pause");
+		await reload(s);
+		expect(await s.call({ action: "status" })).toContain("stopped");
+		expect(s.shown()).toContain("paused");
+	});
+
+	test("a session that died while running resumes, the silent time stays unworked", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.call({ action: "begin", key: "dark-mode" });
+		setSystemTime(new Date(2026, 10, 16, 10, 0, 0));
+		await s.handlers.session_start[0]({}, s.ctx);
+		expect(await s.call({ action: "status" })).toContain("running");
+		expect(s.shown()).not.toContain("paused");
+		// The block closed at the last heartbeat (09:00): the hour away is not counted.
+		expect(await s.call({ action: "status" })).toContain("dark-mode 0 min");
+	});
+
+	test("a new day without a booking stays paused and says what is needed", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 15, 23, 30, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 120 });
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.handlers.session_start[0]({}, s.ctx);
+		expect(s.notes).toContain("Strategium: K-1 needs today's booking; /strategium resume <min>");
+		expect(s.shown()).toContain("new day: /strategium resume");
+	});
+
+	test("an untimed run shut down yesterday runs again today", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 15, 23, 30, 0));
+		await s.call({ action: "begin", key: "dark-mode" });
+		setSystemTime(new Date(2026, 10, 15, 23, 40, 0));
+		await s.handlers.session_shutdown[0]({}, s.ctx);
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.handlers.session_start[0]({}, s.ctx);
+		expect(await s.call({ action: "status" })).toContain("dark-mode 0 min (no booking) running");
+	});
+
+	test("a timed run shut down yesterday stays paused and says what is needed", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 15, 23, 30, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 120 });
+		setSystemTime(new Date(2026, 10, 15, 23, 40, 0));
+		await s.handlers.session_shutdown[0]({}, s.ctx);
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.handlers.session_start[0]({}, s.ctx);
+		expect(s.notes).toContain("Strategium: K-1 needs today's booking; /strategium resume <min>");
+		expect(s.shown()).toContain("new day: /strategium resume");
+	});
+
+	test("the mark is spent: a pause after the resume survives the next reload", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.call({ action: "begin", key: "dark-mode" });
+		await reload(s);
+		await s.command("pause");
+		await reload(s);
+		expect(await s.call({ action: "status" })).toContain("stopped");
+	});
+
+	test("a run the user paused before the shutdown is not marked for resume", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 15, 23, 30, 0));
+		await s.call({ action: "begin", key: "dark-mode" });
+		await s.command("pause");
+		await s.handlers.session_shutdown[0]({}, s.ctx);
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.handlers.session_start[0]({}, s.ctx);
+		expect(await s.call({ action: "status" })).not.toContain("running");
+	});
+});
+
+// What the first version of S1 left unproven: each test below was seen red against the bug or a mutant of it.
+describe("tools, begin and end", () => {
+	const FULL = ["read", "bash", "edit", "write", "task"];
+	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
+	const sorted = (a: string[]) => [...a].sort();
+	afterEach(() => delete process.env.STRATEGIUM_ALARM);
+
+	test("end restores exactly the hidden tools and keeps the others", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "end" });
+		expect(sorted(s.activeTools())).toEqual(sorted(FULL));
+	});
+
+	test("restoring a tool that is already active adds no duplicate", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		s.setActive([...s.activeTools(), "edit"]);
+		await s.call({ action: "end" });
+		expect(s.activeTools().filter(n => n === "edit")).toHaveLength(1);
+	});
+
+	test("ast_edit and the underscored names are hidden and restored", async () => {
+		const s = setup();
+		const all = ["read", "_edit", "_ast_edit", "ast_edit", "bash"];
+		s.setActive(all);
+		await s.call({ action: "begin", key: "K-1" });
+		expect(s.activeTools()).toEqual(["read", "bash"]);
+		await s.call({ action: "end" });
+		expect(sorted(s.activeTools())).toEqual(sorted(all));
+	});
+
+	test("a reload hides the tools again for a run that is still ours", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		s.setActive(FULL);
+		await s.handlers.session_start[0]({}, s.ctx);
+		expect(s.activeTools()).toEqual(["read", "bash", "write", "task"]);
+	});
+
+	test("a reload leaves the tools alone when the run is gone", async () => {
+		const s = setup();
+		await s.handlers.session_start[0]({}, s.ctx);
+		expect(s.activeTools()).toEqual(FULL);
+	});
+
+	test("a second begin under another key still restores the tools at the end", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "begin", key: "K-2" });
+		await s.call({ action: "end" });
+		expect(sorted(s.activeTools())).toEqual(sorted(FULL));
+	});
+
+	test("ending another session's run fails and neither restores tools nor plays the theme", async () => {
+		const a = setup("sess-0001");
+		await a.call({ action: "begin", key: "K-1" });
+		const b = setup("sess-0002", a.dir);
+		await b.call({ action: "begin", key: "K-2" });
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		expect(await b.call({ action: "end", key: "K-1" })).toBe("ERROR K-1 belongs to session ess-0001; end it there, or take it over with that id");
+		expect(b.activeTools()).toEqual(["read", "bash", "write", "task"]);
+		expect(b.notes).toEqual([]);
+	});
+
+	test("a takeover end from a session without a run plays nothing and restores nothing", async () => {
+		const a = setup("sess-0001");
+		await a.call({ action: "begin", key: "K-1" });
+		const c = setup("sess-0003", a.dir);
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		expect(await c.call({ action: "end", key: "K-1", takeover: "sess-0001" })).toBe("ENDED K-1");
+		expect(c.activeTools()).toEqual(FULL);
+		expect(c.notes).toEqual([]);
+	});
+
+	test("an end without a run says so and plays nothing", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		expect(await s.call({ action: "end" })).toBe("ERROR no run to end in this session");
+		expect(s.notes).toEqual([]);
+	});
+
+	test("a theme that cannot start is reported, and the run is still ended", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		expect(await s.call({ action: "end" })).toBe("ENDED K-1");
+		expect(s.notes).toEqual([expect.stringMatching(/^Strategium: the alarm failed: /)]);
+	});
+
+	describe("a second begin on the same key", () => {
+		const disjoint = [
+			{ id: "S1", parallel: true, files: ["a.ts"] },
+			{ id: "S2", parallel: true, files: ["b.ts"] },
+		];
+		const brothers = (n: number) => ({ tasks: Array.from({ length: n }, () => ({ agent: "battle-brother" })) });
+
+		test("keeps hidden, repo, slices and launched", async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			await s.call({ action: "slices", slices: disjoint });
+			expect(s.handlers.tool_call[0]({ toolName: "task", input: brothers(2) }, s.ctx)).toBeUndefined();
+			await s.call({ action: "begin", key: "K-1" });
+			expect(await s.call({ action: "status" })).toContain(`repo=${s.dir}`);
+			expect(s.handlers.before_subagent_spawn[0]({ agent: "battle-brother" }, s.ctx)).toBeUndefined();
+			// launched survived: a single battle-brother is no longer refused.
+			expect(s.handlers.tool_call[0]({ toolName: "task", input: brothers(1) }, s.ctx)).toBeUndefined();
+			await s.call({ action: "end" });
+			expect(sorted(s.activeTools())).toEqual(sorted(FULL));
+		});
+
+		test("an untimed run begun again with a booking is timed", async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			const stored = () => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8"));
+			expect(stored().untimed).toBe(true);
+			await s.call({ action: "begin", key: "K-1", booked: 120 });
+			expect(stored().untimed).toBeUndefined();
+			expect(stored().key).toBe("K-1");
+		});
+
+		test("a takeover adopts the repo of the run it replaces", async () => {
+			const a = setup("sess-0001");
+			await a.call({ action: "begin", key: "K-1" });
+			await a.call({ action: "repo", repo: a.dir });
+			const b = setup("sess-0002", a.dir);
+			await b.call({ action: "begin", key: "K-1", takeover: "sess-0001" });
+			expect(await b.call({ action: "status" })).toContain(`repo=${a.dir}`);
+		});
+	});
+});
+
+describe("the Captain's hooks never throw and keep their wording", () => {
+	const ROSTER = ["scout", "librarian", "battle-brother", "veteran", "apothecary", "inquisitor", "security-reviewer", "sonic", "task"];
+	type Verdict = { block?: true; reason?: string } | undefined;
+	const disjoint = [
+		{ id: "S1", parallel: true, files: ["a.ts"] },
+		{ id: "S2", parallel: true, files: ["b.ts"] },
+	];
+	const brothers = (n: number) => ({ tasks: Array.from({ length: n }, () => ({ agent: "battle-brother" })) });
+	async function run(slices?: unknown[]) {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		if (slices) await s.call({ action: "slices", slices });
+		const tool = (toolName: string, input: unknown, ctx: unknown = s.ctx) => s.handlers.tool_call[0]({ toolName, input }, ctx) as Verdict;
+		const spawn = (agent: unknown, ctx: unknown = s.ctx) => s.handlers.before_subagent_spawn[0]({ agent }, ctx) as Verdict;
+		return { s, tool, spawn };
+	}
+
+	test("two single calls stay refused: launched is only set by a call that passes", async () => {
+		const { tool } = await run(disjoint);
+		expect(tool("task", brothers(1))?.block).toBe(true);
+		expect(tool("task", brothers(1))?.block).toBe(true);
+	});
+
+	test("a sequential slice is not counted as parallel", async () => {
+		const { tool } = await run([disjoint[0], { id: "S2", parallel: false, files: ["b.ts"] }]);
+		expect(tool("task", brothers(1))).toBeUndefined();
+	});
+
+	test("the single form of task is judged like a batch item", async () => {
+		const none = await run();
+		expect(none.tool("task", { agent: "battle-brother", task: "x" })?.reason).toContain("declare the plan's slices first");
+		const two = await run(disjoint);
+		expect(two.tool("task", { agent: "battle-brother", task: "x" })?.reason).toContain("launch every parallel slice (S1, S2)");
+		expect(two.tool("task", { agent: "scout", task: "x" })).toBeUndefined();
+	});
+
+	test("declaring the slices again resets the launch", async () => {
+		const { s, tool } = await run(disjoint);
+		expect(tool("task", brothers(2))).toBeUndefined();
+		expect(tool("task", brothers(1))).toBeUndefined();
+		await s.call({ action: "slices", slices: disjoint });
+		expect(tool("task", brothers(1))?.block).toBe(true);
+	});
+
+	test("a battle-brother spawn passes while the run has no repo, and agent names are normalised", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		const spawn = (agent: unknown) => s.handlers.before_subagent_spawn[0]({ agent }, s.ctx) as Verdict;
+		expect(spawn("battle-brother")).toBeUndefined();
+		await s.call({ action: "repo", repo: s.dir });
+		for (const name of ["battle-brother", "Battle-Brother", "omp:battle-brother", "x/battle-brother"])
+			expect(spawn(name)?.reason).toContain("declare the plan's slices first");
+		expect(spawn("x/scout")).toBeUndefined();
+		expect(spawn("OMP:Sonic")).toBeUndefined();
+	});
+
+	test("the whole roster passes, anything else is refused with the roster in the reason", async () => {
+		const { spawn } = await run(disjoint);
+		for (const name of ROSTER) expect(spawn(name)).toBeUndefined();
+		expect(spawn("code-reviewer")).toEqual({
+			block: true,
+			reason: `Strategium: during a run only these agents may be spawned: ${ROSTER.join(", ")}.`,
+		});
+	});
+
+	test("sub-agents and a context without a session are not judged", async () => {
+		const { s, spawn, tool } = await run();
+		const sub = { ...s.ctx, agent: { kind: "sub" } };
+		expect(spawn("code-reviewer", sub)).toBeUndefined();
+		expect(tool("bash", { command: "bun test" }, sub)).toBeUndefined();
+		expect(spawn("code-reviewer", { agent: { kind: "main" } })).toBeUndefined();
+		expect(spawn("code-reviewer")?.block).toBe(true);
+	});
+
+	test("ast_edit is refused for the Captain", async () => {
+		const { tool } = await run();
+		expect(tool("ast_edit", {})?.reason).toContain("does not edit repository files");
+	});
+
+	test("odd input never throws", async () => {
+		const { tool } = await run(disjoint);
+		expect(tool("bash", { command: 123 })).toBeUndefined();
+		expect(tool("bash", undefined)).toBeUndefined();
+		expect(tool("task", { tasks: [null] })).toBeUndefined();
+		expect(tool("task", { tasks: "x" })).toBeUndefined();
+		expect(tool("task", null)).toBeUndefined();
+		expect(tool("write", undefined)).toBeUndefined();
+		expect(tool("write", null)).toBeUndefined();
+		expect(tool("edit", undefined)).toBeUndefined();
+	});
+});
+
+describe("reload, shutdown and the footer, pinned", () => {
+	const runFileOf = (dir: string, sid: string) => join(dir, "runs", `${sid}.json`);
+
+	test("the untimed run resumed the next day raises no silent-gap note", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 15, 23, 30, 0));
+		await s.call({ action: "begin", key: "dark-mode" });
+		await s.handlers.session_shutdown[0]({}, s.ctx);
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.handlers.session_start[0]({}, s.ctx);
+		expect(s.notes).toEqual([]);
+	});
+
+	test("the shutdown releases the claim, clears the hooks and a new start registers the timer again", async () => {
+		const a = setup("sess-0001");
+		let timers = 0;
+		a.ctx.setInterval = () => ++timers;
+		await a.call({ action: "begin", key: "K-1" });
+		await a.handlers.session_start[0]({}, a.ctx);
+		const drawn = a.footer.length;
+		await a.handlers.session_shutdown[0]({}, a.ctx);
+		await a.call({ action: "status" });
+		expect(a.footer.length).toBe(drawn);
+		expect(existsSync(lockPath(a.dir, "K-1"))).toBe(false);
+		// And another session can take the ticket.
+		const b = setup("sess-0002", a.dir);
+		expect(await b.call({ action: "begin", key: "K-1", takeover: "sess-0001" })).not.toContain("ERROR");
+		await a.handlers.session_start[0]({}, a.ctx);
+		expect(timers).toBe(2);
+	});
+
+	test("a ticket claimed by another session while we were away drops our run at start", async () => {
+		const a = setup("sess-0001");
+		await a.call({ action: "begin", key: "K-1" });
+		await a.handlers.session_shutdown[0]({}, a.ctx);
+		claim(a.dir, "K-1", "sess-0002");
+		await a.handlers.session_start[0]({}, a.ctx);
+		expect(existsSync(runFileOf(a.dir, "sess-0001"))).toBe(false);
+		expect(a.shown()).toBe("");
+		expect(await a.call({ action: "status" })).not.toContain("RUN K-1");
+	});
+
+	test("after another session took the ticket, the reload leaves the tools alone and the run does not run here", async () => {
+		const a = setup("sess-0001");
+		await a.call({ action: "begin", key: "K-1" });
+		await a.handlers.session_shutdown[0]({}, a.ctx);
+		claim(a.dir, "K-1", "sess-0002");
+		const full = ["read", "bash", "edit", "write", "task"];
+		a.setActive(full);
+		await a.handlers.session_start[0]({}, a.ctx);
+		expect(a.activeTools()).toEqual(full);
+		expect(await a.call({ action: "status" })).not.toContain("this session");
+		expect(a.shown()).toBe("");
+	});
+
+	test("after the ticket was claimed elsewhere, the reload neither books time nor shows the key running", async () => {
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		const a = setup("sess-0001");
+		await a.call({ action: "begin", key: "K-1" });
+		await a.handlers.session_shutdown[0]({}, a.ctx);
+		claim(a.dir, "K-1", "sess-0002");
+		const starts = () => load(join(a.dir, "2026-11-16.jsonl")).filter(e => e.event === "start").length;
+		const before = starts();
+		setSystemTime(new Date(2026, 10, 16, 9, 5, 0));
+		await a.handlers.session_start[0]({}, a.ctx);
+		expect(starts()).toBe(before);
+		expect(await a.call({ action: "status" })).not.toMatch(/K-1.*running/);
+	});
+
+	test("the timer runs every minute", async () => {
+		const s = setup();
+		const delays: unknown[] = [];
+		s.ctx.setInterval = (_fn: () => void, ms: unknown) => delays.push(ms);
+		await s.handlers.session_start[0]({}, s.ctx);
+		expect(delays).toEqual([60_000]);
+	});
+
+	test("a sub-agent session draws nothing and sets no timer", async () => {
+		const s = setup();
+		let timers = 0;
+		s.ctx.setInterval = () => ++timers;
+		await s.call({ action: "begin", key: "K-1" });
+		const before = s.footer.length;
+		await s.handlers.session_start[0]({}, { ...s.ctx, agent: { kind: "sub" } });
+		expect(timers).toBe(0);
+		expect(s.footer.length).toBe(before);
+	});
+
+	test("the timer callback beats, redraws, and clears the footer when the run is gone", async () => {
+		const s = setup();
+		let tick = () => {};
+		s.ctx.setInterval = (fn: () => void) => {
+			tick = fn;
+			return 0;
+		};
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.call({ action: "begin", key: "K-1" });
+		setSystemTime(new Date(2026, 10, 16, 9, 1, 0));
+		await s.handlers.session_start[0]({}, s.ctx);
+		setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+		const drawn = s.footer.length;
+		tick();
+		expect(s.footer.length).toBe(drawn + 1);
+		expect(s.shown()).toContain("K-1");
+		expect(readFileSync(join(s.dir, "runs", "sess-0001.beat"), "utf8")).toContain("T09:02:00");
+		await s.call({ action: "end" });
+		const afterEnd = s.footer.length;
+		tick();
+		expect(s.footer.length).toBe(afterEnd + 1);
+		expect(s.shown()).toBe("");
+	});
+
+	test("every tool action and the session start redraw the footer", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.handlers.session_start[0]({}, s.ctx);
+		const drawn = s.footer.length;
+		await s.call({ action: "status" });
+		expect(s.footer.length).toBe(drawn + 1);
+		await s.call({ action: "end" });
+		expect(s.footer.length).toBe(drawn + 2);
+	});
+
+	test("a switch to a new session draws its footer and later actions redraw it", async () => {
+		const s = setup("sess-B");
+		await s.call({ action: "begin", key: "omp-native" });
+		await s.handlers.session_switch[0]({}, s.ctx);
+		const drawn = s.footer.length;
+		await s.call({ action: "status" });
+		expect(s.footer.length).toBe(drawn + 1);
+		expect(s.shown()).toContain("omp-native");
 	});
 });
