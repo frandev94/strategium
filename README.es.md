@@ -61,13 +61,13 @@ Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un de
 
 | Vuelta | Detonante | Destino | Presupuesto |
 |---|---|---|---|
-| **Re-scan** | el mapa del código está equivocado | un `scout` más con ese hueco concreto | 1 por run |
-| **Re-plan** | el plan está equivocado, o el check de un slice no se puede cumplir tal cual está escrito | el mismo `librarian` recorta el trabajo restante | 1 por run |
-| **Fix** | el código está equivocado: check rojo, supervivientes del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con el informe del fallo | 2 rondas por slice, luego un `veteran` |
-| **Re-review** | el código reparado necesita otra mirada | el `inquisitor` otra vez | 2 rondas por item del Merge bar |
+| **Recon** | el mapa del código está equivocado | un `scout` más con ese hueco concreto | 1 por run |
+| **Palimpsest** | el plan está equivocado, o el check de un slice no se puede cumplir tal cual está escrito | el mismo `librarian` raspa el trabajo restante y lo reescribe | 1 por run |
+| **Rally** | el código está equivocado: check rojo, supervivientes del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con el informe del fallo | 2 rondas por slice, luego un `veteran` |
+| **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez | 2 rondas por item del Merge bar |
 | **Stand down** | se agotó el presupuesto, o el fallo no está en el código | tú, con los puntos abiertos | — |
 
-Si el código puede cumplir el check del slice tal como está escrito, es un fix; si no puede, el slice se cortó mal y es un re-plan. Una vuelta que pasa por delante de un sello ya concedido lo anula y hay que pedirlo otra vez. Lo que ya pasó, sigue pasado.
+Si el código puede cumplir el check del slice tal como está escrito, es un rally; si no puede, el slice se cortó mal y es un palimpsest. Una vuelta que pasa por delante de un sello ya concedido rompe el sello y hay que pedirlo otra vez. Lo que ya pasó, sigue pasado.
 
 ## Instalación
 
