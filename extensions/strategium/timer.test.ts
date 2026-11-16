@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,11 +7,13 @@ import {
 	blocks,
 	bookedMin,
 	claim,
+	DAY_RE,
 	dueAlert,
 	elapsedMin,
 	type Ev,
 	holds,
 	load,
+	lockPath,
 	nowIso,
 	openKeys,
 	overlapMin,
@@ -132,6 +134,29 @@ describe("gap closed at the last heartbeat", () => {
 	});
 });
 
+// A line half-written by a killed process must not take the whole day down.
+describe("reading a day file", () => {
+	test("a corrupted line is skipped and the rest of the day survives", () => {
+		const dir = mkdtempSync(join(tmpdir(), "st-load-"));
+		try {
+			const file = join(dir, "day.jsonl");
+			append(file, { ts: t(0), event: "start", key: "A", booked: 60 });
+			appendFileSync(file, '{"ts":"2026-11-16T09:0\n');
+			append(file, { ts: t(10), event: "stop", key: "A" });
+			const evs = load(file);
+			expect(evs.map(e => e.key)).toEqual(["A", "A"]);
+			expect(elapsedMin(evs, "A", at(60))).toBe(10);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	test("a day name is a plain date, never a path", () => {
+		expect(DAY_RE.test("2026-11-16")).toBe(true);
+		expect(DAY_RE.test("../../../../home/user/.ssh/known_hosts")).toBe(false);
+		expect(DAY_RE.test("2026-11-16.jsonl")).toBe(false);
+	});
+});
+
 // Claims race between omp sessions, so these spawn real processes that claim at the same time.
 describe("ticket claims across processes", () => {
 	const timerPath = join(import.meta.dir, "timer.ts").replaceAll("\\", "/");
@@ -160,7 +185,7 @@ describe("ticket claims across processes", () => {
 	};
 	const deadLock = (dir: string) => {
 		mkdirSync(join(dir, "claims"), { recursive: true });
-		writeFileSync(join(dir, "claims", "RACE-1.lock"), "session-dead0001");
+		writeFileSync(lockPath(dir, "RACE-1"), "session-dead0001");
 	};
 
 	test("exactly one of 8 simultaneous begins wins", () => withDir(async dir => expect(await race(dir, undefined)).toBe(1)));
@@ -173,14 +198,35 @@ describe("ticket claims across processes", () => {
 		withDir(async dir => {
 			deadLock(dir);
 			expect(await race(dir, "dead0001")).toBe(1);
-			expect(readFileSync(join(dir, "claims", "RACE-1.lock"), "utf8")).toMatch(/^s[0-7]$/);
-			expect(existsSync(join(dir, "claims", "RACE-1.lock.force"))).toBe(false);
+			expect(readFileSync(lockPath(dir, "RACE-1"), "utf8")).toMatch(/^s[0-7]$/);
+			expect(existsSync(`${lockPath(dir, "RACE-1")}.force`)).toBe(false);
 		}));
 	test("takeover naming the wrong holder is refused", () =>
 		withDir(async dir => {
 			deadLock(dir);
 			expect(() => claim(dir, "RACE-1", "me", "someone-else")).toThrow();
 			expect(holds(dir, "RACE-1", "me")).toBe(false);
+		}));
+	test("a takeover id shorter than the last 8 characters is refused", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			// "1" would match a live session whose id ends in 1; only the full 8 count.
+			expect(() => claim(dir, "RACE-1", "me", "1")).toThrow();
+			expect(holds(dir, "RACE-1", "me")).toBe(false);
+		}));
+	test("a guard left by a killed process does not block the takeover forever", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			// An old guard: the process that wrote it is gone.
+			writeFileSync(`${lockPath(dir, "RACE-1")}.force`, "session-dead0001 1");
+			expect(() => claim(dir, "RACE-1", "me", "dead0001")).not.toThrow();
+			expect(holds(dir, "RACE-1", "me")).toBe(true);
+		}));
+	test("two keys that sanitise alike do not share a lock", () =>
+		withDir(async dir => {
+			claim(dir, "A/B", "a");
+			expect(holds(dir, "A_B", "a")).toBe(false);
+			expect(() => claim(dir, "A_B", "b")).not.toThrow();
 		}));
 	test("release only by the holder", () =>
 		withDir(async dir => {

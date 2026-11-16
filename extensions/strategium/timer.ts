@@ -1,7 +1,18 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 
-const lockPath = (dir: string, key: string) => join(dir, "claims", `${key.replace(/[^\w.-]/g, "_")}.lock`);
+/** A day file is `YYYY-MM-DD.jsonl`; anything else never becomes a path. */
+export const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// The sanitised key keeps the lock readable; the hash keeps two keys apart ("A/B" and "A_B"
+// would otherwise share one lock). Exported so tests and tools use the same name.
+export const lockPath = (dir: string, key: string) =>
+	join(
+		dir,
+		"claims",
+		`${key.replace(/[^\w.-]/g, "_")}-${createHash("sha1").update(key).digest("hex").slice(0, 8)}.lock`,
+	);
 const holder = (lock: string) => {
 	try {
 		return readFileSync(lock, "utf8");
@@ -20,7 +31,7 @@ const holder = (lock: string) => {
  */
 export function claim(dir: string, key: string, sid: string, takeover?: string): void {
 	const lock = lockPath(dir, key);
-	mkdirSync(join(dir, "claims"), { recursive: true });
+	mkdirSync(join(dir, "claims"), { recursive: true, mode: 0o700 });
 	const create = () => writeFileSync(lock, sid, { flag: "wx" });
 	try {
 		return create();
@@ -33,19 +44,48 @@ export function claim(dir: string, key: string, sid: string, takeover?: string):
 			`${key} is held by omp session ${holder(lock)?.slice(-8)}; end it there, or take it over with that id if that session is gone`,
 		);
 	if (!takeover) throw held();
+	// The takeover id is the last 8 characters of the holder's session id: compare them exactly,
+	// so a short id cannot match a live session that happens to end the same way.
+	const want = takeover.slice(-8);
+	if (want.length !== 8) throw held();
 	const guard = `${lock}.force`;
-	try {
-		writeFileSync(guard, sid, { flag: "wx" });
-	} catch {
-		throw held();
-	}
+	acquireGuard(guard, sid, held);
 	try {
 		const now = holder(lock);
-		if (!now || !now.endsWith(takeover)) throw held();
-		rmSync(lock, { force: true });
-		create();
+		if (!now || now.slice(-8) !== want) throw held();
+		// Replace the lock in one step: rm + create leaves it missing, and a session reading it
+		// then believes it lost the ticket.
+		const tmp = `${lock}.${process.pid}.swap`;
+		writeFileSync(tmp, sid, { flag: "wx" });
+		renameSync(tmp, lock);
 	} finally {
 		rmSync(guard, { force: true });
+	}
+}
+
+/**
+ * Take the takeover guard. A guard left by a killed process would block every later takeover,
+ * so an old one is dropped; a fresh one means another session is taking over right now.
+ */
+function acquireGuard(guard: string, sid: string, held: () => Error): void {
+	const stale = (): boolean => {
+		try {
+			const age = Date.now() - Number(readFileSync(guard, "utf8").split(" ")[1]);
+			return !Number.isFinite(age) || age > 5 * 60_000;
+		} catch {
+			return false;
+		}
+	};
+	try {
+		writeFileSync(guard, `${sid} ${Date.now()}`, { flag: "wx" });
+		return;
+	} catch {}
+	if (!stale()) throw held();
+	rmSync(guard, { force: true });
+	try {
+		writeFileSync(guard, `${sid} ${Date.now()}`, { flag: "wx" });
+	} catch {
+		throw held();
 	}
 }
 
@@ -169,12 +209,20 @@ export function load(file: string): Ev[] {
 	return readFileSync(file, "utf8")
 		.split(/\r?\n/)
 		.filter(l => l.trim())
-		.map(l => JSON.parse(l) as Ev)
+		// A half-written line (a killed process) must not take the whole day down with it.
+		.map(l => {
+			try {
+				return JSON.parse(l) as Ev;
+			} catch {
+				return undefined;
+			}
+		})
+		.filter((e): e is Ev => e !== undefined)
 		.sort((a, b) => ms(a.ts) - ms(b.ts));
 }
 
 export function append(file: string, ev: Ev): void {
-	appendFileSync(file, `${JSON.stringify(ev)}\n`);
+	appendFileSync(file, `${JSON.stringify(ev)}\n`, { mode: 0o600 });
 }
 
 /** Local time with offset, seconds precision (toISOString is UTC). */

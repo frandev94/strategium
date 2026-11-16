@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { childEnv } from "../extensions/strategium/env";
 
 export const RATE = 22050;
 export const LEVELS = ["50", "80", "100", "done", "attention"] as const;
@@ -119,9 +120,13 @@ export function synth(level: Level): Buffer {
 }
 
 function play(file: string) {
-	const run = (cmd: string, args: string[]) => spawnSync(cmd, args, { stdio: "ignore" });
+	const run = (cmd: string, args: string[], env?: Record<string, string>) =>
+		spawnSync(cmd, args, { stdio: "ignore", env: { ...childEnv(), ...env } });
 	if (process.platform === "win32")
-		return run("powershell", ["-NoProfile", "-Command", `(New-Object Media.SoundPlayer '${file}').PlaySync()`]);
+		// The path travels in an env var: a quote in it would break the script.
+		return run("powershell", ["-NoProfile", "-Command", "(New-Object Media.SoundPlayer $env:VOX_FILE).PlaySync()"], {
+			VOX_FILE: file,
+		});
 	if (process.platform === "darwin") return run("afplay", [file]);
 	const players: [string, string[]][] = [["paplay", [file]], ["aplay", ["-q", file]], ["ffplay", ["-nodisp", "-autoexit", "-loglevel", "quiet", file]]];
 	for (const [cmd, args] of players) if (!run(cmd, args).error) return;
@@ -131,7 +136,7 @@ function play(file: string) {
 /** Desktop notification so the user sees it with the terminal hidden; best effort, never throws. */
 function toast(msg: string) {
 	const run = (cmd: string, args: string[], env?: Record<string, string>) =>
-		spawnSync(cmd, args, { stdio: "ignore", env: { ...process.env, ...env } });
+		spawnSync(cmd, args, { stdio: "ignore", env: { ...childEnv(), ...env } });
 	if (process.platform === "win32") {
 		// Built-in WinRT toast through Windows PowerShell; the text travels in an env var, never in the script.
 		const ps = [
@@ -157,7 +162,15 @@ if (import.meta.main) {
 		if (msg) toast(msg);
 		const dir = join(tmpdir(), "strategium-vox");
 		const file = join(dir, `${level}.wav`);
-		if (!existsSync(file)) { mkdirSync(dir, { recursive: true }); writeFileSync(file, synth(level)); }
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+		if (!existsSync(file)) {
+			try {
+				// `wx`: never write through a symlink another user planted in the cache dir.
+				writeFileSync(file, synth(level), { flag: "wx", mode: 0o600 });
+			} catch {
+				// Another process wrote it first: use what is there.
+			}
+		}
 		play(file);
 	} catch (e) {
 		console.error(`vox: ${(e as Error).message}`);

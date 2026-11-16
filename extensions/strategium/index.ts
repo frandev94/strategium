@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -7,6 +7,7 @@ import {
 	blocks,
 	bookedMin,
 	claim,
+	DAY_RE,
 	holds,
 	dayFile,
 	dueAlert,
@@ -17,6 +18,7 @@ import {
 	overlapMin,
 	release,
 } from "./timer";
+import { childEnv } from "./env";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
 // Several sessions can run different tickets at the same time; the day file holds them all.
@@ -35,9 +37,9 @@ const beatFile = (sid: string) => path.join(RUNS, `${sid}.beat`);
 
 /** Write through a temp file and rename, so a reader in another session never sees half a file. */
 function writeAtomic(file: string, data: string): void {
-	mkdirSync(path.dirname(file), { recursive: true });
+	mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
 	const tmp = `${file}.${process.pid}.tmp`;
-	writeFileSync(tmp, data);
+	writeFileSync(tmp, data, { mode: 0o600 });
 	renameSync(tmp, file);
 }
 
@@ -53,7 +55,12 @@ const sidOf = (ctx: { sessionManager: { getSessionId(): string } }) => ctx.sessi
 
 function readRun(sid: string): Run | undefined {
 	const f = runFile(sid);
-	return existsSync(f) ? (JSON.parse(readFileSync(f, "utf8")) as Run) : undefined;
+	if (!existsSync(f)) return undefined;
+	try {
+		return JSON.parse(readFileSync(f, "utf8")) as Run;
+	} catch {
+		return undefined;
+	}
 }
 
 /** This session's run, only while it still holds the ticket; a run taken over by another session is dropped. */
@@ -74,7 +81,15 @@ function allRuns(): Run[] {
 	if (!existsSync(RUNS)) return [];
 	return readdirSync(RUNS)
 		.filter(f => f.endsWith(".json"))
-		.map(f => JSON.parse(readFileSync(path.join(RUNS, f), "utf8")) as Run);
+		// A truncated run file must not break `status` for every other session.
+		.map(f => {
+			try {
+				return JSON.parse(readFileSync(path.join(RUNS, f), "utf8")) as Run;
+			} catch {
+				return undefined;
+			}
+		})
+		.filter((r): r is Run => r !== undefined);
 }
 
 // Session ids share a time prefix, so the tail tells sessions apart.
@@ -86,7 +101,7 @@ let refreshFooter: (() => void) | undefined;
 const isOpen = (key: string) => openKeys(load(today())).includes(key);
 
 function startKey(key: string, booked?: number, prior?: number): void {
-	mkdirSync(D, { recursive: true });
+	mkdirSync(D, { recursive: true, mode: 0o700 });
 	const file = today();
 	const evs = load(file);
 	if (openKeys(evs).includes(key)) return;
@@ -121,7 +136,7 @@ function shift(run: Run, booked?: number): string {
 /** Manual correction: `min` minutes added to (or, negative, taken from) today's time for the run's ticket. */
 function addMin(run: Run, min: number): string {
 	if (!Number.isInteger(min) || min === 0) throw new Error("add needs a whole number of minutes, e.g. 30 or -15");
-	mkdirSync(D, { recursive: true });
+	mkdirSync(D, { recursive: true, mode: 0o700 });
 	append(today(), { ts: nowIso(), event: "adjust", key: run.key, prior: min });
 	return `ADDED ${min > 0 ? "+" : ""}${min} min to ${run.key} (now ${Math.floor(elapsedMin(load(today()), run.key, new Date()))} min today)`;
 }
@@ -132,11 +147,13 @@ const GAP_MS = 3 * 60_000;
 /**
  * If `run`'s ticket is still open but its session went silent (crash, killed process, sleep), close the open block
  * at the last heartbeat, in that heartbeat's day file, so the silent time is not counted. Returns the beat it closed
- * at, or undefined when there was no gap.
+ * at, or undefined when there was no gap. With `force` the block is closed even without a gap: a session that takes a
+ * ticket over has to close the previous turn, or the new booking would never start.
  */
-function closeGap(run: Run): string | undefined {
-	const at = lastBeat(run.sid);
-	if (!at || Date.now() - new Date(at).getTime() < GAP_MS) return undefined;
+function closeGap(run: Run, force = false): string | undefined {
+	const beat = lastBeat(run.sid);
+	if (!force && (!beat || Date.now() - new Date(beat).getTime() < GAP_MS)) return undefined;
+	const at = beat ?? nowIso();
 	const file = dayFile(D, new Date(at));
 	if (!openKeys(load(file)).includes(run.key)) return undefined;
 	append(file, { ts: at, event: "stop", key: run.key });
@@ -148,7 +165,8 @@ function begin(sid: string, key: string, theatre: string, booked: number, spent?
 	claim(D, key, sid, takeover);
 	const other = allRuns().find(r => r.key === key && r.sid !== sid);
 	if (other) {
-		closeGap(other);
+		// Force: the ticket changes hands, so its open block ends here whatever the heartbeat gap is.
+		closeGap(other, true);
 		rmSync(runFile(other.sid), { force: true });
 		rmSync(beatFile(other.sid), { force: true });
 	}
@@ -202,6 +220,8 @@ function endRun(sid: string, key?: string, takeover?: string): string {
 }
 
 function report(date?: string): string {
+	// The date comes from the model: only a plain day file, never a path.
+	if (date !== undefined && !DAY_RE.test(date)) throw new Error(`bad date ${date}; expected YYYY-MM-DD`);
 	const file = date ? path.join(D, `${date}.jsonl`) : today();
 	const evs = load(file);
 	// A past day ends at its midnight, so a block left open then does not grow until now.
@@ -225,21 +245,32 @@ function report(date?: string): string {
 	].join("\n");
 }
 
+/** The alarm command split into arguments: quotes keep a path with spaces in one piece. */
+function alarmCmd(cmd: string): string[] {
+	return (cmd.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map(t => t.replace(/^["']|["']$/g, ""));
+}
+
 /**
  * Run STRATEGIUM_ALARM with the level in STRATEGIUM_P and a desktop-notification text in STRATEGIUM_MSG.
  * Levels: 50 | 80 | 100 for the booking timer, "attention" when the user is needed. Unset → silent.
+ * Returns the reason when the alarm could not be started, so it is not a silent no-sound.
  */
-function signal(level: string, msg: string): void {
+function signal(level: string, msg: string): string | undefined {
 	const alarm = process.env.STRATEGIUM_ALARM?.trim();
-	if (!alarm) return;
+	if (!alarm) return undefined;
 	try {
-		Bun.spawn({
-			cmd: alarm.split(/\s+/),
-			env: { ...process.env, STRATEGIUM_P: level, STRATEGIUM_MSG: msg },
+		const child = Bun.spawn({
+			cmd: alarmCmd(alarm),
+			env: childEnv({ STRATEGIUM_P: level, STRATEGIUM_MSG: msg }),
 			stdout: "ignore",
 			stderr: "ignore",
 		});
-	} catch {}
+		// The alarm must not keep the session alive.
+		child.unref();
+		return undefined;
+	} catch (err) {
+		return `the alarm failed: ${err instanceof Error ? err.message : String(err)}`;
+	}
 }
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
@@ -306,8 +337,9 @@ export default function (pi: ExtensionAPI) {
 					case "attention": {
 						const key = ownRun(sid)?.key;
 						const msg = params.message?.trim() || "Your attention is needed";
-						signal("attention", key ? `${key}: ${msg}` : msg);
-						return text(`ATTENTION ${msg}`);
+						const err = signal("attention", key ? `${key}: ${msg}` : msg);
+						if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+						return text(err ? `ERROR ${err}` : `ATTENTION ${msg}`);
 					}
 				}
 			} catch (err) {
@@ -451,7 +483,8 @@ export default function (pi: ExtensionAPI) {
 				if (p === undefined) return;
 				append(file, { ts: nowIso(), event: "alert", key, p });
 				ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}`, p === 100 ? "warning" : "info");
-				signal(String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`);
+				const alarmError = signal(String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`);
+				if (alarmError) ctx.ui.notify(`Strategium: ${alarmError}`, "warning");
 				pi.sendMessage(
 					{ customType: "strategium-timer", content: `TIMER ${p}% ${key} ${el}/${bk} min`, display: true, attribution: "agent" },
 					{ deliverAs: "aside", triggerTurn: true },
@@ -482,7 +515,10 @@ export default function (pi: ExtensionAPI) {
 		const run = ownRun(sidOf(ctx));
 		const name = e.toolName.replace(/^_+/, "");
 		// A question to the user during a run needs them at the keyboard, wherever they are.
-		if (name === "ask" && run) signal("attention", `${run.key}: your answer is needed`);
+		if (name === "ask" && run) {
+			const err = signal("attention", `${run.key}: your answer is needed`);
+			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+		}
 		const repo = run?.repo;
 		if (!repo) return;
 		const input = e.input as Record<string, unknown>;
@@ -492,11 +528,22 @@ export default function (pi: ExtensionAPI) {
 		else if (name === "edit")
 			targets = [...String(input.input ?? "").matchAll(/^\[([^\]#\r\n]+)#[0-9A-Fa-f]{4}\]/gm)].map(m => m[1]);
 		else return;
-		const norm = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
-		const roots = [repo, `${repo}-worktrees`].map(norm);
+		// Windows and macOS filesystems ignore case; Linux does not.
+		const norm = (p: string) => (process.platform === "linux" ? p : p.toLowerCase());
+		// A scheme of two or more letters is a URI; a single letter is a Windows drive (C://...).
+		const isUri = (t: string) => /^[a-z][a-z0-9+.-]+:\/\//i.test(t);
+		// Compare real paths, so an alias of the repo through a symlink matches the root too.
+		const real = (p: string) => {
+			try {
+				return path.join(realpathSync(path.dirname(p)), path.basename(p));
+			} catch {
+				return p;
+			}
+		};
+		const roots = [repo, `${repo}-worktrees`].map(r => norm(real(path.resolve(r))));
 		for (const t of targets) {
-			if (t.includes("://")) continue;
-			const abs = norm(path.resolve(ctx.cwd, t));
+			if (isUri(t)) continue;
+			const abs = norm(real(path.resolve(ctx.cwd, t)));
 			if (roots.some(r => abs === r || abs.startsWith(r + path.sep))) return { block: true, reason: CAPTAIN_REASON };
 		}
 	});
