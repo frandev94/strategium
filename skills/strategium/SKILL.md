@@ -79,21 +79,21 @@ Manual time: `/strategium add <min>` (tool action `add`, `minutes`) adds minutes
 Every minute the plugin checks the booking. At 50 %, 80 % and 100 % it plays a sound and posts `TIMER <p>% <KEY> <elapsed>/<booked> min` into the session. It reports the highest threshold crossed since the last alert, so a run that starts past one skips it. On that message:
 - **50 %:** tell the user.
 - **80 %:** tell the user and compare with the pending todo items. If the rest will not fit, say so now, with the reason.
-- **100 % (extraction):**
+- **100 % (stand down):**
   - start no new agents;
   - send running agents (`write agent://<id>`) "Wrap up: stop at a safe point, do not commit, report state";
   - call `strategium` `stop`;
   - report what is done and what is left;
   - continue only on the user's explicit order.
-- A standing order recorded in Muster ("continue past the booking") replaces the extraction steps for that run: on TIMER 100 % tell the user in one line, record the order with the reason, and keep going; no wrap-up messages, no `stop`. The user withdraws it at any time.
+- A standing order recorded in Muster ("continue past the booking") replaces the stand-down steps for that run: on TIMER 100 % tell the user in one line, record the order with the reason, and keep going; no wrap-up messages, no `stop`. The user withdraws it at any time.
 
 ## Resume (ticket already in progress)
 
 When the ticket has commits or uncommitted work from an earlier session, run the stations with these changes:
 - Muster: record the starting state (`git log origin/main..HEAD --oneline`, `git status --short | wc -l`) in `local://<KEY>-auspex.md`.
 - Auspex: scouts map what is done and what is left, not the whole codebase. Large transcripts are read by tail range only (e.g. `:-300`), and a scout writes its partial result before reading more.
-- Briefing: the librarian plans only the remaining work; slice 1 finishes and verifies the in-flight work so the tree is green first.
-- Deployment: no new branch and no drop pods over a dirty tree; slices run in place, one at a time, unless the work splits into files with no overlap.
+- Scriptorium: the librarian plans only the remaining work; slice 1 finishes and verifies the in-flight work so the tree is green first.
+- Encampment: no new branch and no drop pods over a dirty tree; slices run in place, one at a time, unless the work splits into files with no overlap.
 - Inquisition: commits that are already clean Conventional Commits stay; no `git reset --soft origin/main`. New work goes in as new commits on top.
 - Seals as the user chooses (e.g. UI and Commit per card).
 
@@ -108,23 +108,23 @@ When the ticket has commits or uncommitted work from an earlier session, run the
 4. `strategium` `begin` with `key`, `booked`, `spent` and `theatre`. If elapsed is already ≥ the booking, apply the 100 % rule now, before any agent starts: say so with the reason and continue only on the user's explicit order.
 5. `todo init` with the stations below and their tagged items.
 
-### 1. Auspex scan [scout]
+### 1. Auspex [scout]
 - **[theatre]** Find the repo. Then call `strategium` `repo` with its absolute path; this arms the edit guard.
 - 1–3 `scout` agents in one `task` batch, distinct focuses: code paths the ticket touches; existing helpers, patterns and tests to reuse; repo conventions (MR template, commit rules, i18n, test and check commands, repo skills). Briefs give file ranges for anything large (transcripts, logs, generated files), never "read the whole file".
 - The Captain merges their outputs into `local://<KEY>-auspex.md`.
 
-### 2. Briefing [librarian] → seal Plan
+### 2. Scriptorium [librarian] → seal Plan
 - One `librarian` agent with the ticket text (acceptance criteria verbatim) and `local://<KEY>-auspex.md`; it writes `local://<KEY>-plan.md` (Spec, Slices, Merge bar).
 - Challenge gaps: scope beyond the ticket, slices without a check. Fixes go back to the same librarian (`write agent://<id>`).
 - `[seal] Plan`: show the slices and the Merge bar. Nothing is built before the OK.
 
-### 3. Deployment [captain]
+### 3. Encampment [captain]
 - Branch `<type>/<KEY>-<short-name>` from `origin/main` in the main checkout.
 - Each `parallel: yes` slice gets a drop pod: `git worktree add ../<repo>-worktrees/<KEY>-<slice> -b <branch>-<slice>`, never inside the repo or a workspace glob.
 - For node repos, add a `node_modules` junction (Windows: `cmd /c mklink /J`) or symlink to the main checkout's `node_modules`.
 - `parallel: no` slices run in the main checkout, one at a time.
 
-### 4. Engagement [battle-brother] [apothecary]
+### 4. Skirmish [battle-brother] [apothecary]
 - Parallel slices: one `task` batch with `agent: battle-brother`, one per worktree. Sequential slices: one after the other.
 - Each brief: slice text, directory, files, acceptance check, extra skills to read (`strategium-ui` for UI slices; `source-driven-development` for external APIs/libraries; `debugging-and-error-recovery` when fixing failures; plus the theatre's **Extra skills** for that kind of slice), and "commit nothing".
 - When a slice reports done, run one `apothecary` with the slice's spec criteria, new test files and production paths, never the battle-brother's report. It runs in its own throwaway pod, never in a directory another agent is using: `git worktree add --detach ../<repo>-worktrees/<KEY>-apo HEAD`, copy the slice's changed and untracked files into it (`git ls-files -m -o --exclude-standard`), add the `node_modules` link, and remove the pod afterwards (link first).
@@ -145,7 +145,7 @@ When the ticket has commits or uncommitted work from an earlier session, run the
 - **[theatre]** Delivery: MR title and description, including a `## Merge bar` checklist ticked from the inquisitor's PASS items; show it to the user: `[seal] MR`. After the OK: push once, open the MR as draft, watch the pipeline as a background bash job, and mark it ready when green.
 - Remove the drop pods: junction or symlink first, then `git worktree remove`, then the slice branches.
 
-### 7. After-action report [captain]
+### 7. Debrief [captain]
 - `strategium` `end`.
 - **[theatre]** Records.
 - `strategium` `report` gives the day's real blocks for time booking; the theatre says when and how to book them.
