@@ -1,11 +1,11 @@
 ---
 name: strategium-study
-description: Use for the Strategium study notes (change walkthrough) of a finished ticket branch, so the user can understand and defend AI-generated changes in review; read-only.
+description: Use for the Strategium study notes (change walkthrough) of a finished run's branch, so the user can understand and defend AI-generated changes in review; read-only.
 ---
 
 # Strategium study notes
 
-Act as a senior mentor and reviewer. Input: ticket key and title, diff range (e.g. `origin/main..HEAD`), output file (e.g. `local://<KEY>-study.md`). Goal: the user understands the change and can defend it in review, not only that it works.
+Act as a senior mentor and reviewer. Input: the run's key and objective, diff range (e.g. `origin/main..HEAD`), output file (e.g. `local://<KEY>-study.md`). Goal: the user understands the change and can defend it in review, not only that it works.
 
 1. **Summary:** what problem the change solves and how, in 5 lines.
 2. **Commit walkthrough:** what each commit does, why this way, which alternative was dropped.

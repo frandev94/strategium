@@ -2,7 +2,7 @@
 
 > Español: [README.es.md](README.es.md)
 
-Turn an omp session into a **Strategium**: the main session plans and delegates, specialised agents build and review, and you keep the seals.
+**Strategium** is an orchestrator workflow for omp. The main session plans and delegates, specialised agents build and review, and you keep the seals. It works any objective: free text, a spec or plan file, or a ticket. **Ticketing is optional**, and with it comes a booking timer.
 
 This is an **omp** plugin: it is installed, updated and run with omp, and it targets no other coding agent.
 
@@ -10,20 +10,20 @@ The plugin ships three things:
 
 | Part | What it is |
 |---|---|
-| **Extension** | the `strategium` tool and the `/strategium` command: booking timer, per-session ticket claims, edit guard |
+| **Extension** | the `strategium` tool and the `/strategium` command: per-session claims, edit guard, optional booking timer |
 | **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, plus the bundled `scout` and `sonic` |
 | **Skills** | `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-study`, `strategium-ui` |
 
 ## How a run works
 
-The main session is the **Captain**: it never edits product code. It plans, delegates, guards the seals and keeps the clock. You are the **Chapter Master**: only you grant a seal (Plan, UI, MR, Commit).
+The main session is the **Captain**: it never edits product code. It plans, delegates and guards the seals. You are the **Chapter Master**: only you grant a seal (Plan, UI, MR, Commit).
 
 ```
 Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition → Extraction
 ```
 
-1. **Muster** — the ticket, the booked minutes and the seals.
-2. **Auspex** — scouts map the code the ticket touches.
+1. **Muster** — the objective, the seals and, with ticketing, the booking.
+2. **Auspex** — scouts map the code the objective touches.
 3. **Scriptorium** — the librarian writes a spec, 1–5 slices and a Merge bar.
 4. **Deployment** — one branch per slice, one worktree per parallel slice.
 5. **Skirmish** — a `battle-brother` implements each slice test-first; an `apothecary` tries to break the new tests.
@@ -32,10 +32,10 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 
 ```mermaid
 flowchart TB
-  U["You · Chapter Master<br/>you grant the seals"] -->|"/strategium ticket"| C
+  U["You · Chapter Master<br/>you grant the seals"] -->|"/strategium objective"| C
   subgraph run["Main session · the Captain"]
     C["Captain<br/>strategium tool + /strategium<br/>never edits code"]
-    C --> M["Muster<br/>ticket · booked minutes · seals"]
+    C --> M["Muster<br/>objective · seals · booking?"]
     M --> A["Auspex<br/>scout"]
     A --> B["Scriptorium<br/>librarian → plan"]
     B --> S1{{"seal Plan"}}
@@ -47,10 +47,10 @@ flowchart TB
     X --> S3{{"seal MR"}}
     S3 --> F["Debrief<br/>day report"]
   end
-  T["Booking timer<br/>50% · 80% · 100%"] -.->|warns| C
+  T["Booking timer · ticketing only<br/>50% · 80% · 100%"] -.->|warns| C
   T --> V["vox-caster<br/>sound + notification"]
   G["Edit guard<br/>edit · write · ast_edit"] -.->|blocks| C
-  R["State per day<br/>JSONL + claims per ticket"] --- C
+  R["State per day<br/>JSONL + claims per run"] --- C
 ```
 
 Station names, agent names and alerts have their own voice. Tickets, commit messages and merge requests stay plain and professional.
@@ -101,17 +101,25 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 ## Usage
 
 ```
-/strategium <ticket> [theatre]   start a run
-/strategium pause                stop the clock
-/strategium resume [booked]      continue (pass today's booked minutes on a new day)
-/strategium add <min>            manual correction, negative to subtract
-/strategium status               every run and its timer
-/strategium end                  close the run
+/strategium "free text" [theatre]   work an objective in your words
+/strategium @path [theatre]         work a spec or an approved plan file
+/strategium <key> [theatre]         work a ticket the theatre knows, or a short name
+/strategium pause                   stop the clock
+/strategium resume [booked]         continue (a timed run passes today's booked minutes on a new day)
+/strategium add <min>               manual correction, negative to subtract
+/strategium status                  every run and its time
+/strategium end                     close the run
 ```
 
-The **booking** is the time budget of the ticket. The timer fires at 50 %, 80 % and 100 % of it — the highest threshold it crosses, so a run that starts past 50 % goes straight to the next one. At 100 % the Captain stops starting agents and reports what is done and what is left.
+Free text needs the quotes, so it never clashes with a subcommand. Without a ticket, the librarian proposes the acceptance criteria and you confirm them at seal Plan, which cannot be skipped.
 
-Every session owns one ticket, claimed atomically, so several omp sessions can work on different tickets at the same time. The Captain cannot edit the ticket's repository: `edit` and `write` are blocked inside the run's repo and its `<repo>-worktrees` folder, and `ast_edit` is blocked for the whole session while the run is open.
+Every session owns one run, claimed atomically, so several omp sessions can work on different objectives at the same time. The Captain cannot edit the run's repository: `edit` and `write` are blocked inside the run's repo and its `<repo>-worktrees` folder, and `ast_edit` is blocked for the whole session while the run is open.
+
+### Ticketing (optional)
+
+A run is **timed** when its objective is a ticket of a theatre, or when you give it a booking in Muster. The **booking** is the time budget for today: the timer fires at 50 %, 80 % and 100 % of it — the highest threshold it crosses, so a run that starts past 50 % goes straight to the next one. At 100 % the Captain stands down: it stops starting agents and reports what is done and what is left. Each day is its own shift with its own booking.
+
+An **untimed** run still counts its time (`status`, `report`), with no alerts, no stand down and no shifts.
 
 ### Configuration
 
@@ -122,7 +130,7 @@ Every session owns one ticket, claimed atomically, so several omp sessions can w
 | `STRATEGIUM_STATE_DIR` | where the session state lives (default `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | `1` to use Nerd Font glyphs instead of emoji |
 
-The state (one JSONL per day plus the ticket claims) stays outside the repository, so no session data is ever committed.
+The state (one JSONL per day plus the run claims) stays outside the repository, so no session data is ever committed.
 
 ### The alarm
 
@@ -134,12 +142,12 @@ bun alarm/vox.ts 100 "the booking is over"
 
 ### Theatres
 
-A theatre is a `strategium-<name>` skill that binds the run to your organisation: where the tickets live, how the time is booked, how the merge requests are written, which records are kept. Without a theatre the Captain asks you for the booked minutes and the acceptance criteria and stops after the UI seal.
+A theatre is a `strategium-<name>` skill that binds the run to your organisation: where the tickets live, how the time is booked, how the merge requests are written, which records are kept. Without a theatre nothing is pushed: the delivery is the branch with its commits.
 
 ## Development
 
 ```
-bun test                          # 28 tests: timer, claims across processes, alarm WAVs
+bun test                          # timer, claims across processes, the extension through a fake host, alarm WAVs
 ```
 
 ```

@@ -1,6 +1,6 @@
 ---
 name: inquisitor
-description: Strategium independent reviewer. Reviews a ticket branch against its Merge bar and the review skills; did not build it and never edits.
+description: Strategium independent reviewer. Reviews a run's branch against its Merge bar and the review skills; did not build it and never edits.
 tools: read, grep, find, glob, lsp, ast_grep, bash
 spawns: scout
 model: [anthropic/claude-opus-5-5, openai-codex/gpt-6-astra, "@slow"]

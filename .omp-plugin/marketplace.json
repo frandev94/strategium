@@ -4,12 +4,12 @@
 		"name": "Fran Glez"
 	},
 	"metadata": {
-		"description": "Strategium: orchestrator-mode ticket work for omp"
+		"description": "Strategium: an orchestrator workflow for omp"
 	},
 	"plugins": [
 		{
 			"name": "strategium",
-			"description": "Orchestrator-mode ticket work with delegated agents, seals and a booking timer",
+			"description": "An orchestrator workflow with delegated agents and seals, and optional ticketing with a booking timer",
 			"source": "./",
 			"version": "0.1.0",
 			"author": {

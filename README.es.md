@@ -2,7 +2,7 @@
 
 > English: [README.md](README.md)
 
-Convierte una sesión de omp en un **Strategium**: la sesión principal planifica y delega, los agentes especializados construyen y revisan, y tú conservas los sellos.
+**Strategium** es un workflow orquestador para omp. La sesión principal planifica y delega, los agentes especializados construyen y revisan, y tú conservas los sellos. Trabaja cualquier objetivo: texto libre, un fichero de spec o de plan, o un ticket. **El ticketing es opcional**, y con él viene un temporizador de reserva.
 
 Este es un plugin de **omp**: se instala, se actualiza y se ejecuta con omp, y no apunta a ningún otro agente de programación.
 
@@ -10,20 +10,20 @@ El plugin trae tres cosas:
 
 | Parte | Qué es |
 |---|---|
-| **Extensión** | el tool `strategium` y el comando `/strategium`: temporizador de reserva, reserva de ticket por sesión, bloqueo de edición |
+| **Extensión** | el tool `strategium` y el comando `/strategium`: reserva de la run por sesión, bloqueo de edición, temporizador de reserva opcional |
 | **Agentes** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, más los incluidos `scout` y `sonic` |
 | **Skills** | `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-study`, `strategium-ui` |
 
 ## Cómo funciona una run
 
-La sesión principal es el **Capitán**: nunca edita código de producto. Planifica, delega, custodia los sellos y lleva el reloj. Tú eres el **Maestro de Capítulo**: solo tú concedes un sello (Plan, UI, MR, Commit).
+La sesión principal es el **Capitán**: nunca edita código de producto. Planifica, delega y custodia los sellos. Tú eres el **Maestro de Capítulo**: solo tú concedes un sello (Plan, UI, MR, Commit).
 
 ```
 Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition → Extraction
 ```
 
-1. **Muster** — el ticket, los minutos reservados y los sellos.
-2. **Auspex** — los scouts mapean el código que toca el ticket.
+1. **Muster** — el objetivo, los sellos y, con ticketing, la reserva.
+2. **Auspex** — los scouts mapean el código que toca el objetivo.
 3. **Scriptorium** — el librarian escribe una especificación, de 1 a 5 slices y una Merge bar.
 4. **Deployment** — una rama por slice, un worktree por slice en paralelo.
 5. **Skirmish** — un `battle-brother` implementa cada slice con los tests primero; un `apothecary` intenta romper los tests nuevos.
@@ -32,10 +32,10 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 
 ```mermaid
 flowchart TB
-  U["Tú · Maestro de Capítulo<br/>concedes los sellos"] -->|"/strategium ticket"| C
+  U["Tú · Maestro de Capítulo<br/>concedes los sellos"] -->|"/strategium objetivo"| C
   subgraph run["Sesión principal · el Capitán"]
     C["Capitán<br/>tool strategium + /strategium<br/>nunca edita código"]
-    C --> M["Muster<br/>ticket · minutos reservados · sellos"]
+    C --> M["Muster<br/>objetivo · sellos · reserva?"]
     M --> A["Auspex<br/>scout"]
     A --> B["Scriptorium<br/>librarian → plan"]
     B --> S1{{"seal Plan"}}
@@ -47,10 +47,10 @@ flowchart TB
     X --> S3{{"seal MR"}}
     S3 --> F["Debrief<br/>informe del día"]
   end
-  T["Temporizador de reserva<br/>50% · 80% · 100%"] -.->|avisa| C
+  T["Temporizador de reserva · solo ticketing<br/>50% · 80% · 100%"] -.->|avisa| C
   T --> V["vox-caster<br/>sonido + notificación"]
   G["Guarda de edición<br/>edit · write · ast_edit"] -.->|bloquea| C
-  R["Estado por día<br/>JSONL + reservas por ticket"] --- C
+  R["Estado por día<br/>JSONL + reservas por run"] --- C
 ```
 
 Los nombres de estación, los nombres de agente y las alertas tienen su propia voz. Los tickets, los mensajes de commit y las merge requests se quedan planos y profesionales.
@@ -101,17 +101,25 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 ## Uso
 
 ```
-/strategium <ticket> [theatre]   arranca una run
-/strategium pause                para el reloj
-/strategium resume [booked]      continúa (pasa los minutos de hoy en un día nuevo)
-/strategium add <min>            corrección manual, en negativo para restar
-/strategium status               todas las runs y su temporizador
-/strategium end                  cierra la run
+/strategium "texto libre" [theatre]   trabaja un objetivo con tus palabras
+/strategium @ruta [theatre]           trabaja un fichero de spec o un plan aprobado
+/strategium <clave> [theatre]         trabaja un ticket que conoce el teatro, o un nombre corto
+/strategium pause                     para el reloj
+/strategium resume [booked]           continúa (una run con reserva pasa los minutos de hoy en un día nuevo)
+/strategium add <min>                 corrección manual, en negativo para restar
+/strategium status                    todas las runs y su tiempo
+/strategium end                       cierra la run
 ```
 
-La **reserva** es el presupuesto de tiempo del ticket. El temporizador suena al 50 %, 80 % y 100 % de la reserva — el umbral más alto que cruza, así que una run que empieza pasado el 50 % va directamente al siguiente. Al 100 % el Capitán deja de lanzar agentes e informa de lo que está hecho y de lo que queda.
+El texto libre necesita las comillas, para no chocar nunca con un subcomando. Sin ticket, el librarian propone los criterios de aceptación y tú los confirmas en el sello Plan, que no se puede saltar.
 
-Cada sesión es dueña de un ticket, con una reserva atómica, así que varias sesiones de omp pueden trabajar en tickets distintos a la vez. El Capitán no puede editar el repositorio del ticket: `edit` y `write` están bloqueados dentro del repo de la run y de su carpeta `<repo>-worktrees`, y `ast_edit` queda bloqueado en toda la sesión mientras la run está abierta.
+Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. El Capitán no puede editar el repositorio de la run: `edit` y `write` están bloqueados dentro del repo de la run y de su carpeta `<repo>-worktrees`, y `ast_edit` queda bloqueado en toda la sesión mientras la run está abierta.
+
+### Ticketing (opcional)
+
+Una run lleva **temporizador** cuando su objetivo es un ticket de un teatro, o cuando le das una reserva en Muster. La **reserva** es el presupuesto de tiempo de hoy: el temporizador suena al 50 %, 80 % y 100 % — el umbral más alto que cruza, así que una run que empieza pasado el 50 % va directamente al siguiente. Al 100 % el Capitán hace *stand down*: deja de lanzar agentes e informa de lo que está hecho y de lo que queda. Cada día es su propio turno con su propia reserva.
+
+Una run **sin temporizador** sigue contando su tiempo (`status`, `report`), sin avisos, sin *stand down* y sin turnos.
 
 ### Configuración
 
@@ -122,7 +130,7 @@ Cada sesión es dueña de un ticket, con una reserva atómica, así que varias s
 | `STRATEGIUM_STATE_DIR` | dónde vive el estado de las sesiones (por defecto `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | `1` para usar glifos de Nerd Font en lugar de emoji |
 
-El estado (un JSONL por día más las reservas de tickets) vive fuera del repositorio, así que nunca se commitean datos de sesión.
+El estado (un JSONL por día más las reservas de las runs) vive fuera del repositorio, así que nunca se commitean datos de sesión.
 
 ### La alarma
 
@@ -134,12 +142,12 @@ bun alarm/vox.ts 100 "la reserva se ha agotado"
 
 ### Los teatros
 
-Un teatro es una skill `strategium-<nombre>` que ata la run a tu organización: dónde están los tickets, cómo se reserva el tiempo, cómo se escriben las merge requests y qué registros se guardan. Sin teatro, el Capitán te pide los minutos reservados y los criterios de aceptación, y se detiene tras el sello de UI.
+Un teatro es una skill `strategium-<nombre>` que ata la run a tu organización: dónde están los tickets, cómo se reserva el tiempo, cómo se escriben las merge requests y qué registros se guardan. Sin teatro no se sube nada: la entrega es la rama con sus commits.
 
 ## Desarrollo
 
 ```
-bun test                          # 28 tests: temporizador, reservas entre procesos, WAV de la alarma
+bun test                          # temporizador, reservas entre procesos, la extensión con un host falso, WAV de la alarma
 ```
 
 ```
