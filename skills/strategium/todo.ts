@@ -16,7 +16,7 @@
 
 /** The agents a task can name, with their Nerd Font glyph (codepoints checked in the Nerd Fonts glyphnames.json). */
 export const AGENTS: Record<string, string> = {
-	captain: "\u{f0857}", // md-chess_king
+	captain: "\u{f18bc}", // md-shield_crown
 	scout: "\u{f0437}", // md-radar
 	librarian: "\u{f05da}", // md-book_open_page_variant
 	"battle-brother": "\u{f18be}", // md-shield_sword

@@ -25,6 +25,7 @@ describe("the todo of a run", () => {
 
 	test("glyph tags put the agent's glyph before its name", () => {
 		const [call] = buildTodo(stations, { glyphs: true });
+		expect(call.op === "init" && call.list[0].items).toEqual(["\u{f18bc} captain · Muster"]);
 		expect(call.op === "init" && call.list[1].items).toEqual([
 			"\u{f05da} librarian · Plan as slices",
 			"\u{f047a} seal · Plan",
