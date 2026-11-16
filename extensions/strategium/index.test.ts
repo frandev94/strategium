@@ -20,6 +20,7 @@ function fakePi() {
 	const commands: Record<string, { handler: (args: string, ctx: unknown) => Promise<void> }> = {};
 	const handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]> = {};
 	const sent: string[] = [];
+	const calls: [unknown, unknown][] = [];
 	const zod = {
 		object: () => schema(),
 		string: () => schema(),
@@ -34,12 +35,13 @@ function fakePi() {
 			registerCommand: (name: string, cmd: { handler: (args: string, ctx: unknown) => Promise<void> }) => (commands[name] = cmd),
 			on: (event: string, fn: (e: unknown, ctx: unknown) => unknown) => ((handlers[event] ??= []).push(fn)),
 			sendUserMessage: (m: string) => sent.push(m),
-			sendMessage: () => {},
+			sendMessage: (m: { content: string }, o?: unknown) => calls.push([m, o]),
 		},
 		tools,
 		commands,
 		handlers,
 		sent,
+		calls,
 	};
 }
 
@@ -59,16 +61,34 @@ afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+// The alert events recorded in the day file of the fake clock.
+const alertEvents = (dir: string) => load(join(dir, "2026-11-16.jsonl")).filter(e => e.event === "alert");
+
 function setup(sid = "sess-0001", shared?: string) {
 	const dir = shared ?? mkdtempSync(join(tmpdir(), "st-index-"));
 	if (!shared) dirs.push(dir);
 	process.env.STRATEGIUM_STATE_DIR = dir;
-	const { pi, tools, commands, handlers, sent } = fakePi();
+	// No test sounds the user's real alarm.
+	delete process.env.STRATEGIUM_ALARM;
+	delete process.env.STRATEGIUM_GLYPHS;
+	const { pi, tools, commands, handlers, sent, calls } = fakePi();
+	// What the footer and the alert had seen the moment each notification went out.
+	const seen: { via: string; footer: string; events: number }[] = [];
+	const sendMessage = pi.sendMessage;
+	pi.sendMessage = (m: { content: string }, o?: unknown) => {
+		seen.push({ via: "sendMessage", footer: footer.at(-1) ?? "", events: alertEvents(dir).length });
+		return sendMessage(m, o);
+	};
 	extension(pi as never);
 	const tool = tools.find(t => t.name === "strategium")!;
 	const notes: string[] = [];
 	const footer: string[] = [];
 	const ctx = fakeCtx(sid, dir, notes, footer);
+	const notify = ctx.ui.notify;
+	ctx.ui.notify = (m: string) => {
+		seen.push({ via: "notify", footer: footer.at(-1) ?? "", events: alertEvents(dir).length });
+		notify(m);
+	};
 	const call = async (params: Record<string, unknown>) => (await tool.execute("id", params, undefined, undefined, ctx)).content[0].text;
 	const command = (args: string) => commands.strategium.handler(args, ctx);
 	// The session starts (it draws the footer), and the Captain updates the todo.
@@ -76,7 +96,7 @@ function setup(sid = "sess-0001", shared?: string) {
 	const todo = (phases: unknown) => handlers.tool_result[0]({ toolName: "todo", isError: false, details: { phases } }, ctx);
 	// The last footer line, without its colours.
 	const shown = () => (footer.at(-1) ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-	return { dir, call, command, sent, notes, commands, handlers, ctx, start, todo, shown };
+	return { dir, call, command, sent, calls, seen, footer, notes, commands, handlers, ctx, start, todo, shown };
 }
 
 describe("the strategium tool", () => {
@@ -256,5 +276,77 @@ describe("the station in the footer", () => {
 		const again = setup("sess-0001", first.dir);
 		again.start();
 		expect(again.shown()).toContain("dark-mode · Skirmish · ");
+	});
+});
+
+// The booking alert and the paused footer: what the footer line does besides showing the time.
+describe("the booking alert in the footer", () => {
+	test("a running run alerts once when it crosses a threshold", async () => {
+		const { dir, call, start, shown, footer, notes, calls, seen } = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await call({ action: "begin", key: "K-1", booked: 4 });
+		setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+		start();
+		expect(footer.at(-1)!.startsWith("\x1b[32m●\x1b[39m ")).toBe(true);
+		expect(shown()).toContain("K-1 · 🌠 2/4 min (50%)");
+		expect(notes).toEqual(["Strategium: 50% of the booking for K-1"]);
+		expect(calls).toEqual([
+			[
+				{ customType: "strategium-timer", content: "TIMER 50% K-1 2/4 min", display: true, attribution: "agent" },
+				{ deliverAs: "aside", triggerTurn: true },
+			],
+		]);
+		expect(alertEvents(dir)).toHaveLength(1);
+		expect(alertEvents(dir)[0].p).toBe(50);
+		// The status call re-runs the footer; the alert is already recorded.
+		await call({ action: "status" });
+		expect(alertEvents(dir)).toHaveLength(1);
+		expect(calls).toHaveLength(1);
+		expect(notes).toEqual(["Strategium: 50% of the booking for K-1"]);
+		// Both notifications went out after the footer showed 50% and the alert event was recorded.
+		expect(seen).toEqual([
+			{ via: "notify", footer: expect.stringContaining("2/4 min (50%)"), events: 1 },
+			{ via: "sendMessage", footer: expect.stringContaining("2/4 min (50%)"), events: 1 },
+		]);
+	});
+
+	test("a paused timed run says paused and never alerts", async () => {
+		const { dir, call, start, shown, footer, notes, calls } = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await call({ action: "begin", key: "K-1", booked: 4 });
+		setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+		await call({ action: "stop" });
+		start();
+		expect(footer.at(-1)!.startsWith("\x1b[38;5;243m○\x1b[39m ")).toBe(true);
+		expect(shown()).toContain("K-1 · 🌠 2/4 min (50%) paused");
+		expect(notes).toEqual([]);
+		expect(calls).toEqual([]);
+		expect(alertEvents(dir)).toHaveLength(0);
+	});
+
+	test.each([
+		["80%", 4],
+		["100%", 5],
+	])("a paused timed run at %s never alerts", async (_pct, minutes) => {
+		const { dir, call, start, shown, notes, calls } = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await call({ action: "begin", key: "K-1", booked: 5 });
+		setSystemTime(new Date(2026, 10, 16, 9, minutes, 0));
+		await call({ action: "stop" });
+		start();
+		expect(shown()).toContain("paused");
+		expect(notes).toEqual([]);
+		expect(calls).toEqual([]);
+		expect(alertEvents(dir)).toHaveLength(0);
+	});
+
+	test("a paused run without a booking says paused", async () => {
+		const { call, start, shown } = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await call({ action: "begin", key: "dark-mode" });
+		setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+		await call({ action: "stop" });
+		start();
+		expect(shown()).toContain("strategium: dark-mode · paused");
 	});
 });
