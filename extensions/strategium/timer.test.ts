@@ -8,6 +8,7 @@ import {
 	bookedMin,
 	claim,
 	DAY_RE,
+	dayFile,
 	dueAlert,
 	elapsedMin,
 	type Ev,
@@ -23,6 +24,7 @@ import {
 const base = new Date(2026, 10, 16, 9, 0, 0);
 const at = (min: number) => new Date(base.getTime() + min * 60_000);
 const t = (min: number) => nowIso(at(min));
+const timerPath = join(import.meta.dir, "timer.ts").replaceAll("\\", "/");
 
 const closed: Ev[] = [
 	{ ts: t(0), event: "start", key: "A", booked: 100 },
@@ -174,7 +176,6 @@ describe("reading a day file", () => {
 
 // Claims race between omp sessions, so these spawn real processes that claim at the same time.
 describe("ticket claims across processes", () => {
-	const timerPath = join(import.meta.dir, "timer.ts").replaceAll("\\", "/");
 	const race = async (dir: string, takeover: string | undefined) => {
 		const arg = takeover === undefined ? "undefined" : JSON.stringify(takeover);
 		const procs = Array.from({ length: 8 }, (_, i) =>
@@ -251,4 +252,138 @@ describe("ticket claims across processes", () => {
 			release(dir, "K", "a");
 			expect(holds(dir, "K", "a")).toBe(false);
 		}));
+	test("claiming a ticket you already hold does not throw", () =>
+		withDir(async dir => {
+			claim(dir, "K", "a");
+			expect(() => claim(dir, "K", "a")).not.toThrow();
+			expect(holds(dir, "K", "a")).toBe(true);
+		}));
+	test("a takeover with the right id takes the lock even from a live holder", () =>
+		withDir(async dir => {
+			claim(dir, "K", "session-live0009");
+			// The user decides that session is gone: the plugin obeys.
+			expect(() => claim(dir, "K", "thief", "live0009")).not.toThrow();
+			expect(holds(dir, "K", "thief")).toBe(true);
+		}));
+	test("a guard older than five minutes is stale; a fresh one still blocks", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			writeFileSync(`${lockPath(dir, "RACE-1")}.force`, `session-dead0001 ${Date.now() - 6 * 60_000}`);
+			expect(() => claim(dir, "RACE-1", "me", "dead0001")).not.toThrow();
+		}));
+	test("a guard one minute old blocks the takeover", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			writeFileSync(`${lockPath(dir, "RACE-1")}.force`, `session-dead0001 ${Date.now() - 60_000}`);
+			expect(() => claim(dir, "RACE-1", "me", "dead0001")).toThrow();
+		}));
+});
+
+// One test per rule the numbers rest on, so a change in the maths cannot pass unnoticed.
+describe("the rules behind the numbers", () => {
+	test("dayFile names the day with a zero-padded month and day", () => {
+		expect(dayFile("/d", new Date(2026, 0, 5))).toEndWith("2026-01-05.jsonl");
+		expect(dayFile("/d", new Date(2026, 11, 31))).toEndWith("2026-12-31.jsonl");
+	});
+
+	test("nowIso carries the local offset, and it moves with daylight saving", async () => {
+		const script = `import { nowIso } from "${timerPath}"; console.log(nowIso(new Date(2026,0,15,12)) + " " + nowIso(new Date(2026,6,15,12)))`;
+		const proc = Bun.spawn({
+			cmd: [process.execPath, "-e", script],
+			env: { ...process.env, TZ: "Europe/Madrid" },
+			stdout: "pipe",
+		});
+		const out = await new Response(proc.stdout).text();
+		expect(out.trim()).toBe("2026-01-15T12:00:00+01:00 2026-07-15T12:00:00+02:00");
+	});
+
+	test("the overlap of three tickets counts the union, not the pairs", () => {
+		const three: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 60 },
+			{ ts: t(0), event: "start", key: "B", booked: 60 },
+			{ ts: t(0), event: "start", key: "C", booked: 60 },
+			{ ts: t(30), event: "stop", key: "A" },
+			{ ts: t(30), event: "stop", key: "B" },
+			{ ts: t(30), event: "stop", key: "C" },
+		];
+		expect(overlapMin(three, at(60))).toBe(30);
+	});
+
+	test("an adjustment inside two open tickets does not change the overlap", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 60 },
+			{ ts: t(10), event: "start", key: "B", booked: 60 },
+			{ ts: t(20), event: "adjust", key: "A", prior: 5 },
+			{ ts: t(30), event: "stop", key: "A" },
+			{ ts: t(40), event: "stop", key: "B" },
+		];
+		expect(overlapMin(evs, at(40))).toBe(20);
+	});
+
+	test("the alert of one key does not silence another", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 100 },
+			{ ts: t(5), event: "alert", key: "B", p: 100 },
+		];
+		expect(dueAlert(evs, "A", at(60))).toBe(50);
+	});
+
+	test("crossing two thresholds at once fires only the highest", () => {
+		const evs: Ev[] = [{ ts: t(0), event: "start", key: "A", booked: 100 }];
+		expect(dueAlert(evs, "A", at(95))).toBe(80);
+	});
+
+	test("after a gap only the highest threshold reached fires", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 60 },
+			{ ts: t(50), event: "stop", key: "A" },
+		];
+		expect(dueAlert(evs, "A", at(120))).toBe(80);
+	});
+
+	test("bookedMin returns the booking of the last start that carries one", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 100 },
+			{ ts: t(10), event: "stop", key: "A" },
+			{ ts: t(20), event: "start", key: "A", booked: 240 },
+		];
+		expect(bookedMin(evs, "A")).toBe(240);
+	});
+
+	test("a block of 90 seconds is reported as 1 minute", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A" },
+			{ ts: t(1.5), event: "stop", key: "A" },
+		];
+		expect(blocks(evs, at(2))[0].min).toBe(1);
+	});
+
+	test("a repeated start does not restart the open block", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A" },
+			{ ts: t(5), event: "start", key: "A" },
+		];
+		expect(blocks(evs, at(10))[0].start).toBe("09:00");
+	});
+
+	test("a blank line does not break the day", () => {
+		const dir = mkdtempSync(join(tmpdir(), "st-blank-"));
+		try {
+			const file = join(dir, "day.jsonl");
+			append(file, { ts: t(0), event: "start", key: "A", booked: 60 });
+			appendFileSync(file, "\n\n");
+			append(file, { ts: t(10), event: "stop", key: "A" });
+			expect(load(file).length).toBe(2);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a block left open in a past day ends with that day", () => {
+		const yesterday = new Date(2026, 10, 15, 22, 0, 0);
+		const evs: Ev[] = [{ ts: nowIso(yesterday), event: "start", key: "A", booked: 60 }];
+		// Now is the next day: the block must not grow past the end of the day it started in.
+		const today = new Date(2026, 10, 16, 12, 0, 0);
+		expect(blocks(evs, today)[0]).toMatchObject({ end: "23:59", min: 119 });
+	});
 });
