@@ -150,6 +150,21 @@ describe("reading a day file", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+	test("a truncated line does not swallow the event that follows it", () => {
+		const dir = mkdtempSync(join(tmpdir(), "st-load-"));
+		try {
+			const file = join(dir, "day.jsonl");
+			append(file, { ts: t(0), event: "start", key: "A", booked: 60 });
+			// A process killed mid-write leaves half a line with no newline, so the next append merges with it.
+			appendFileSync(file, '{"ts":"2026-11-16T09:0');
+			append(file, { ts: t(10), event: "stop", key: "A" });
+			const evs = load(file);
+			expect(evs.map(e => e.event)).toEqual(["start", "stop"]);
+			expect(elapsedMin(evs, "A", at(60))).toBe(10);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 	test("a day name is a plain date, never a path", () => {
 		expect(DAY_RE.test("2026-11-16")).toBe(true);
 		expect(DAY_RE.test("../../../../home/user/.ssh/known_hosts")).toBe(false);

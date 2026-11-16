@@ -95,25 +95,38 @@ function allRuns(): Run[] {
 // Session ids share a time prefix, so the tail tells sessions apart.
 const shortSid = (sid: string) => sid.slice(-8);
 
-// Set by session_start; tool and command actions call it so the footer updates at once, not on the next minute.
-let refreshFooter: (() => void) | undefined;
+/**
+ * The day file holding the open start of `key`: today, or yesterday when the block crossed midnight.
+ * A stop has to land in the file that holds the start, or that day keeps a block that never ends
+ * and its report books minutes that were never worked.
+ */
+function openFile(key: string): string | undefined {
+	for (const file of [today(), dayFile(D, new Date(Date.now() - 86_400_000))])
+		if (openKeys(load(file)).includes(key)) return file;
+	return undefined;
+}
 
-const isOpen = (key: string) => openKeys(load(today())).includes(key);
+const isOpen = (key: string) => openFile(key) !== undefined;
 
 function startKey(key: string, booked?: number, prior?: number): void {
 	mkdirSync(D, { recursive: true, mode: 0o700 });
 	const file = today();
 	const evs = load(file);
-	if (openKeys(evs).includes(key)) return;
 	// ponytail: booked fallback reads only today's file; a run spanning midnight needs `start` with booked.
 	const bk = booked ?? bookedMin(evs, key);
+	if (openKeys(evs).includes(key)) {
+		// Already running: the minutes already worked are kept as an adjustment, not dropped.
+		if (prior) append(file, { ts: nowIso(), event: "adjust", key, prior });
+		return;
+	}
 	if (bk === undefined) throw new Error(`booked minutes unknown for ${key}; pass booked`);
 	append(file, { ts: nowIso(), event: "start", key, booked: bk, ...(prior ? { prior } : {}) });
 }
 
 function stopKey(key: string): boolean {
-	if (!isOpen(key)) return false;
-	append(today(), { ts: nowIso(), event: "stop", key });
+	const file = openFile(key);
+	if (!file) return false;
+	append(file, { ts: nowIso(), event: "stop", key });
 	return true;
 }
 
@@ -197,15 +210,19 @@ function statusLines(): string {
 }
 
 function fullStatus(sid: string): string {
-	const runs = allRuns().map(
-		r => `RUN ${r.key} theatre=${r.theatre} repo=${r.repo ?? "none"} session=${shortSid(r.sid)}${r.sid === sid ? " (this session)" : ""}`,
-	);
+	const runs = allRuns().map(r => {
+		// A run whose session is gone (crash) still has its file: say so, or the user counts it twice.
+		const stale = holds(D, r.key, r.sid) ? "" : " (stale: its session is gone)";
+		return `RUN ${r.key} theatre=${r.theatre} repo=${r.repo ?? "none"} session=${shortSid(r.sid)}${r.sid === sid ? " (this session)" : ""}${stale}`;
+	});
 	return [statusLines(), ...runs].join("\n");
 }
 
 /** End this session's run, or another session's run of `key` by naming that crashed session's id in `takeover`. */
 function endRun(sid: string, key?: string, takeover?: string): string {
-	const run = key && key !== ownRun(sid)?.key ? allRuns().find(r => r.key === key) : ownRun(sid);
+	// ownRun() may drop the run file, so ask for it once.
+	const mine = ownRun(sid);
+	const run = key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine;
 	if (!run) return "ERROR no run to end in this session";
 	if (run.sid !== sid) {
 		if (!takeover) return `ERROR ${run.key} belongs to session ${shortSid(run.sid)}; end it there, or take it over with that id`;
@@ -275,8 +292,28 @@ function signal(level: string, msg: string): string | undefined {
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
 
+/**
+ * Every file a tool call would write, whatever wire contract it uses:
+ * hashline `[path#TAG]`, replace and patch `path`, apply_patch `*** Add/Update/Delete File:`
+ * and `*** Move to:`, sloppy `*** Edit File:`. The edit tool can also arrive as `apply_patch`.
+ */
+export function editTargets(name: string, input: Record<string, unknown>): string[] {
+	if (name === "write") return typeof input.path === "string" ? [input.path] : [];
+	if (name !== "edit" && name !== "apply_patch") return [];
+	const out: string[] = [];
+	const raw = String(input.input ?? "");
+	for (const m of raw.matchAll(/^\[([^\]#\r\n]+)#[0-9A-Fa-f]{4}\]/gm)) out.push(m[1]);
+	for (const m of raw.matchAll(/^\*\*\*\s+(?:Add|Update|Delete|Edit)\s+File:\s*(.+)$/gm)) out.push(m[1].trim());
+	for (const m of raw.matchAll(/^\*\*\*\s+Move\s+to:\s*(.+)$/gm)) out.push(m[1].trim());
+	if (typeof input.path === "string") out.push(input.path);
+	return out;
+}
+
 export default function (pi: ExtensionAPI) {
 	const z = pi.zod;
+	// Set by session_start; tool and command actions call it so the footer updates at once, not on the
+	// next minute. It belongs to this instance: a module loaded twice would cross the sessions.
+	let refreshFooter: (() => void) | undefined;
 	pi.setLabel("Strategium");
 
 	pi.registerTool({
@@ -310,8 +347,10 @@ export default function (pi: ExtensionAPI) {
 						const run = ownRun(sid);
 						if (!run) return text("ERROR no active run in this session");
 						if (!params.repo) throw new Error("repo needs repo");
-						writeRun({ ...run, repo: path.resolve(params.repo) });
-						return text(`RUN ${run.key} repo=${path.resolve(params.repo)}`);
+						// Resolved against the session cwd, the same base the edit guard uses.
+						const repo = path.resolve(ctx.cwd, params.repo);
+						writeRun({ ...run, repo });
+						return text(`RUN ${run.key} repo=${repo}`);
 					}
 					case "start": {
 						const run = ownRun(sid);
@@ -452,7 +491,7 @@ export default function (pi: ExtensionAPI) {
 				const file = today();
 				const evs = load(file);
 				const key = run.key;
-				const running = openKeys(evs).includes(key);
+				const running = isOpen(key);
 				const now = new Date();
 				const el = Math.floor(elapsedMin(evs, key, now));
 				const bk = bookedMin(evs, key) ?? 0;
@@ -502,6 +541,7 @@ export default function (pi: ExtensionAPI) {
 	// (or another session's `begin`, which adopts its repo) picks it up.
 	pi.on("session_shutdown", (_e, ctx) => {
 		if (ctx.agent?.kind === "sub") return;
+		refreshFooter = undefined;
 		const sid = sidOf(ctx);
 		const run = ownRun(sid);
 		if (!run) return;
@@ -521,13 +561,9 @@ export default function (pi: ExtensionAPI) {
 		}
 		const repo = run?.repo;
 		if (!repo) return;
-		const input = e.input as Record<string, unknown>;
-		let targets: string[];
 		if (name === "ast_edit") return { block: true, reason: CAPTAIN_REASON };
-		if (name === "write") targets = typeof input.path === "string" ? [input.path] : [];
-		else if (name === "edit")
-			targets = [...String(input.input ?? "").matchAll(/^\[([^\]#\r\n]+)#[0-9A-Fa-f]{4}\]/gm)].map(m => m[1]);
-		else return;
+		const targets = editTargets(name, e.input as Record<string, unknown>);
+		if (!targets.length) return;
 		// Windows and macOS filesystems ignore case; Linux does not.
 		const norm = (p: string) => (process.platform === "linux" ? p : p.toLowerCase());
 		// A scheme of two or more letters is a URI; a single letter is a Windows drive (C://...).
@@ -535,14 +571,23 @@ export default function (pi: ExtensionAPI) {
 		// Compare real paths, so an alias of the repo through a symlink matches the root too.
 		const real = (p: string) => {
 			try {
-				return path.join(realpathSync(path.dirname(p)), path.basename(p));
+				return realpathSync(p);
 			} catch {
-				return p;
+				// The file may not exist yet: canonicalise its directory instead.
+				try {
+					return path.join(realpathSync(path.dirname(p)), path.basename(p));
+				} catch {
+					return p;
+				}
 			}
 		};
 		const roots = [repo, `${repo}-worktrees`].map(r => norm(real(path.resolve(r))));
 		for (const t of targets) {
-			if (isUri(t)) continue;
+			if (isUri(t)) {
+				// A device that writes files is not exempt: `xd://ast_edit` dispatches the AST editor.
+				if (/^xd:\/\/(ast_edit|eval|lsp|debug)\b/i.test(t)) return { block: true, reason: CAPTAIN_REASON };
+				continue;
+			}
 			const abs = norm(real(path.resolve(ctx.cwd, t)));
 			if (roots.some(r => abs === r || abs.startsWith(r + path.sep))) return { block: true, reason: CAPTAIN_REASON };
 		}

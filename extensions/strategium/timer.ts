@@ -214,6 +214,16 @@ export function load(file: string): Ev[] {
 			try {
 				return JSON.parse(l) as Ev;
 			} catch {
+				// A half-written line has no newline, so it merges with the next one: recover the
+				// event that follows it instead of losing both.
+				const i = l.lastIndexOf('{"ts"');
+				if (i > 0) {
+					try {
+						return JSON.parse(l.slice(i)) as Ev;
+					} catch {
+						return undefined;
+					}
+				}
 				return undefined;
 			}
 		})
