@@ -24,7 +24,24 @@ import { childEnv } from "./env";
 // Several sessions can run different tickets at the same time; the day file holds them all.
 // Ownership of a ticket is an atomic claim file (see claim() in timer.ts), held while the session lives.
 // `untimed`: the run has no booking. Its time is counted, but there are no alerts, no stand down and no new shift.
-type Run = { key: string; theatre: string; sid: string; repo?: string; untimed?: true };
+// `where`: the station the run is at, read from the todo (see whereFrom), so the footer shows it after a restart too.
+type Where = { station: string; back?: true; seal?: string };
+type Run = { key: string; theatre: string; sid: string; repo?: string; untimed?: true; where?: Where };
+type Phase = { name: string; tasks: { content: string; status: string }[] };
+
+/**
+ * Where the run is, read from the todo: its phases are the stations, in order. Undefined while no task is active.
+ * `back`: a later station already has completed work, so the run returned here (recon, redraft, retrial).
+ * `seal`: the active task waits for the user: `[seal] Plan`, or with glyph tags `<md-seal> seal · Plan`.
+ */
+export function whereFrom(phases: Phase[]): Where | undefined {
+	const i = phases.findIndex(p => p.tasks.some(t => t.status === "in_progress"));
+	if (i < 0) return undefined;
+	const task = phases[i].tasks.find(t => t.status === "in_progress")!;
+	const seal = task.content.match(/^\s*(?:\[seal\]|\u{f047a}\s*seal\s*·)\s*(\S+)/u)?.[1];
+	const back = phases.slice(i + 1).some(p => p.tasks.some(t => t.status === "completed"));
+	return { station: phases[i].name, ...(back ? { back: true as const } : {}), ...(seal ? { seal } : {}) };
+}
 
 // Read on every use: the environment can change it, and a test points it somewhere of its own.
 const stateDir = () => process.env.STRATEGIUM_STATE_DIR || path.join(homedir(), ".omp", "agent", "state", "strategium");
@@ -198,7 +215,9 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 		release(stateDir(), mine.key, sid);
 	}
 	const untimed = booked === undefined;
-	writeRun({ key, theatre, sid, repo: mine?.key === key ? mine.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}) });
+	// Begun again on the same key, the run keeps the station it was at.
+	const keep = mine?.key === key ? mine : undefined;
+	writeRun({ key, theatre, sid, repo: keep ? keep.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}), ...(keep?.where ? { where: keep.where } : {}) });
 	beat(sid);
 	startKey(key, booked, spent, untimed);
 }
@@ -533,11 +552,19 @@ export default function (pi: ExtensionAPI) {
 				const planet = `\x1b[38;5;214m${nf ? "\u{f0018} " : "🪐"}\x1b[39m`;
 				// A run without a booking only counts time. A timed run with no booking today waits for its new shift.
 				const value = run.untimed && bookedMin(evs, key) === undefined
-					? `${el} min${running ? "" : " paused"}`
+					? running ? `${el} min` : "paused"
 					: bookedMin(evs, key) === undefined
 						? "new day: /strategium resume"
 						: `${stage} ${el}/${bk} min (${pct}%)${running ? "" : " paused"}`;
-				ctx.ui.setStatus("strategium", `${dot}\x1b[39m ${planet} \x1b[38;5;248mstrategium: \x1b[39m${key} ${value}`);
+				// Where the run is: a seal waiting for the user (⏳, md-timer_sand F051F, in yellow), a return (↩, md-undo
+				// F054C) or just the station. Codepoints checked in the Nerd Fonts glyphnames.json.
+				const w = run.where;
+				const where = !w
+					? ""
+					: w.seal
+						? ` · \x1b[33m${nf ? "\u{f051f} " : "⏳"} seal ${w.seal}\x1b[39m`
+						: ` · ${w.back ? (nf ? "\u{f054c}  " : "↩ ") : ""}${w.station}`;
+				ctx.ui.setStatus("strategium", `${dot}\x1b[39m ${planet} \x1b[38;5;248mstrategium: \x1b[39m${key}${where} · ${value}`);
 				if (!running) return;
 				// Only the owning session alerts for its key, so each alert fires once.
 				const p = dueAlert(evs, key, now);
@@ -569,6 +596,17 @@ export default function (pi: ExtensionAPI) {
 		if (!run) return;
 		stopKey(run.key);
 		release(stateDir(), run.key, sid);
+	});
+
+	// The todo phases are the stations: keep where the run is, so the footer shows it at once and after a restart.
+	pi.on("tool_result", (e, ctx) => {
+		if (ctx?.agent?.kind === "sub" || e.toolName.replace(/^_+/, "") !== "todo" || e.isError) return;
+		const phases = (e.details as { phases?: Phase[] } | undefined)?.phases;
+		const run = ownRun(sidOf(ctx));
+		const where = phases && whereFrom(phases);
+		if (!run || !where) return;
+		writeRun({ ...run, where });
+		refreshFooter?.();
 	});
 
 	// ponytail: bash writes are not guarded; parse bash commands if the Captain ever edits through bash

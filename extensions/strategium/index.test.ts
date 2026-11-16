@@ -2,7 +2,7 @@ import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension from "./index";
+import extension, { whereFrom } from "./index";
 import { load, openKeys } from "./timer";
 
 // The extension registers itself on a host. A fake one is enough: it hands back the tool it
@@ -43,9 +43,9 @@ function fakePi() {
 	};
 }
 
-const fakeCtx = (sid: string, cwd: string, notes: string[] = []) => ({
+const fakeCtx = (sid: string, cwd: string, notes: string[] = [], footer: string[] = []) => ({
 	sessionManager: { getSessionId: () => sid },
-	ui: { notify: (m: string) => notes.push(m), setStatus: () => {} },
+	ui: { notify: (m: string) => notes.push(m), setStatus: (_k: string, v?: string) => footer.push(v ?? "") },
 	cwd,
 	setInterval: () => 0,
 	agent: { kind: "main" },
@@ -55,6 +55,7 @@ const dirs: string[] = [];
 afterEach(() => {
 	setSystemTime();
 	delete process.env.STRATEGIUM_STATE_DIR;
+	delete process.env.STRATEGIUM_GLYPHS;
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -66,10 +67,16 @@ function setup(sid = "sess-0001", shared?: string) {
 	extension(pi as never);
 	const tool = tools.find(t => t.name === "strategium")!;
 	const notes: string[] = [];
-	const ctx = fakeCtx(sid, dir, notes);
+	const footer: string[] = [];
+	const ctx = fakeCtx(sid, dir, notes, footer);
 	const call = async (params: Record<string, unknown>) => (await tool.execute("id", params, undefined, undefined, ctx)).content[0].text;
 	const command = (args: string) => commands.strategium.handler(args, ctx);
-	return { dir, call, command, sent, notes, commands, handlers, ctx };
+	// The session starts (it draws the footer), and the Captain updates the todo.
+	const start = () => handlers.session_start[0]({}, ctx);
+	const todo = (phases: unknown) => handlers.tool_result[0]({ toolName: "todo", isError: false, details: { phases } }, ctx);
+	// The last footer line, without its colours.
+	const shown = () => (footer.at(-1) ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+	return { dir, call, command, sent, notes, commands, handlers, ctx, start, todo, shown };
 }
 
 describe("the strategium tool", () => {
@@ -180,5 +187,74 @@ describe("the /strategium command", () => {
 		await command("make the header blue");
 		expect(sent).toEqual([]);
 		expect(notes[0]).toContain("put a free objective in quotes");
+	});
+});
+
+// The footer says where the run is, read from the todo: its phases are the stations.
+describe("the station in the footer", () => {
+	const phase = (name: string, ...tasks: [string, string][]) => ({ name, tasks: tasks.map(([content, status]) => ({ content, status })) });
+	const skirmish = [
+		phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "completed"]),
+		phase("Skirmish", ["[battle-brother] Slice 1", "in_progress"]),
+		phase("Inquisition", ["[inquisitor] Review", "pending"]),
+	];
+	const backToScriptorium = [
+		phase("Scriptorium", ["[librarian] Redraft slice 2", "in_progress"]),
+		phase("Skirmish", ["[battle-brother] Slice 1", "completed"]),
+	];
+	const waitingForPlan = [phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "in_progress"])];
+
+	test("the active phase is the station", () => expect(whereFrom(skirmish)).toEqual({ station: "Skirmish" }));
+	test("a station before completed work is a return", () =>
+		expect(whereFrom(backToScriptorium)).toEqual({ station: "Scriptorium", back: true }));
+	test("an active seal task waits for the user, with or without glyph tags", () => {
+		expect(whereFrom(waitingForPlan)).toEqual({ station: "Scriptorium", seal: "Plan" });
+		expect(whereFrom([phase("Scriptorium", ["\u{f047a} seal · Plan the slices", "in_progress"])])?.seal).toBe("Plan");
+	});
+	test("no active task, no station", () => expect(whereFrom([phase("Muster", ["[captain] Muster", "pending"])])).toBeUndefined());
+
+	test("the footer shows the station next to the time", async () => {
+		const { call, todo, start, shown } = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await call({ action: "begin", key: "dark-mode" });
+		todo(skirmish);
+		// Within the 3-minute heartbeat gap, so the session start does not close the block as a crash.
+		setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+		start();
+		expect(shown()).toContain("strategium: dark-mode · Skirmish · 2 min");
+	});
+
+	test("a timed run keeps its booking next to the station", async () => {
+		const { call, todo, start, shown } = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await call({ action: "begin", key: "PROJ-123", booked: 120 });
+		todo(skirmish);
+		setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+		start();
+		expect(shown()).toContain("PROJ-123 · Skirmish · 🌍 2/120 min (1%)");
+	});
+
+	test("a seal waiting for the user and a return are marked, in emoji or in Nerd Font glyphs", async () => {
+		const { call, todo, start, shown } = setup();
+		await call({ action: "begin", key: "dark-mode" });
+		todo(waitingForPlan);
+		start();
+		expect(shown()).toContain("dark-mode · ⏳ seal Plan · ");
+		todo(backToScriptorium);
+		expect(shown()).toContain("dark-mode · ↩ Scriptorium · ");
+		process.env.STRATEGIUM_GLYPHS = "1";
+		todo(waitingForPlan);
+		expect(shown()).toContain("dark-mode · \u{f051f}  seal Plan · ");
+		todo(backToScriptorium);
+		expect(shown()).toContain("dark-mode · \u{f054c}  Scriptorium · ");
+	});
+
+	test("the station survives a restart of omp", async () => {
+		const first = setup("sess-0001");
+		await first.call({ action: "begin", key: "dark-mode" });
+		first.todo(skirmish);
+		const again = setup("sess-0001", first.dir);
+		again.start();
+		expect(again.shown()).toContain("dark-mode · Skirmish · ");
 	});
 });
