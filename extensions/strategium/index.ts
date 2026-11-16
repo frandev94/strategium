@@ -23,7 +23,8 @@ import { childEnv } from "./env";
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
 // Several sessions can run different tickets at the same time; the day file holds them all.
 // Ownership of a ticket is an atomic claim file (see claim() in timer.ts), held while the session lives.
-type Run = { key: string; theatre: string; sid: string; repo?: string };
+// `untimed`: the run has no booking. Its time is counted, but there are no alerts, no stand down and no new shift.
+type Run = { key: string; theatre: string; sid: string; repo?: string; untimed?: true };
 
 // Read on every use: the environment can change it, and a test points it somewhere of its own.
 const stateDir = () => process.env.STRATEGIUM_STATE_DIR || path.join(homedir(), ".omp", "agent", "state", "strategium");
@@ -109,7 +110,7 @@ function openFile(key: string): string | undefined {
 
 const isOpen = (key: string) => openFile(key) !== undefined;
 
-function startKey(key: string, booked?: number, prior?: number): void {
+function startKey(key: string, booked?: number, prior?: number, untimed = false): void {
 	mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
 	const file = today();
 	const evs = load(file);
@@ -120,8 +121,8 @@ function startKey(key: string, booked?: number, prior?: number): void {
 		if (prior) append(file, { ts: nowIso(), event: "adjust", key, prior });
 		return;
 	}
-	if (bk === undefined) throw new Error(`booked minutes unknown for ${key}; pass booked`);
-	append(file, { ts: nowIso(), event: "start", key, booked: bk, ...(prior ? { prior } : {}) });
+	if (bk === undefined && !untimed) throw new Error(`booked minutes unknown for ${key}; pass booked`);
+	append(file, { ts: nowIso(), event: "start", key, ...(bk === undefined ? {} : { booked: bk }), ...(prior ? { prior } : {}) });
 }
 
 function stopKey(key: string): boolean {
@@ -141,6 +142,11 @@ class NewShift extends Error {}
  */
 function shift(run: Run, booked?: number): string {
 	const today_ = bookedMin(load(today()), run.key);
+	// A run without a booking has no shifts to ask for: it just counts again.
+	if (run.untimed && booked === undefined) {
+		startKey(run.key, undefined, undefined, true);
+		return `resumed ${run.key}`;
+	}
 	if (booked === undefined && today_ === undefined)
 		throw new NewShift(`new day for ${run.key}: today's booked minutes are needed for the new shift`);
 	startKey(run.key, booked);
@@ -177,7 +183,7 @@ function closeGap(run: Run, force = false): string | undefined {
 }
 
 /** Claim `key` for session `sid`. A ticket held by a crashed session is taken over by naming its id in `takeover`. */
-function begin(sid: string, key: string, theatre: string, booked: number, spent?: number, takeover?: string): void {
+function begin(sid: string, key: string, theatre: string, booked?: number, spent?: number, takeover?: string): void {
 	claim(stateDir(), key, sid, takeover);
 	const other = allRuns().find(r => r.key === key && r.sid !== sid);
 	if (other) {
@@ -191,9 +197,10 @@ function begin(sid: string, key: string, theatre: string, booked: number, spent?
 		stopKey(mine.key);
 		release(stateDir(), mine.key, sid);
 	}
-	writeRun({ key, theatre, sid, repo: mine?.key === key ? mine.repo : other?.repo });
+	const untimed = booked === undefined;
+	writeRun({ key, theatre, sid, repo: mine?.key === key ? mine.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
-	startKey(key, booked, spent);
+	startKey(key, booked, spent, untimed);
 }
 
 function statusLines(): string {
@@ -205,9 +212,10 @@ function statusLines(): string {
 	return keys
 		.map(k => {
 			const el = Math.floor(elapsedMin(evs, k, now));
-			const bk = bookedMin(evs, k) ?? 0;
-			const pct = bk ? Math.floor((el / bk) * 100) : 0;
-			return `${k} ${el}/${bk} min (${pct}%) ${open.includes(k) ? "running" : "stopped"}`;
+			const bk = bookedMin(evs, k);
+			const state = open.includes(k) ? "running" : "stopped";
+			if (bk === undefined) return `${k} ${el} min (no booking) ${state}`;
+			return `${k} ${el}/${bk} min (${Math.floor((el / bk) * 100)}%) ${state}`;
 		})
 		.join("\n");
 }
@@ -323,7 +331,7 @@ export default function (pi: ExtensionAPI) {
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked, spent?, theatre?, takeover?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message). spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run).",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run).",
 		parameters: z.object({
 			action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention"]),
 			key: z.string().optional(),
@@ -342,7 +350,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				switch (params.action) {
 					case "begin": {
-						if (!params.key || !params.booked) throw new Error("begin needs key and booked");
+						if (!params.key) throw new Error("begin needs key");
 						begin(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover);
 						return text(statusLines());
 					}
@@ -393,15 +401,16 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("strategium", {
-		description: "Orchestrate one ticket in Strategium mode",
+		description: "Run one objective through the Strategium workflow: a ticket, a @file or \"free text\"",
 		handler: async (args, ctx) => {
-			const [first, second] = (args ?? "").trim().split(/\s+/).filter(Boolean);
+			const raw = (args ?? "").trim();
+			const [first, second] = raw.split(/\s+/).filter(Boolean);
 			const sid = sidOf(ctx);
 			try {
 				switch (first) {
 					case undefined:
 						ctx.ui.notify(
-							"Usage: /strategium <ticket> [theatre] | pause | resume [booked] | add <min> | status | end",
+							'Usage: /strategium <ticket | @file | "free text"> [theatre] | pause | resume [booked] | add <min> | status | end',
 							"warning",
 						);
 						return;
@@ -450,12 +459,20 @@ export default function (pi: ExtensionAPI) {
 			} finally {
 				refreshFooter?.();
 			}
-			const theatre = second ?? process.env.STRATEGIUM_THEATRE ?? "none";
+			// The objective: "free text" in quotes, @path to a spec or an approved plan, or a key (a ticket or a short name).
+			// A theatre name may follow. Free text needs the quotes: unquoted words would clash with the subcommands.
+			const parsed = raw.match(/^"([^"]+)"(?:\s+(\S+))?$/) ?? raw.match(/^(\S+)(?:\s+(\S+))?$/);
+			if (!parsed) {
+				ctx.ui.notify('Strategium: put a free objective in quotes, e.g. /strategium "add a dark mode"', "warning");
+				return;
+			}
+			const objective = raw.startsWith('"') ? `"${parsed[1]}"` : parsed[1];
+			const theatre = (parsed[2] ?? process.env.STRATEGIUM_THEATRE ?? "none").replace(/^strategium-/, "");
 			const glyphs = process.env.STRATEGIUM_GLYPHS === "1" ? " Use glyph todo tags." : "";
 			pi.sendUserMessage(
 				(theatre === "none"
-					? `Read skill://strategium and run it for ticket ${first} with no theatre.`
-					: `Read skill://strategium and run it for ticket ${first} with theatre skill://strategium-${theatre}.`) + glyphs,
+					? `Read skill://strategium and run it for the objective ${objective} with no theatre.`
+					: `Read skill://strategium and run it for the objective ${objective} with theatre skill://strategium-${theatre}.`) + glyphs,
 			);
 		},
 	});
@@ -514,10 +531,12 @@ export default function (pi: ExtensionAPI) {
 				// Gold planet (256-colour 214), reset right after so the rest of the line keeps its colours.
 				// Nerd Font md-* glyphs draw two cells wide but count as one, so they get an extra space (seen in the terminal).
 				const planet = `\x1b[38;5;214m${nf ? "\u{f0018} " : "🪐"}\x1b[39m`;
-				// No booking today yet: a run carried over from an earlier day, waiting for its new shift.
-				const value = bookedMin(evs, key) === undefined
-					? "new day: /strategium resume"
-					: `${stage} ${el}/${bk} min (${pct}%)${running ? "" : " paused"}`;
+				// A run without a booking only counts time. A timed run with no booking today waits for its new shift.
+				const value = run.untimed && bookedMin(evs, key) === undefined
+					? `${el} min${running ? "" : " paused"}`
+					: bookedMin(evs, key) === undefined
+						? "new day: /strategium resume"
+						: `${stage} ${el}/${bk} min (${pct}%)${running ? "" : " paused"}`;
 				ctx.ui.setStatus("strategium", `${dot}\x1b[39m ${planet} \x1b[38;5;248mstrategium: \x1b[39m${key} ${value}`);
 				if (!running) return;
 				// Only the owning session alerts for its key, so each alert fires once.

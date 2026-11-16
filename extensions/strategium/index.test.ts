@@ -17,8 +17,9 @@ const schema = () => {
 
 function fakePi() {
 	const tools: Tool[] = [];
-	const commands: Record<string, unknown> = {};
+	const commands: Record<string, { handler: (args: string, ctx: unknown) => Promise<void> }> = {};
 	const handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]> = {};
+	const sent: string[] = [];
 	const zod = {
 		object: () => schema(),
 		string: () => schema(),
@@ -30,20 +31,21 @@ function fakePi() {
 			zod,
 			setLabel: () => {},
 			registerTool: (t: Tool) => tools.push(t),
-			registerCommand: (name: string, cmd: unknown) => (commands[name] = cmd),
+			registerCommand: (name: string, cmd: { handler: (args: string, ctx: unknown) => Promise<void> }) => (commands[name] = cmd),
 			on: (event: string, fn: (e: unknown, ctx: unknown) => unknown) => ((handlers[event] ??= []).push(fn)),
-			sendUserMessage: () => {},
+			sendUserMessage: (m: string) => sent.push(m),
 			sendMessage: () => {},
 		},
 		tools,
 		commands,
 		handlers,
+		sent,
 	};
 }
 
-const fakeCtx = (sid: string, cwd: string) => ({
+const fakeCtx = (sid: string, cwd: string, notes: string[] = []) => ({
 	sessionManager: { getSessionId: () => sid },
-	ui: { notify: () => {}, setStatus: () => {} },
+	ui: { notify: (m: string) => notes.push(m), setStatus: () => {} },
 	cwd,
 	setInterval: () => 0,
 	agent: { kind: "main" },
@@ -60,12 +62,14 @@ function setup(sid = "sess-0001", shared?: string) {
 	const dir = shared ?? mkdtempSync(join(tmpdir(), "st-index-"));
 	if (!shared) dirs.push(dir);
 	process.env.STRATEGIUM_STATE_DIR = dir;
-	const { pi, tools, commands, handlers } = fakePi();
+	const { pi, tools, commands, handlers, sent } = fakePi();
 	extension(pi as never);
 	const tool = tools.find(t => t.name === "strategium")!;
-	const ctx = fakeCtx(sid, dir);
+	const notes: string[] = [];
+	const ctx = fakeCtx(sid, dir, notes);
 	const call = async (params: Record<string, unknown>) => (await tool.execute("id", params, undefined, undefined, ctx)).content[0].text;
-	return { dir, call, commands, handlers, ctx };
+	const command = (args: string) => commands.strategium.handler(args, ctx);
+	return { dir, call, command, sent, notes, commands, handlers, ctx };
 }
 
 describe("the strategium tool", () => {
@@ -117,5 +121,64 @@ describe("the strategium tool", () => {
 		await call({ action: "begin", key: "K-1", booked: 120 });
 		await call({ action: "repo", repo: dir });
 		expect(await call({ action: "status" })).toContain(`repo=${dir}`);
+	});
+
+	test("a run without a booking counts time and has no percentage", async () => {
+		const { call } = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await call({ action: "begin", key: "dark-mode" });
+		setSystemTime(new Date(2026, 10, 16, 9, 42, 0));
+		const status = await call({ action: "status" });
+		expect(status).toContain("dark-mode 42 min (no booking) running");
+		expect(status).not.toContain("%");
+	});
+
+	test("a run without a booking resumes on a new day without asking for one", async () => {
+		const { call } = setup();
+		setSystemTime(new Date(2026, 10, 15, 17, 0, 0));
+		await call({ action: "begin", key: "dark-mode" });
+		await call({ action: "stop" });
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		const resumed = await call({ action: "start" });
+		expect(resumed).toContain("resumed dark-mode");
+		expect(resumed).not.toContain("ERROR");
+	});
+
+	test("a timed run still asks for today's booking on a new day", async () => {
+		const { call } = setup();
+		setSystemTime(new Date(2026, 10, 15, 17, 0, 0));
+		await call({ action: "begin", key: "K-1", booked: 120 });
+		await call({ action: "stop" });
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		expect(await call({ action: "start" })).toContain("today's booked minutes are needed");
+	});
+});
+
+// The command hands the objective to the Captain; the workflow does not need a ticket.
+describe("the /strategium command", () => {
+	test("free text in quotes is the objective", async () => {
+		const { command, sent } = setup();
+		await command('"add a dark mode"');
+		expect(sent[0]).toContain('for the objective "add a dark mode" with no theatre');
+	});
+
+	test("a file is the objective, and a theatre may follow", async () => {
+		const { command, sent } = setup();
+		await command("@docs/spec.md acme");
+		expect(sent[0]).toContain("for the objective @docs/spec.md with theatre skill://strategium-acme");
+	});
+
+	test("a theatre named with its prefix is not doubled", async () => {
+		const { command, sent } = setup();
+		await command("PROJ-1 strategium-acme");
+		expect(sent[0]).toContain("theatre skill://strategium-acme.");
+		expect(sent[0]).not.toContain("strategium-strategium-");
+	});
+
+	test("unquoted free text is refused, so it never clashes with a subcommand", async () => {
+		const { command, sent, notes } = setup();
+		await command("make the header blue");
+		expect(sent).toEqual([]);
+		expect(notes[0]).toContain("put a free objective in quotes");
 	});
 });
