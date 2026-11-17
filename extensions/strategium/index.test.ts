@@ -21,6 +21,7 @@ function fakePi() {
 	const handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]> = {};
 	const sent: string[] = [];
 	const calls: [unknown, unknown][] = [];
+	const shortcuts: Record<string, { description?: string; handler: (ctx: unknown) => unknown }> = {};
 	let active = ["read", "bash", "edit", "write", "task"];
 	const zod = {
 		object: () => schema(),
@@ -44,11 +45,13 @@ function fakePi() {
 			on: (event: string, fn: (e: unknown, ctx: unknown) => unknown) => ((handlers[event] ??= []).push(fn)),
 			sendUserMessage: (m: string) => sent.push(m),
 			sendMessage: (m: { content: string }, o?: unknown) => calls.push([m, o]),
+			registerShortcut: (key: string, s: { description?: string; handler: (ctx: unknown) => unknown }) => (shortcuts[key] = s),
 		},
 		tools,
 		commands,
 		handlers,
 		sent,
+		shortcuts,
 		calls,
 		activeTools: () => active,
 		setActive: (n: string[]) => {
@@ -106,7 +109,7 @@ function setup(sid = "sess-0001", shared?: string) {
 	delete process.env.STRATEGIUM_GLYPHS;
 	// The alarm tests need notifications on; the tests of the default turn them off again.
 	process.env.STRATEGIUM_NOTIFY = "1";
-	const { pi, tools, commands, handlers, sent, calls, activeTools, setActive } = fakePi();
+	const { pi, tools, commands, handlers, sent, calls, activeTools, setActive, shortcuts } = fakePi();
 	// What the footer and the alert had seen the moment each notification went out.
 	const seen: { via: string; footer: string; events: number }[] = [];
 	const sendMessage = pi.sendMessage;
@@ -133,7 +136,7 @@ function setup(sid = "sess-0001", shared?: string) {
 	const todo = (phases: unknown) => handlers.tool_result[0]({ toolName: "todo", isError: false, details: { phases } }, ctx);
 	// The last footer line, without its colours.
 	const shown = () => (footer.at(-1) ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-	return { dir, call, command, sub, sent, calls, seen, footer, notes, commands, handlers, ctx, start, todo, shown, activeTools, setActive };
+	return { dir, call, command, sub, sent, calls, seen, footer, notes, commands, handlers, shortcuts, ctx, start, todo, shown, activeTools, setActive };
 }
 
 describe("the strategium tool", () => {
@@ -2209,5 +2212,513 @@ describe("the idle pause", () => {
 		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
 		await s.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, s.ctx);
 		expect(ran(s.notes)).toBe(true);
+	});
+});
+
+describe("cockpit", () => {
+	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
+	type Tui = { requestRender(): void };
+	type Comp = { render(w: number): string[]; handleInput?(d: string): void; dispose?(): void };
+	// A UI context: the widget and overlay calls are recorded; `hasUI` false leaves the same functions in place but unused.
+	function uiCtx(s: ReturnType<typeof setup>, hasUI = true) {
+		const widgets: { key: string; factory?: (tui: Tui, theme: unknown) => Comp; options?: unknown }[] = [];
+		const opened: { options?: unknown; component: Comp }[] = [];
+		const draws = { n: 0, closed: 0 };
+		const tui: Tui = { requestRender: () => void draws.n++ };
+		const c = s.ctx as unknown as Record<string, unknown> & { ui: Record<string, unknown> };
+		// The helper's todo reaches handler [0] only; the cockpit's hooks come after it.
+		s.todo = phases => s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases } }, s.ctx));
+		c.hasUI = hasUI;
+		c.ui.setWidget = (key: string, factory?: (t: Tui, th: unknown) => Comp, options?: unknown) => void widgets.push({ key, factory, options });
+		c.ui.custom = (factory: (t: Tui, th: unknown, k: unknown, done: () => void) => Comp, options?: unknown) => {
+			opened.push({ options, component: factory(tui, {}, {}, () => void draws.closed++) });
+			return new Promise(() => {});
+		};
+		return { widgets, opened, draws, tui };
+	}
+	const sealTodo = (status: string) => [{ name: "Plan", tasks: [{ content: "[seal] Plan", status }] }];
+	// The alarm command appends "<level>|<message>" to a file; the spawn is asynchronous, so poll.
+	const recorder = (dir: string) => {
+		const out = join(dir, "alarm.log");
+		const script = join(dir, "rec.ts");
+		writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_MSG}\\n`);\n');
+		process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
+		return async (want: number) => {
+			for (let i = 0; i < 100; i++) {
+				const lines = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
+				if (lines.length >= want) return lines;
+				await Bun.sleep(50);
+			}
+			return existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
+		};
+	};
+	afterEach(() => delete process.env.STRATEGIUM_ALARM);
+	// A run with the UI on, started like a session does.
+	async function running(hasUI = true) {
+		const s = setup();
+		const ui = uiCtx(s, hasUI);
+		await s.call({ action: "begin", key: "K-1" });
+		await s.start();
+		return { s, ui };
+	}
+	const shutdown = (s: ReturnType<typeof setup>) => s.handlers.session_shutdown.forEach(h => h({}, s.ctx));
+	const plain = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, "");
+	// What the overlay shows now, without colours; it is closed again so no interval stays alive.
+	async function peek(s: ReturnType<typeof setup>, ui: ReturnType<typeof uiCtx>) {
+		await s.sub("cockpit");
+		const comp = ui.opened.at(-1)!.component;
+		const text = plain(comp.render(100).join("\n"));
+		comp.handleInput!("q");
+		return text;
+	}
+
+	describe("the widget", () => {
+		test("the first tick shows it above the editor once and later refreshes only repaint", async () => {
+			const { s, ui } = await running();
+			expect(ui.widgets.length).toBe(1);
+			expect(ui.widgets[0].key).toBe("strategium");
+			expect(ui.widgets[0].options).toEqual({ placement: "aboveEditor" });
+			const widget = ui.widgets[0].factory!(ui.tui, {});
+			expect(widget.render(80).join("\n")).toContain("K-1");
+			await s.sub("status");
+			expect(ui.widgets.length).toBe(1);
+			expect(ui.draws.n).toBeGreaterThan(0);
+		});
+
+		test("the end of the run removes it", async () => {
+			const { s, ui } = await running();
+			await s.sub("end");
+			expect(ui.widgets.at(-1)).toEqual({ key: "strategium", factory: undefined, options: undefined });
+		});
+
+		test("an untimed run shows its clock right after start, not on the next tick", async () => {
+			const { ui } = await running();
+			expect(plain(ui.widgets[0].factory!(ui.tui, {}).render(120)[0])).toContain("⧗ 0 min");
+		});
+
+		test("when the host frees the widget it comes back on the next draw", async () => {
+			const { s, ui } = await running();
+			ui.widgets[0].factory!(ui.tui, {}).dispose!();
+			await s.sub("status");
+			expect(ui.widgets.length).toBe(2);
+			expect(ui.widgets[1].factory).toBeDefined();
+		});
+
+		test("the end of the run closes an open overlay", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			await s.sub("end");
+			expect(ui.draws.closed).toBe(1);
+		});
+
+		test("closing the session removes it", async () => {
+			const { s, ui } = await running();
+			shutdown(s);
+			expect(ui.widgets.at(-1)).toEqual({ key: "strategium", factory: undefined, options: undefined });
+		});
+
+		test("a session with no run never touches it", async () => {
+			const s = setup();
+			const ui = uiCtx(s);
+			await s.start();
+			await s.sub("status");
+			shutdown(s);
+			expect(ui.widgets).toEqual([]);
+		});
+
+		test("without a UI there is no widget", async () => {
+			const { s, ui } = await running(false);
+			await s.sub("status");
+			expect(ui.widgets).toEqual([]);
+		});
+
+		test("a sub agent draws nothing", async () => {
+			const s = setup();
+			const ui = uiCtx(s);
+			await s.call({ action: "begin", key: "K-1" });
+			s.ctx.agent = { kind: "sub" };
+			await s.start();
+			s.todo(sealTodo("in_progress"));
+			await s.sub("cockpit");
+			expect(ui.widgets).toEqual([]);
+			expect(ui.opened).toEqual([]);
+		});
+	});
+
+	describe("the overlay", () => {
+		test("with no run it warns", async () => {
+			const s = setup();
+			const ui = uiCtx(s);
+			await s.sub("cockpit");
+			expect(s.notes).toContain("Strategium: no active run in this session");
+			expect(ui.opened).toEqual([]);
+		});
+
+		test("without a UI it warns", async () => {
+			const { s, ui } = await running(false);
+			await s.sub("cockpit");
+			expect(s.notes).toContain("Strategium: the cockpit needs the interactive UI");
+			expect(ui.opened).toEqual([]);
+		});
+
+		test("the command opens it as an overlay, a second open does nothing, Esc closes it and it opens again", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			expect(ui.opened.length).toBe(1);
+			expect(ui.opened[0].options).toEqual({ overlay: true });
+			const lines = ui.opened[0].component.render(100).join("\n");
+			expect(lines).toContain("STRATEGOS");
+			expect(lines).toContain("CHRONICLE");
+			await s.sub("cockpit");
+			expect(ui.opened.length).toBe(1);
+			ui.opened[0].component.handleInput!("a");
+			expect(ui.draws.closed).toBe(0);
+			ui.opened[0].component.handleInput!("\x1b");
+			expect(ui.draws.closed).toBe(1);
+			await s.sub("cockpit");
+			expect(ui.opened.length).toBe(2);
+			ui.opened[1].component.handleInput!("q");
+		});
+
+		test("alt+c is registered and opens it", async () => {
+			const { s, ui } = await running();
+			expect(s.shortcuts["alt+c"].description).toBe("Open the Strategium cockpit");
+			await s.shortcuts["alt+c"].handler(s.ctx);
+			expect(ui.opened.length).toBe(1);
+			ui.opened[0].component.handleInput!("q");
+		});
+
+		test("closing the session closes it", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			shutdown(s);
+			expect(ui.draws.closed).toBe(1);
+		});
+
+		// The host owns the interval, so the test takes its place: the callback is driven by hand.
+		test("every 500 ms the mark flips and the overlay repaints, until it closes", async () => {
+			const timers: { fn: () => void; ms: number }[] = [];
+			const cleared: unknown[] = [];
+			const real = { set: globalThis.setInterval, clear: globalThis.clearInterval };
+			const { s, ui } = await running();
+			s.todo([{ name: "Plan", tasks: [{ content: "Draft", status: "in_progress" }] }]);
+			globalThis.setInterval = ((fn: () => void, ms: number) => timers.push({ fn, ms })) as never;
+			globalThis.clearInterval = ((id: unknown) => void cleared.push(id)) as never;
+			try {
+				await s.sub("cockpit");
+				expect(timers.map(t => t.ms)).toEqual([500]);
+				const comp = ui.opened[0].component;
+				const text = () => plain(comp.render(100).join("\n"));
+				expect(text()).toContain("▶");
+				expect(text()).not.toContain("▷");
+				const before = ui.draws.n;
+				timers[0].fn();
+				expect(ui.draws.n).toBe(before + 1);
+				expect(text()).toContain("▷");
+				expect(text()).not.toContain("▶");
+				timers[0].fn();
+				expect(text()).toContain("▶");
+				expect(cleared).toEqual([]);
+				comp.handleInput!("q");
+				expect(cleared).toEqual([1]);
+			} finally {
+				globalThis.setInterval = real.set;
+				globalThis.clearInterval = real.clear;
+			}
+		});
+
+		test("a rejected overlay leaves the cockpit closed, so it opens again", async () => {
+			const { s } = await running();
+			let calls = 0;
+			(s.ctx.ui as Record<string, unknown>).custom = () => {
+				calls++;
+				return calls === 1 ? Promise.reject(new Error("boom")) : new Promise(() => {});
+			};
+			await s.sub("cockpit");
+			await Bun.sleep(0);
+			await s.sub("cockpit");
+			expect(calls).toBe(2);
+		});
+
+		test("an overlay that rejects after it was built is closed cleanly", async () => {
+			const { s, ui } = await running();
+			const built: Comp[] = [];
+			(s.ctx.ui as Record<string, unknown>).custom = (factory: (t: Tui, th: unknown, k: unknown, done: () => void) => Comp) => {
+				built.push(factory(ui.tui, {}, {}, () => void ui.draws.closed++));
+				return built.length === 1 ? Promise.reject(new Error("boom")) : new Promise(() => {});
+			};
+			await s.sub("cockpit");
+			await Bun.sleep(0);
+			expect(ui.draws.closed).toBe(1);
+			await s.sub("cockpit");
+			expect(built.length).toBe(2);
+			built[1].handleInput!("q");
+			expect(ui.draws.closed).toBe(2);
+		});
+
+		test("a todo and a task event repaint and refresh an open overlay", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			const comp = ui.opened[0].component;
+			let n = ui.draws.n;
+			s.todo(sealTodo("in_progress"));
+			expect(ui.draws.n).toBeGreaterThan(n);
+			expect(plain(comp.render(100).join("\n"))).toContain("seal Plan");
+			n = ui.draws.n;
+			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "scout", name: "S", task: "look" }] }, details: { progress: [{ index: 0, id: "S", status: "running" }] }, isError: false }, s.ctx));
+			expect(ui.draws.n).toBeGreaterThan(n);
+			expect(plain(comp.render(100).join("\n"))).toContain("SCOUT");
+			comp.handleInput!("q");
+		});
+	});
+
+	describe("seals", () => {
+		test("a granted seal sounds the done fanfare once and the todo is kept on the run", async () => {
+			const { s } = await running();
+			const lines = recorder(s.dir);
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("completed"));
+			expect(await lines(1)).toEqual(["done|K-1: seal Plan granted"]);
+			s.todo(sealTodo("completed"));
+			await Bun.sleep(300);
+			expect(await lines(0)).toEqual(["done|K-1: seal Plan granted"]);
+			expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")).phases).toEqual(sealTodo("completed"));
+		});
+
+		// A second seal, granted the normal way, proves the recorder is live: only its line may be in the file.
+		const other = (status: string) => [{ name: "Other", tasks: [{ content: "[seal] Other", status }] }];
+		async function control(s: ReturnType<typeof setup>, lines: (want: number) => Promise<string[]>) {
+			s.todo(other("in_progress"));
+			s.todo(other("completed"));
+			expect(await lines(1)).toEqual(["done|K-1: seal Other granted"]);
+			await Bun.sleep(300);
+			expect(await lines(0)).toEqual(["done|K-1: seal Other granted"]);
+		}
+
+		test("a seal first seen granted does not sound", async () => {
+			const { s } = await running();
+			const lines = recorder(s.dir);
+			s.todo(sealTodo("completed"));
+			await control(s, lines);
+		});
+
+		test("with notifications off it stays silent", async () => {
+			const { s } = await running();
+			const lines = recorder(s.dir);
+			await s.sub("config", "notify off");
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("completed"));
+			await s.sub("config", "notify on");
+			await control(s, lines);
+		});
+
+		test("a failing alarm is reported", async () => {
+			const { s } = await running();
+			s.todo(sealTodo("in_progress"));
+			process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+			s.todo(sealTodo("completed"));
+			expect(s.notes.some(n => n.includes("the alarm failed"))).toBe(true);
+		});
+
+		test("without a UI a granted seal still sounds and nothing is drawn", async () => {
+			const { s, ui } = await running(false);
+			const lines = recorder(s.dir);
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("completed"));
+			expect(await lines(1)).toEqual(["done|K-1: seal Plan granted"]);
+			expect(ui.widgets).toEqual([]);
+		});
+
+		test("a granted seal reaches the widget", async () => {
+			const { s, ui } = await running();
+			recorder(s.dir);
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("completed"));
+			expect(ui.widgets[0].factory!(ui.tui, {}).render(80).join("\n")).toContain("granted");
+		});
+	});
+
+	describe("the chronicle", () => {
+		const brother = (name: string, agent = "battle-brother") => ({ agent, name, isolated: true, task: "build squad a." });
+		const result = (s: ReturnType<typeof setup>, agent: string, status: string) =>
+			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A", agent)] }, details: { progress: [{ index: 0, id: "A", status }] }, isError: false }, s.ctx));
+		const jobEnd = (s: ReturnType<typeof setup>, status: string) =>
+			s.handlers.context.forEach(h => h({ type: "context", messages: [{ role: "custom", details: { jobs: [{ jobId: "j", type: "task", status, label: "A" }] } }] }, s.ctx));
+		const widgetText = (ui: ReturnType<typeof uiCtx>) => ui.widgets[0].factory!(ui.tui, {}).render(120).join("\n");
+		async function squad() {
+			const r = await running();
+			await r.s.call({ action: "slices", slices: [{ id: "a", parallel: false, files: ["a.ts"] }] });
+			return r;
+		}
+
+		test("a deployed builder is logged, and its failure too, newest first", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "running");
+			jobEnd(s, "failed");
+			const entries = plain(widgetText(ui)).split("\n").filter(l => l.includes("SQUAD a"));
+			expect(entries).toHaveLength(2);
+			expect(entries[0]).toContain("✗ failed");
+			expect(entries[1]).toContain("† battle-brother deployed");
+			expect(plain(widgetText(ui))).toContain("a † ✗");
+		});
+
+		test("a builder that returns is logged once", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "running");
+			jobEnd(s, "completed");
+			jobEnd(s, "completed");
+			expect(widgetText(ui).match(/returned/g)?.length).toBe(1);
+		});
+
+		test("the same running agent seen twice is deployed once", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "running");
+			result(s, "battle-brother", "running");
+			expect(widgetText(ui).match(/deployed/g)?.length).toBe(1);
+		});
+
+		test("a pending agent is deployed", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "pending");
+			expect(widgetText(ui)).toContain("deployed");
+		});
+
+		test("a completed task result logs the return and an unknown id logs nothing", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "completed");
+			expect(plain(widgetText(ui))).not.toContain("returned");
+			result(s, "battle-brother", "running");
+			result(s, "battle-brother", "completed");
+			const entries = plain(widgetText(ui)).split("\n").filter(l => l.includes("SQUAD a"));
+			expect(entries).toHaveLength(2);
+			expect(entries[0]).toContain("✓ returned");
+			result(s, "battle-brother", "completed");
+			expect(plain(widgetText(ui)).match(/returned/g)?.length).toBe(1);
+			expect(await peek(s, ui)).not.toMatch(/│ ✗ failed/);
+		});
+
+		test.each(["failed", "aborted"])("a %s task result logs the failure and, once the agent is gone, marks the squad in the widget and the overlay", async status => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "running");
+			result(s, "battle-brother", status);
+			const entries = plain(widgetText(ui)).split("\n").filter(l => l.includes("SQUAD a"));
+			expect(entries).toHaveLength(2);
+			expect(entries[0]).toContain("✗ failed");
+			// The host's job end removes the agent from the run; the next redraw shows the note.
+			jobEnd(s, status);
+			await s.call({ action: "status" });
+			expect(plain(widgetText(ui))).toContain("a † ✗");
+			expect(await peek(s, ui)).toMatch(/│ ✗ failed +│/);
+		});
+
+		test("a veteran for a squad is an escalation and the overlay box says so", async () => {
+			const { s, ui } = await squad();
+			result(s, "veteran", "running");
+			expect(widgetText(ui)).toContain("escalated to VETERAN");
+			expect(await peek(s, ui)).toContain("‡ VETERAN");
+		});
+
+		test("a station change and a seal waiting are logged, the seal after the station", async () => {
+			const { s, ui } = await running();
+			s.todo([{ name: "Plan", tasks: [{ content: "[seal] Plan", status: "in_progress" }] }]);
+			const text = widgetText(ui);
+			expect(text).toContain("station Plan");
+			expect(text).toContain("seal Plan awaits the Chapter Master");
+			expect(text.indexOf("awaits the Chapter Master")).toBeLessThan(text.indexOf("station Plan"));
+		});
+
+		test("the same seal waiting sent twice is logged once", async () => {
+			const { s, ui } = await running();
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("in_progress"));
+			const text = widgetText(ui);
+			expect(text.match(/awaits the Chapter Master/g)?.length).toBe(1);
+			expect(text.match(/station Plan/g)?.length).toBe(1);
+		});
+
+		test("closing the session forgets the chronicle", async () => {
+			const { s, ui } = await running();
+			s.todo(sealTodo("in_progress"));
+			expect(widgetText(ui)).toContain("station Plan");
+			shutdown(s);
+			await s.start();
+			const text = plain(widgetText(ui));
+			expect(text).toContain("K-1");
+			expect(text).not.toContain("station Plan");
+		});
+
+		test("a run with a new key starts a clean chronicle", async () => {
+			const { s, ui } = await running();
+			s.todo(sealTodo("in_progress"));
+			expect(widgetText(ui)).toContain("station Plan");
+			await s.sub("end");
+			await s.call({ action: "begin", key: "K-2" });
+			await s.sub("status");
+			const text = plain(widgetText(ui));
+			expect(text).toContain("K-2");
+			expect(text).not.toContain("station Plan");
+		});
+	});
+
+	describe("the booking clock", () => {
+		// 3 min booked from 09:00; the clock reads 09:02, so 67 % and the 50 % alert.
+		async function timed() {
+			const s = setup();
+			const ui = uiCtx(s);
+			setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+			await s.call({ action: "begin", key: "K-1", booked: 3 });
+			setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+			await s.start();
+			return { s, ui };
+		}
+
+		test("a timed run shows elapsed over booked, the bar and the percentage in the widget and the overlay", async () => {
+			const { s, ui } = await timed();
+			expect(plain(ui.widgets[0].factory!(ui.tui, {}).render(120).join("\n"))).toContain("⧗ 2/3 min 67%");
+			const overlay = await peek(s, ui);
+			expect(overlay).toContain("⧗ 2/3 min");
+			expect(overlay).toContain("▰");
+			expect(overlay).toContain("▱");
+			expect(overlay).toContain("67%");
+		});
+
+		test("a booking alert is written to the chronicle, once per threshold", async () => {
+			const { s, ui } = await timed();
+			const entries = () => plain(ui.widgets[0].factory!(ui.tui, {}).render(120).join("\n")).split("\n").filter(l => l.includes("of the booking"));
+			expect(entries()).toHaveLength(1);
+			expect(entries()[0]).toContain("TIMER");
+			expect(entries()[0]).toContain("⧗ 50% of the booking");
+			await s.call({ action: "status" });
+			expect(entries()).toHaveLength(1);
+			setSystemTime(new Date(2026, 10, 16, 9, 3, 0));
+			await s.call({ action: "status" });
+			expect(entries()).toHaveLength(2);
+			expect(entries()[0]).toContain("⧗ 100% of the booking");
+		});
+	});
+
+	describe("agents spawned by eval", () => {
+		const spawn = (s: ReturnType<typeof setup>, e: unknown) => s.handlers.before_subagent_spawn.forEach(h => h(e, s.ctx));
+		const deployed = (ui: ReturnType<typeof uiCtx>) => plain(ui.widgets[0].factory!(ui.tui, {}).render(120).join("\n")).split("\n").filter(l => l.includes("deployed"));
+
+		test("an eval spawn of a roster agent logs its role", async () => {
+			const { s, ui } = await running();
+			spawn(s, { invocationKind: "eval", agent: "scout" });
+			expect(deployed(ui)).toHaveLength(1);
+			expect(deployed(ui)[0]).toContain("SCOUT");
+		});
+
+		test("a spawn that is not from eval logs nothing", async () => {
+			const { s, ui } = await running();
+			spawn(s, { invocationKind: "task", agent: "scout" });
+			spawn(s, { agent: "scout" });
+			expect(deployed(ui)).toEqual([]);
+		});
+
+		test("an agent outside the roster logs nothing", async () => {
+			const { s, ui } = await running();
+			spawn(s, { invocationKind: "eval", agent: "stranger" });
+			expect(deployed(ui)).toEqual([]);
+		});
 	});
 });
