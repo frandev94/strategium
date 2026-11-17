@@ -62,7 +62,7 @@ type Run = {
 type Tui = { requestRender(): void };
 type Component = { render(width: number): string[]; handleInput?(data: string): void; invalidate?(): void; dispose?(): void };
 // What the extension reads from the host's session context: the real one has more.
-// `hasUI` and the optional ui calls are absent without the interactive UI (RPC, --no-ui).
+// `hasUI` and the optional ui calls are absent with --no-ui or in headless modes; RPC has them, but its custom() resolves at once without building the component.
 type SessionCtx = {
 	sessionManager: { getSessionId(): string };
 	hasUI?: boolean;
@@ -653,6 +653,12 @@ export default function (pi: ExtensionAPI) {
 		archmagosBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_ARCHMAGOS?.trim() ?? "");
 	const archmagosState = (sid: string) =>
 		`${archmagosOn(sid) ? "on" : "off"} (${archmagosBySession.has(sid) ? "this session" : "STRATEGIUM_ARCHMAGOS"})`;
+	// /strategium-config cockpit on|off per session id: the widget above the editor is opt-in. It wins over STRATEGIUM_COCKPIT (1, true, on, yes), which is off when unset.
+	const cockpitBySession = new Map<string, boolean>();
+	const cockpitOn = (sid: string) =>
+		cockpitBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_COCKPIT?.trim() ?? "");
+	const cockpitState = (sid: string) =>
+		`${cockpitOn(sid) ? "on" : "off"} (${cockpitBySession.has(sid) ? "this session" : "STRATEGIUM_COCKPIT"})`;
 	// Minutes of idle before the clock pauses: /strategium-config idle <min> per session wins over STRATEGIUM_IDLE_MIN
 	// (whole minutes; unset or invalid → 3; 0 = off).
 	const idleBySession = new Map<string, number>();
@@ -701,7 +707,6 @@ export default function (pi: ExtensionAPI) {
 		view: undefined as View | undefined,
 		shown: false,
 		tui: undefined as Tui | undefined,
-		open: false,
 		overlay: undefined as Tui | undefined,
 		close: undefined as (() => void) | undefined,
 	};
@@ -724,20 +729,22 @@ export default function (pi: ExtensionAPI) {
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
 		log(key, job.who, ok ? "✓ returned" : "✗ failed", ok ? "ok" : "fail");
 	};
-	const hideCockpit = (ctx: SessionCtx) => {
-		cockpit.close?.();
+	const hideWidget = (ctx: SessionCtx) => {
 		if (!cockpit.shown) return;
 		cockpit.shown = false;
 		cockpit.tui = undefined;
 		ctx.ui.setWidget?.("strategium", undefined);
 	};
+	const hideCockpit = (ctx: SessionCtx) => {
+		cockpit.close?.();
+		hideWidget(ctx);
+	};
 	/** Rebuild the view from the run and the in-memory state, then show or repaint the widget. Never ticks the timer. */
-	const drawCockpit = (ctx: SessionCtx, run = ownRun(sidOf(ctx))) => {
-		if (!run) return hideCockpit(ctx);
+	const drawCockpit = (ctx: SessionCtx, run: Run) => {
 		if (cockpit.key !== run.key) resetCockpit(run.key);
 		cockpit.view = cockpitView({
 			key: run.key,
-			untimed: run.untimed,
+			untimed: cockpit.clock?.bk ? undefined : run.untimed,
 			glyphs: process.env.STRATEGIUM_GLYPHS === "1",
 			where: run.where,
 			phases: run.phases,
@@ -750,13 +757,14 @@ export default function (pi: ExtensionAPI) {
 		});
 		cockpit.overlay?.requestRender();
 		if (!ctx.hasUI || typeof ctx.ui.setWidget !== "function") return;
+		if (!cockpitOn(sidOf(ctx))) return hideWidget(ctx);
 		if (cockpit.shown) return cockpit.tui?.requestRender();
 		cockpit.shown = true;
 		ctx.ui.setWidget(
 			"strategium",
 			tui => {
 				cockpit.tui = tui;
-				return { render: width => renderWidget(cockpit.view!, width, pal), invalidate() {}, dispose() { cockpit.shown = false; cockpit.tui = undefined; } };
+				return { render: width => renderWidget(cockpit.view!, width, pal), dispose() { cockpit.shown = false; cockpit.tui = undefined; } };
 			},
 			{ placement: "aboveEditor" },
 		);
@@ -766,11 +774,9 @@ export default function (pi: ExtensionAPI) {
 		const run = ownRun(sidOf(ctx));
 		if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
 		if (!ctx.hasUI || typeof ctx.ui.custom !== "function") return ctx.ui.notify("Strategium: the cockpit needs the interactive UI", "warning");
-		if (cockpit.open) return;
-		cockpit.open = true;
+		if (cockpit.close) return;
 		drawCockpit(ctx, run);
 		const closed = () => {
-			cockpit.open = false;
 			cockpit.close = undefined;
 			cockpit.overlay = undefined;
 		};
@@ -795,7 +801,6 @@ export default function (pi: ExtensionAPI) {
 						handleInput: data => {
 							if (closes(data)) close();
 						},
-						invalidate() {},
 						dispose: () => clearInterval(timer),
 					};
 				},
@@ -898,7 +903,7 @@ export default function (pi: ExtensionAPI) {
 			// A paused run never alerts. Reset first, so the clock stored below is not wiped by the first draw of a new key.
 			if (cockpit.key !== key) resetCockpit(key);
 			if (running) maybeAlert(ctx, sid, file, evs, key, now, el, bk);
-			cockpit.clock = { running, el, ...(found.untimed || !bk ? {} : { bk }) };
+			cockpit.clock = { running, el, ...(bk ? { bk } : {}) };
 			drawCockpit(ctx, found);
 		} catch (err) {
 			ctx.ui.notify(`Strategium timer: ${err instanceof Error ? err.message : String(err)}`, "warning");
@@ -1101,14 +1106,16 @@ export default function (pi: ExtensionAPI) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; cockpit on|off shows or hides the widget above the editor", (arg, ctx, sid) => {
 		if (arg !== undefined) {
 			const m = arg.match(/^notify\s+(on|off)$/);
 			const i = arg.match(/^idle\s+(\d+)$/);
 			const a = arg.match(/^archmagos\s+(on|off)$/);
-			if (!m && !i && !a) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			const c = arg.match(/^cockpit\s+(on|off)$/);
+			if (!m && !i && !a && !c) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or cockpit on|off; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (a) archmagosBySession.set(sid, a[1] === "on");
+			else if (c) cockpitBySession.set(sid, c[1] === "on");
 			else idleBySession.set(sid, Number(i![1]));
 		}
 		const env = (k: string) => process.env[k]?.trim() || "not set";
@@ -1118,6 +1125,7 @@ export default function (pi: ExtensionAPI) {
 				`notify: ${notifyState(sid)}`,
 				`idle: ${idleState(sid)}`,
 				`archmagos: ${archmagosState(sid)}`,
+				`cockpit: ${cockpitState(sid)}`,
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`alarm: ${env("STRATEGIUM_ALARM")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
@@ -1163,6 +1171,8 @@ export default function (pi: ExtensionAPI) {
 					if (idle !== undefined) idleBySession.set(sid, idle);
 					const arch = archmagosBySession.get(prevSid);
 					if (arch !== undefined) archmagosBySession.set(sid, arch);
+					const cp = cockpitBySession.get(prevSid);
+					if (cp !== undefined) cockpitBySession.set(sid, cp);
 				} catch {
 					// Another session took the key meanwhile: the run stays where it is.
 				}

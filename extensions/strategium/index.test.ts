@@ -1516,6 +1516,21 @@ describe("the archmagos setting", () => {
 		expect(notes.at(-1)).toContain("archmagos: on (this session)");
 	});
 
+	test("the cockpit setting follows an approved plan to the new session", async () => {
+		const s = setup("sess-A");
+		await s.call({ action: "begin", key: "K-1" });
+		const notes: string[] = [];
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer, notes);
+		await s.handlers.session_start[0]({}, ctx);
+		await s.commands["strategium-config"].handler("cockpit on", ctx);
+		await s.handlers.plan_review_requested[0]({ sessionId: "sess-A" }, ctx);
+		await s.handlers.plan_review_resolved[0]({ sessionId: "sess-A", choice: "execute" }, ctx);
+		sm.sid = "sess-B";
+		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
+		await s.commands["strategium-config"].handler("", ctx);
+		expect(notes.at(-1)).toContain("cockpit: on (this session)");
+	});
+
 	test("begin archmagos: true marks the run, a same-key begin keeps it, archmagos: false clears it", async () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1" });
@@ -2253,10 +2268,11 @@ describe("cockpit", () => {
 		};
 	};
 	afterEach(() => delete process.env.STRATEGIUM_ALARM);
-	// A run with the UI on, started like a session does.
-	async function running(hasUI = true) {
+	// A run with the UI on, started like a session does; the widget is opt-in, so most tests switch it on first.
+	async function running(hasUI = true, widget = true) {
 		const s = setup();
 		const ui = uiCtx(s, hasUI);
+		if (widget) await s.sub("config", "cockpit on");
 		await s.call({ action: "begin", key: "K-1" });
 		await s.start();
 		return { s, ui };
@@ -2271,6 +2287,53 @@ describe("cockpit", () => {
 		comp.handleInput!("q");
 		return text;
 	}
+
+	describe("the widget is opt-in", () => {
+		afterEach(() => delete process.env.STRATEGIUM_COCKPIT);
+
+		test("off by default: a run draws no widget, yet the overlay still opens and shows the run", async () => {
+			const { s, ui } = await running(true, false);
+			await s.sub("status");
+			expect(ui.widgets).toEqual([]);
+			expect(await peek(s, ui)).toContain("K-1");
+		});
+
+		test("config cockpit on shows it at once with the run key", async () => {
+			const { s, ui } = await running(true, false);
+			await s.sub("config", "cockpit on");
+			expect(ui.widgets.length).toBe(1);
+			expect(ui.widgets[0].factory!(ui.tui, {}).render(80).join("\n")).toContain("K-1");
+		});
+
+		test("config cockpit off removes it at once", async () => {
+			const { s, ui } = await running(true, true);
+			await s.sub("config", "cockpit off");
+			expect(ui.widgets.at(-1)).toEqual({ key: "strategium", factory: undefined, options: undefined });
+		});
+
+		test("STRATEGIUM_COCKPIT=1 shows it by default and config cockpit off wins", async () => {
+			process.env.STRATEGIUM_COCKPIT = "1";
+			const { s, ui } = await running(true, false);
+			expect(ui.widgets.length).toBe(1);
+			await s.sub("config", "cockpit off");
+			expect(ui.widgets.at(-1)).toEqual({ key: "strategium", factory: undefined, options: undefined });
+		});
+
+		test("config lists the cockpit setting", async () => {
+			const s = setup();
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain("cockpit: off (STRATEGIUM_COCKPIT)");
+			await s.sub("config", "cockpit on");
+			expect(s.notes.at(-1)).toContain("cockpit: on (this session)");
+		});
+
+		test("the chronicle keeps filling while the widget is off", async () => {
+			const { s, ui } = await running(true, false);
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("completed"));
+			expect(await peek(s, ui)).toContain("granted");
+		});
+	});
 
 	describe("the widget", () => {
 		test("the first tick shows it above the editor once and later refreshes only repaint", async () => {
@@ -2294,6 +2357,13 @@ describe("cockpit", () => {
 		test("an untimed run shows its clock right after start, not on the next tick", async () => {
 			const { ui } = await running();
 			expect(plain(ui.widgets[0].factory!(ui.tui, {}).render(120)[0])).toContain("⧗ 0 min");
+		});
+
+		test("a booking added to an untimed run shows its bar in the widget", async () => {
+			const { s, ui } = await running();
+			await s.sub("pause");
+			await s.sub("resume", "240");
+			expect(plain(ui.widgets[0].factory!(ui.tui, {}).render(120)[0])).toContain("/240 min");
 		});
 
 		test("when the host frees the widget it comes back on the next draw", async () => {
@@ -2433,6 +2503,19 @@ describe("cockpit", () => {
 			(s.ctx.ui as Record<string, unknown>).custom = () => {
 				calls++;
 				return calls === 1 ? Promise.reject(new Error("boom")) : new Promise(() => {});
+			};
+			await s.sub("cockpit");
+			await Bun.sleep(0);
+			await s.sub("cockpit");
+			expect(calls).toBe(2);
+		});
+
+		test("a custom() that resolves without building the overlay (RPC) leaves it closed, so it opens again", async () => {
+			const { s } = await running();
+			let calls = 0;
+			(s.ctx.ui as Record<string, unknown>).custom = () => {
+				calls++;
+				return Promise.resolve(undefined);
 			};
 			await s.sub("cockpit");
 			await Bun.sleep(0);
@@ -2665,6 +2748,7 @@ describe("cockpit", () => {
 		async function timed() {
 			const s = setup();
 			const ui = uiCtx(s);
+			await s.sub("config", "cockpit on");
 			setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 			await s.call({ action: "begin", key: "K-1", booked: 3 });
 			setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
