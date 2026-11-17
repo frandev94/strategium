@@ -1,6 +1,6 @@
 ---
 name: strategium-ui
-description: Use for UI slices in a Strategium run (build, redesign or review a screen, page or dialog); fixed context → direction → build → copy → review → verify pass over public UI skills. Briefs for battle-brother UI slices name it.
+description: Use for UI squads in a Strategium run (build, redesign or review a screen, page or dialog); fixed context → direction → build → copy → review → verify pass over public UI skills. Briefs for battle-brother UI squads name it.
 ---
 
 # Strategium UI pass
@@ -43,5 +43,5 @@ Run all three, merge into one list by severity, one finding → one fix:
 ## 6. Verify
 Render the real screen (dev/preview server) at the device resolution, screenshot before/after into the OS temp dir, re-run failed checks after fixing.
 
-## Report (in the slice's final report)
+## Report (in the squad's final report)
 Design decisions (one table), findings by severity with the fix applied, screenshot paths, what was left out and why.

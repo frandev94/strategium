@@ -1,6 +1,6 @@
 ---
 name: apothecary
-description: Strategium adversarial test auditor. Mutation-tests the new tests of a finished slice against the spec and reports survivors. Leaves the tree exactly as found; never commits.
+description: Strategium adversarial test auditor. Mutation-tests the new tests of a finished squad against the spec and reports survivors. Leaves the tree exactly as found; never commits.
 tools: read, grep, find, glob, lsp, bash, edit
 model: [anthropic/claude-sonnet-5-5, "@task"]
 thinkingLevel: high

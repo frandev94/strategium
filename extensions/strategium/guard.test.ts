@@ -166,26 +166,26 @@ describe("checkSlices", () => {
 		expect(err).toContain('e.g. slices: [{"id":"A","parallel":true,"files":["a"]},{"id":"B","parallel":false,"files":["a","b"]}]');
 		expect(err).toContain("If one of them has already finished, remove it from the list");
 	});
-	test("a slice whose agent stopped collides with nothing", () => {
+	test("a squad whose agent stopped collides with nothing", () => {
 		expect(checkSlices([s("A", ["a"]), s("B", ["a"])], [s("A", ["a"])])).toBeUndefined();
-		expect(checkSlices([s("A", ["a"]), s("B", ["a"]), s("C", ["a"])], [s("A", ["a"])])).toContain("slices B and C");
+		expect(checkSlices([s("A", ["a"]), s("B", ["a"]), s("C", ["a"])], [s("A", ["a"])])).toContain("squads B and C");
 	});
-	test("sequential slices may share files", () => {
+	test("sequential squads may share files", () => {
 		expect(checkSlices([s("A", ["a"], false), s("B", ["a"])])).toBeUndefined();
 		expect(checkSlices([s("A", ["a"], false), s("B", ["a"], false)])).toBeUndefined();
 	});
-	test("overlap is found between non-adjacent parallel slices", () => {
-		expect(checkSlices([s("A", ["a"]), s("M", ["m"], false), s("B", ["a"])])).toContain("slices A and B");
+	test("overlap is found between non-adjacent parallel squads", () => {
+		expect(checkSlices([s("A", ["a"]), s("M", ["m"], false), s("B", ["a"])])).toContain("squads A and B");
 	});
-	test("overlap is found between non-adjacent parallel slices that are not neighbours in the parallel list either", () => {
-		expect(checkSlices([s("A", ["a"]), s("B", ["b"]), s("C", ["a"])])).toContain("slices A and C");
+	test("overlap is found between non-adjacent parallel squads that are not neighbours in the parallel list either", () => {
+		expect(checkSlices([s("A", ["a"]), s("B", ["b"]), s("C", ["a"])])).toContain("squads A and C");
 	});
 	test("the first error in the plan's order wins", () => {
-		expect(checkSlices([])).toBe("slices needs at least one slice");
-		expect(checkSlices([s(" ", [])])).toBe("every slice needs an id");
-		expect(checkSlices([s("A", []), s("A", ["a"])])).toBe("slice A lists no files");
-		expect(checkSlices([s("A", ["a"]), s("A", [])])).toBe("duplicate slice id A");
-		expect(checkSlices([s("A", ["a"]), s("A", ["a"])])).toBe("duplicate slice id A");
+		expect(checkSlices([])).toBe("declare at least one squad");
+		expect(checkSlices([s(" ", [])])).toBe("every squad needs an id");
+		expect(checkSlices([s("A", []), s("A", ["a"])])).toBe("squad A lists no files");
+		expect(checkSlices([s("A", ["a"]), s("A", [])])).toBe("duplicate squad id A");
+		expect(checkSlices([s("A", ["a"]), s("A", ["a"])])).toBe("duplicate squad id A");
 	});
 	test.skipIf(process.platform === "linux")("case folds off Linux", () => {
 		expect(checkSlices([s("A", ["Alarm/Vox.ts"]), s("B", ["alarm/vox.ts"])])).toContain("both change alarm/vox.ts.");
@@ -197,33 +197,33 @@ describe("sliceWarnings", () => {
 	test("no stopped slice, no warning", () => {
 		expect(sliceWarnings([s("A", ["a"]), s("B", ["a"])], [])).toEqual([]);
 	});
-	test("a stopped slice still listed is to be removed, with the list fixed", () => {
+	test("a stopped squad still listed is to be removed, with the list fixed", () => {
 		expect(sliceWarnings([s("A", ["a"]), s("B", ["a", "b"])], [s("A", ["a"])])).toEqual([
-			'slice A is no longer active (its agent has stopped); sharing a with B is not a conflict. Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["a","b"]}].',
+			'squad A is no longer active (its agent has stopped); sharing a with B is not a conflict. Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["a","b"]}].',
 		]);
 	});
-	test("a new slice on the files of a stopped one is told to build on that work, and only that slice", () => {
+	test("a new squad on the files of a stopped one is told to build on that work, and only that squad", () => {
 		expect(sliceWarnings([s("B", ["a"]), s("C", ["c"])], [s("A", ["a"])])).toEqual([
-			"slice B changes a, which slice A already changed and its agent has stopped. Tell B's agent what A changed there, so it builds on that work instead of undoing it.",
+			"squad B changes a, which squad A already changed and its agent has stopped. Tell B's agent what A changed there, so it builds on that work instead of undoing it.",
 		]);
 	});
-	test("every live slice that shares files with a stopped one is named, each in its own warning", () => {
+	test("every live squad that shares files with a stopped one is named, each in its own warning", () => {
 		expect(sliceWarnings([s("B", ["a"]), s("C", ["b"]), s("D", ["d"])], [s("A", ["a", "b"])])).toEqual([
-			"slice B changes a, which slice A already changed and its agent has stopped. Tell B's agent what A changed there, so it builds on that work instead of undoing it.",
-			"slice C changes b, which slice A already changed and its agent has stopped. Tell C's agent what A changed there, so it builds on that work instead of undoing it.",
+			"squad B changes a, which squad A already changed and its agent has stopped. Tell B's agent what A changed there, so it builds on that work instead of undoing it.",
+			"squad C changes b, which squad A already changed and its agent has stopped. Tell C's agent what A changed there, so it builds on that work instead of undoing it.",
 		]);
 	});
-	test("a stopped slice still listed names every live slice it shares with", () => {
+	test("a stopped squad still listed names every live squad it shares with", () => {
 		expect(sliceWarnings([s("A", ["a", "b"]), s("B", ["a"]), s("C", ["b"])], [s("A", ["a", "b"])])).toEqual([
-			'slice A is no longer active (its agent has stopped); sharing a with B and b with C is not a conflict. Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["a"]},{"id":"C","parallel":true,"files":["b"]}].',
+			'squad A is no longer active (its agent has stopped); sharing a with B and b with C is not a conflict. Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["a"]},{"id":"C","parallel":true,"files":["b"]}].',
 		]);
 	});
 	test("with nothing live there is no example list", () => {
-		expect(sliceWarnings([s("A", ["a"])], [s("A", ["a"])])).toEqual(["slice A is no longer active (its agent has stopped). Remove it from the list."]);
+		expect(sliceWarnings([s("A", ["a"])], [s("A", ["a"])])).toEqual(["squad A is no longer active (its agent has stopped). Remove it from the list."]);
 	});
-	test("a stopped slice that shares nothing has no sharing note", () => {
+	test("a stopped squad that shares nothing has no sharing note", () => {
 		expect(sliceWarnings([s("A", ["a"]), s("B", ["b"])], [s("A", ["a"])])).toEqual([
-			'slice A is no longer active (its agent has stopped). Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["b"]}].',
+			'squad A is no longer active (its agent has stopped). Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["b"]}].',
 		]);
 	});
 });

@@ -24,9 +24,9 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 
 1. **Muster** — el objetivo, los sellos y, con ticketing, la reserva.
 2. **Auspex** — los scouts mapean el código que toca el objetivo.
-3. **Scriptorium** — el librarian escribe una especificación, de 1 a 5 slices y una Merge bar.
-4. **Deployment** — una rama para la run, los slices declarados con sus ficheros; cada agente aislado trabaja en su propio checkout de omp.
-5. **Skirmish** — un `battle-brother` implementa cada slice con los tests primero; un `apothecary` intenta romper los tests nuevos.
+3. **Scriptorium** — el librarian escribe una especificación, de 1 a 5 squads y una Merge bar.
+4. **Deployment** — una rama para la run, los squads declarados con sus ficheros; cada agente aislado trabaja en su propio checkout de omp.
+5. **Skirmish** — un `battle-brother` implementa cada squad con los tests primero; un `apothecary` intenta romper los tests nuevos.
 6. **Inquisition** — un `inquisitor` revisa el diff contra la Merge bar; un `sonic` ejecuta las comprobaciones del repo.
 7. **Extraction** — el commit y la merge request, después de tu sello.
 
@@ -39,7 +39,7 @@ flowchart TB
     M --> A["Auspex<br/>scout"]
     A --> B["Scriptorium<br/>librarian → plan"]
     B --> S1{{"seal Plan"}}
-    S1 --> D["Deployment<br/>una rama + slices declarados"]
+    S1 --> D["Deployment<br/>una rama + squads declarados"]
     D --> E["Skirmish<br/>battle-brother → veteran<br/>apothecary rompe los tests"]
     E --> I["Inquisition<br/>inquisitor · sonic<br/>security-reviewer si toca auth"]
     I --> S2{{"seal UI"}}
@@ -62,12 +62,12 @@ Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un de
 | Vuelta | Detonante | Destino | Presupuesto |
 |---|---|---|---|
 | **Recon** | el mapa del código está equivocado | un `scout` más con ese hueco concreto | 1 por run |
-| **Redraft** | el plan está equivocado, o el check de un slice no se puede cumplir tal cual está escrito | el mismo `librarian` reescribe el trabajo restante | 1 por run |
-| **Rally** | el código está equivocado: check rojo, supervivientes del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con todos los IDs de hallazgos abiertos en un solo brief, nunca el informe anterior | 2 rondas por slice, luego un `veteran` |
+| **Redraft** | el plan está equivocado, o el check de un squad no se puede cumplir tal cual está escrito | el mismo `librarian` reescribe el trabajo restante | 1 por run |
+| **Rally** | el código está equivocado: check rojo, supervivientes del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con todos los IDs de hallazgos abiertos en un solo brief, nunca el informe anterior | 2 rondas por squad, luego un `veteran` |
 | **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez, solo sobre los IDs de hallazgos abiertos y el rango del arreglo, y luego `sonic` para los checks | 2 rondas por item del Merge bar |
 | **Stand down** | se agotó el presupuesto, o el fallo no está en el código | tú, con los puntos abiertos | — |
 
-Si el código puede cumplir el check del slice tal como está escrito, es un rally; si no puede, el slice se cortó mal y es un redraft. Una vuelta que pasa por delante de un sello ya concedido rompe el sello y hay que pedirlo otra vez. Lo que ya pasó, sigue pasado.
+Si el código puede cumplir el check del squad tal como está escrito, es un rally; si no puede, el squad se cortó mal y es un redraft. Una vuelta que pasa por delante de un sello ya concedido rompe el sello y hay que pedirlo otra vez. Lo que ya pasó, sigue pasado.
 
 ## Instalación
 
@@ -114,7 +114,7 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 
 El texto libre necesita las comillas, para no chocar nunca con un subcomando. Sin ticket, el librarian propone los criterios de aceptación y tú los confirmas en el sello Plan, que no se puede saltar.
 
-Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. Cerrar una sesión pausa su run y libera la reserva; al reabrir esa sesión la recupera y la reanuda sola, salvo que tú la hubieras pausado (`/strategium-pause`, acción `stop`, el stand down). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy. El Capitán no puede editar el repositorio de la run: mientras la run está abierta `edit` y `ast_edit` se ocultan de la sesión principal, `write` está bloqueado dentro del repo de la run y de su carpeta `<repo>-worktrees`, los ejecutores de tests y builds por bash y las escrituras de ficheros por bash están bloqueados (solo pasan las redirecciones a `$TEMP` y `local://`), se rechazan los agentes fuera del plantel de Strategium y se rechazan los battle-brothers hasta que se declaren los slices del plan (`strategium` `slices`; los slices en paralelo no pueden compartir un fichero). Cuando el plan se aprueba en el modo plan de omp, "Approve and execute" abre una sesión nueva y la run se va con ella; un `/new` normal deja la run en su propia sesión.
+Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. Cerrar una sesión pausa su run y libera la reserva; al reabrir esa sesión la recupera y la reanuda sola, salvo que tú la hubieras pausado (`/strategium-pause`, acción `stop`, el stand down). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy. El Capitán no puede editar el repositorio de la run: mientras la run está abierta `edit` y `ast_edit` se ocultan de la sesión principal, `write` está bloqueado dentro del repo de la run y de su carpeta `<repo>-worktrees`, los ejecutores de tests y builds por bash y las escrituras de ficheros por bash están bloqueados (solo pasan las redirecciones a `$TEMP` y `local://`), se rechazan los agentes fuera del plantel de Strategium y se rechazan los battle-brothers hasta que se declaren los squads del plan (`strategium` `slices`; los squads en paralelo no pueden compartir un fichero). Cuando el plan se aprueba en el modo plan de omp, "Approve and execute" abre una sesión nueva y la run se va con ella; un `/new` normal deja la run en su propia sesión.
 
 ### Ticketing (opcional)
 

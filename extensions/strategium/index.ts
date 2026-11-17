@@ -28,10 +28,10 @@ import { childEnv } from "./env";
 // `where`: the station the run is at, read from the todo (see whereFrom), so the footer shows it after a restart too.
 type Where = { station: string; back?: true; seal?: string };
 type Slice = { id: string; parallel: boolean; files: string[] };
-// `hidden`: the tools hidden from the Captain for this run, put back when it ends. `slices`: the plan's slices as declared.
-// `launched`: the parallel slices went out together in one task call.
-// `agents`: the running battle-brothers and veterans, by the agent id the host allocated → the slice each builds.
-// `stopped`: slices whose agents have all ended (finished, failed or cancelled) and that no agent builds again yet.
+// `hidden`: the tools hidden from the Captain for this run, put back when it ends. `slices`: the plan's squads as declared.
+// `launched`: the parallel squads went out together in one task call.
+// `agents`: the running battle-brothers and veterans, by the agent id the host allocated → the squad each builds.
+// `stopped`: squads whose agents have all ended (finished, failed or cancelled) and that no agent builds again yet.
 // `closedBy`: the session closed with the run going, so the next session resumes it.
 type Run = {
 	key: string;
@@ -368,7 +368,7 @@ function signal(level: string, msg: string): string | undefined {
 // The agents the Captain may spawn during a run.
 const ROSTER = ["scout", "librarian", "battle-brother", "veteran", "apothecary", "inquisitor", "security-reviewer", "sonic", "task"];
 const agentName = (a: string) => a.toLowerCase().split(/[:/]/).pop()!;
-const SLICES_REASON = "Strategium: declare the plan's slices first: strategium action slices, with each slice's id, parallel flag and files.";
+const SLICES_REASON = "Strategium: declare the plan's squads first: strategium action slices, with each squad's id, parallel flag and files.";
 // Tool input arrives as unknown; anything that is not an object reads as empty.
 const asObj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
 
@@ -379,7 +379,7 @@ const normFile = (f: string) => {
 };
 const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 
-/** The files two slices share, each once; a file inside a listed folder names both. */
+/** The files two squads share, each once; a file inside a listed folder names both. */
 function sharedFiles(a: Slice, b: Slice): string[] {
 	const out = new Set<string>();
 	const bFiles = b.files.map(normFile);
@@ -392,21 +392,21 @@ function sharedFiles(a: Slice, b: Slice): string[] {
 	return [...out];
 }
 
-/** The slice list as the user writes it, for the corrected example in a message. */
+/** The squad list as the user writes it, for the corrected example in a message. */
 const sliceJson = (slices: Slice[]) => JSON.stringify(slices.map(({ id, parallel, files }) => ({ id, parallel, files })));
 
 /**
- * The reason the declared slices are unusable, if any: two parallel slices whose agents can run at the same time must
- * not share a file. A slice in `stopped` has no running agent, so it collides with nothing (see sliceWarnings).
+ * The reason the declared squads are unusable, if any: two parallel squads whose agents can run at the same time must
+ * not share a file. A squad in `stopped` has no running agent, so it collides with nothing (see sliceWarnings).
  */
 export function checkSlices(slices: Slice[], stopped: Slice[] = []): string | undefined {
-	if (!slices.length) return "slices needs at least one slice";
+	if (!slices.length) return "declare at least one squad";
 	const ids = new Set<string>();
 	for (const s of slices) {
-		if (!s.id.trim()) return "every slice needs an id";
-		if (ids.has(s.id)) return `duplicate slice id ${s.id}`;
+		if (!s.id.trim()) return "every squad needs an id";
+		if (ids.has(s.id)) return `duplicate squad id ${s.id}`;
 		ids.add(s.id);
-		if (!s.files.length) return `slice ${s.id} lists no files`;
+		if (!s.files.length) return `squad ${s.id} lists no files`;
 	}
 	const idle = new Set(stopped.map(s => s.id));
 	const parallel = slices.filter(s => s.parallel && !idle.has(s.id));
@@ -416,7 +416,7 @@ export function checkSlices(slices: Slice[], stopped: Slice[] = []): string | un
 			if (!shared.length) continue;
 			const fixed = slices.map(s => (s.id === b.id ? { ...s, parallel: false } : s));
 			return (
-				`slices ${a.id} and ${b.id} are both parallel and both change ${shared.join(", ")}. ` +
+				`squads ${a.id} and ${b.id} are both parallel and both change ${shared.join(", ")}. ` +
 				"Two agents working on the same file at the same time overwrite each other's changes. " +
 				`Mark one parallel: false so it runs after the other, e.g. slices: ${sliceJson(fixed)}. ` +
 				"If one of them has already finished, remove it from the list instead."
@@ -427,8 +427,8 @@ export function checkSlices(slices: Slice[], stopped: Slice[] = []): string | un
 }
 
 /**
- * Notes on slices whose agent has stopped, shown before the result of a declaration and never blocking it:
- * a stopped slice still in the list, and a new slice that changes files a stopped slice already changed.
+ * Notes on squads whose agent has stopped, shown before the result of a declaration and never blocking it:
+ * a stopped squad still in the list, and a new squad that changes files a stopped squad already changed.
  */
 export function sliceWarnings(slices: Slice[], stopped: Slice[]): string[] {
 	const idle = new Set(stopped.map(s => s.id));
@@ -441,14 +441,14 @@ export function sliceWarnings(slices: Slice[], stopped: Slice[]): string[] {
 		});
 		const note = clashes.length ? `; sharing ${clashes.join(" and ")} is not a conflict` : "";
 		const rest = live.length ? `, e.g. slices: ${sliceJson(live)}` : "";
-		out.push(`slice ${s.id} is no longer active (its agent has stopped)${note}. Remove it from the list${rest}.`);
+		out.push(`squad ${s.id} is no longer active (its agent has stopped)${note}. Remove it from the list${rest}.`);
 	}
 	for (const done of stopped.filter(d => !slices.some(s => s.id === d.id))) {
 		for (const l of live) {
 			const shared = sharedFiles(l, done);
 			if (shared.length)
 				out.push(
-					`slice ${l.id} changes ${shared.join(", ")}, which slice ${done.id} already changed and its agent has stopped. ` +
+					`squad ${l.id} changes ${shared.join(", ")}, which squad ${done.id} already changed and its agent has stopped. ` +
 						`Tell ${l.id}'s agent what ${done.id} changed there, so it builds on that work instead of undoing it.`,
 				);
 		}
@@ -478,20 +478,20 @@ const taskItems = (input: unknown) => {
 };
 
 /**
- * The slice a battle-brother or veteran item builds: the one its name spells (letters and digits, any case), else the
- * one its brief builds ("build slice <id>"). Undefined for any other agent.
+ * The squad a battle-brother or veteran item builds: the one its name spells (letters and digits, any case), else the
+ * one its brief builds ("build squad <id>"). Undefined for any other agent.
  */
 function builtSlice(item: Record<string, unknown>, run: Run): Slice | undefined {
 	if (!["battle-brother", "veteran"].includes(agentName(String(item.agent ?? "task")))) return undefined;
 	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
 	const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 	const name = typeof item.name === "string" ? fold(item.name) : undefined;
-	const built = [...String(item.task ?? "").matchAll(/\bslice\s+([\w.-]*\w)/gi)].map(m => m[1]);
+	const built = [...String(item.task ?? "").matchAll(/\b(?:squad|slice)\s+([\w.-]*\w)/gi)].map(m => m[1]);
 	return known.find(s => fold(s.id) === name) ?? known.find(s => built.includes(s.id));
 }
 
 /**
- * The run once its builders changed (`agents`: the running ones): each touched slice with a running agent is live
+ * The run once its builders changed (`agents`: the running ones): each touched squad with a running agent is live
  * again, and one whose agents have all ended is stopped.
  */
 function settle(run: Run, agents: Record<string, Slice>, touched: Slice[]): Run {
@@ -708,7 +708,7 @@ export default function (pi: ExtensionAPI) {
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. slices (slices: [{id, parallel, files}]: the plan's slices; parallel slices must not share a file; required before any battle-brother). A slice whose battle-brothers and veterans have all stopped (known when the task item's name is the slice id or its brief says build slice <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. slices (slices: [{id, parallel, files}]: the plan's squads; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
@@ -781,7 +781,7 @@ export default function (pi: ExtensionAPI) {
 						if (err) return text([...lines, `ERROR ${err}`].join("\n"));
 						const live = slices.filter(s => !stopped.some(d => d.id === s.id));
 						writeRun({ ...run, slices: live, launched: undefined });
-						lines.push(`SLICES ${live.map(s => s.id + (s.parallel ? " (parallel)" : "")).join(", ") || "none"}`);
+						lines.push(`SQUADS ${live.map(s => s.id + (s.parallel ? " (parallel)" : "")).join(", ") || "none"}`);
 						return text(lines.join("\n"));
 					}
 				}
@@ -1024,7 +1024,7 @@ export default function (pi: ExtensionAPI) {
 		refreshFooter?.();
 	});
 
-	// The Captain's roster: during a run only these agents may be spawned, and no battle-brother before the slices.
+	// The Captain's roster: during a run only these agents may be spawned, and no battle-brother before the squads.
 	pi.on("before_subagent_spawn", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager) return;
 		const run = ownRun(sidOf(ctx));
@@ -1035,7 +1035,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// The host gives no event when an agent ends; its result reaches the model as a message or a wait result that lists
-	// the background jobs, labelled with the agent id. A builder that is no longer running leaves its slice; the slice
+	// the background jobs, labelled with the agent id. A builder that is no longer running leaves its squad; the squad
 	// counts as stopped once none of its agents runs. An id ends once: an old message in the history matches nothing.
 	pi.on("context", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager) return;
@@ -1049,7 +1049,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// A builder's task result gives the id the host allocated to each item, with its index in the call: bind it to the
-	// slice the item builds. Ids are unique, so a reused name or two agents on one slice never share an entry.
+	// squad the item builds. Ids are unique, so a reused name or two agents on one squad never share an entry.
 	pi.on("tool_result", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager || e.toolName.replace(/^_+/, "") !== "task") return;
 		const run = ownRun(sidOf(ctx));
@@ -1090,7 +1090,7 @@ export default function (pi: ExtensionAPI) {
 			const n = items.filter(item => agentName(String(item.agent ?? "task")) === "battle-brother").length;
 			if (n > 0 && !run.slices) return { block: true, reason: SLICES_REASON };
 			// No builder may start on files an agent is already changing: one still running, or another in this call.
-			// A running slice is compared with its files as last declared.
+			// A running squad is compared with its files as last declared.
 			const busy = Object.values(run.agents ?? {}).map(s => run.slices?.find(l => l.id === s.id) ?? s);
 			const starting: Slice[] = [];
 			for (const item of items) {
@@ -1101,8 +1101,8 @@ export default function (pi: ExtensionAPI) {
 					return {
 						block: true,
 						reason:
-							`Strategium: slice ${slice.id} changes ${sharedFiles(slice, clash).join(", ")}, which ` +
-							(clash.id === slice.id ? "another agent for the same slice" : `slice ${clash.id}`) +
+							`Strategium: squad ${slice.id} changes ${sharedFiles(slice, clash).join(", ")}, which ` +
+							(clash.id === slice.id ? "another agent for the same squad" : `squad ${clash.id}`) +
 							" is changing right now. Two agents working on the same file at the same time overwrite each other's changes. " +
 							"Wait until that agent has finished, then launch this one.",
 					};
@@ -1111,7 +1111,7 @@ export default function (pi: ExtensionAPI) {
 			if (n > 0 && !run.launched) {
 				const par = run.slices!.filter(s => s.parallel).map(s => s.id);
 				if (par.length >= 2 && n < par.length)
-					return { block: true, reason: `Strategium: launch every parallel slice (${par.join(", ")}) in one task call; this call has ${n} battle-brother(s).` };
+					return { block: true, reason: `Strategium: launch every parallel squad (${par.join(", ")}) in one task call; this call has ${n} battle-brother(s).` };
 				writeRun({ ...run, launched: true });
 			}
 		}

@@ -34,7 +34,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 `omp skill list --json` must contain:
 - core (from agent-skills): `spec-driven-development`, `planning-and-task-breakdown`, `incremental-implementation`, `test-driven-development`, `code-review-and-quality`, `code-simplification`, `debugging-and-error-recovery`, `frontend-ui-engineering`, `source-driven-development`, `doubt-driven-development`;
 - from this plugin: `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-ui`, `strategium-study`, `strategium-release`;
-- public skills `strategium-ui` uses (UI slices are blocked while one is missing). Install user-level with the `skills` CLI (`npx -y skills add <repo> -g -y -s <skill>`; skills land in `~/.agents/skills`, which omp reads):
+- public skills `strategium-ui` uses (UI squads are blocked while one is missing). Install user-level with the `skills` CLI (`npx -y skills add <repo> -g -y -s <skill>`; skills land in `~/.agents/skills`, which omp reads):
 
   | Skill | Repo |
   |---|---|
@@ -46,7 +46,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
   | `web-design-guidelines` | `vercel-labs/agent-skills` |
 
   Several of these repos also ship a skill named `accessibility`; install it only from `addyosmani/web-quality-skills` (always pass `-s`).
-- every skill the chosen theatre names under **Extra skills** (read `skill://strategium-<theatre>`). These are required by the theatre: report each missing one as a missing dependency with where it comes from if known (never invent a source), and say which kind of work it blocks (e.g. every slice, UI slices, study notes). Never mark the install OK while one is missing.
+- every skill the chosen theatre names under **Extra skills** (read `skill://strategium-<theatre>`). These are required by the theatre: report each missing one as a missing dependency with where it comes from if known (never invent a source), and say which kind of work it blocks (e.g. every squad, UI squads, study notes). Never mark the install OK while one is missing.
 
 ## 4. Tools
 - `bun --version` (alarm script). Missing → point to https://bun.sh; the timer still works without sound.
@@ -55,7 +55,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 - Theatre-specific CLIs named in the theatre skill (e.g. an issue-tracker or forge CLI): check `--version` and report.
 
 ## 4b. omp isolation
-- `omp config get task.isolation.enabled` must be `true` and `omp config get task.isolation.merge` must be `branch`: Strategium slices run isolated and land on the run's branch.
+- `omp config get task.isolation.enabled` must be `true` and `omp config get task.isolation.merge` must be `branch`: Strategium squads run isolated and land on the run's branch.
 - When missing, offer `omp config set task.isolation.enabled true` and `omp config set task.isolation.merge branch` in the same `ask`, and say that the task tool shows `isolated` only in sessions started afterwards.
 
 ## 5. `.env` (`~/.omp/agent/.env`; omp loads it into every session for keys not already set in the process environment)

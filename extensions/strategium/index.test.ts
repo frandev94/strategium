@@ -291,12 +291,12 @@ describe("the station in the footer", () => {
 	const phase = (name: string, ...tasks: [string, string][]) => ({ name, tasks: tasks.map(([content, status]) => ({ content, status })) });
 	const skirmish = [
 		phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "completed"]),
-		phase("Skirmish", ["[battle-brother] Slice 1", "in_progress"]),
+		phase("Skirmish", ["[battle-brother] Squad 1", "in_progress"]),
 		phase("Inquisition", ["[inquisitor] Review", "pending"]),
 	];
 	const backToScriptorium = [
-		phase("Scriptorium", ["[librarian] Redraft slice 2", "in_progress"]),
-		phase("Skirmish", ["[battle-brother] Slice 1", "completed"]),
+		phase("Scriptorium", ["[librarian] Redraft squad 2", "in_progress"]),
+		phase("Skirmish", ["[battle-brother] Squad 1", "completed"]),
 	];
 	const waitingForPlan = [phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "in_progress"])];
 
@@ -305,7 +305,7 @@ describe("the station in the footer", () => {
 		expect(whereFrom(backToScriptorium)).toEqual({ station: "Scriptorium", back: true }));
 	test("an active seal task waits for the user, with or without glyph tags", () => {
 		expect(whereFrom(waitingForPlan)).toEqual({ station: "Scriptorium", seal: "Plan" });
-		expect(whereFrom([phase("Scriptorium", ["\u{f047a} seal · Plan the slices", "in_progress"])])?.seal).toBe("Plan");
+		expect(whereFrom([phase("Scriptorium", ["\u{f047a} seal · Plan the squads", "in_progress"])])?.seal).toBe("Plan");
 	});
 	test("no active task, no station", () => expect(whereFrom([phase("Muster", ["[captain] Muster", "pending"])])).toBeUndefined());
 
@@ -518,21 +518,21 @@ describe("the Captain's limits", () => {
 		expect(spawn(s)).toBeUndefined();
 	});
 
-	test("a battle-brother is refused until the slices are declared", async () => {
+	test("a battle-brother is refused until the squads are declared", async () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1" });
 		await s.call({ action: "repo", repo: s.dir });
-		expect(toolCall(s, "task", brothers(1))?.reason).toContain("declare the plan's slices first");
-		expect(spawn(s, "battle-brother")?.reason).toContain("declare the plan's slices first");
+		expect(toolCall(s, "task", brothers(1))?.reason).toContain("declare the plan's squads first");
+		expect(spawn(s, "battle-brother")?.reason).toContain("declare the plan's squads first");
 		expect(toolCall(s, "task", { tasks: [{ agent: "scout" }] })).toBeUndefined();
 	});
 
-	test("every parallel slice launches in one call; later calls pass", async () => {
+	test("every parallel squad launches in one call; later calls pass", async () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1" });
 		await s.call({ action: "repo", repo: s.dir });
-		expect(await s.call({ action: "slices", slices: disjoint })).toBe("SLICES S1 (parallel), S2 (parallel)");
-		expect(toolCall(s, "task", brothers(1))?.reason).toContain("launch every parallel slice (S1, S2) in one task call; this call has 1 battle-brother(s).");
+		expect(await s.call({ action: "slices", slices: disjoint })).toBe("SQUADS S1 (parallel), S2 (parallel)");
+		expect(toolCall(s, "task", brothers(1))?.reason).toContain("launch every parallel squad (S1, S2) in one task call; this call has 1 battle-brother(s).");
 		expect(toolCall(s, "task", brothers(2))).toBeUndefined();
 		expect(toolCall(s, "task", brothers(1))).toBeUndefined();
 	});
@@ -547,14 +547,14 @@ describe("the Captain's limits", () => {
 		expect(toolCall(s, "bash", undefined)).toBeUndefined();
 	});
 
-	test("slices are checked: empty, ids, files and overlap", async () => {
+	test("squads are checked: empty, ids, files and overlap", async () => {
 		const s = setup();
 		expect(await s.call({ action: "slices", slices: disjoint })).toBe("ERROR no active run in this session");
 		await s.call({ action: "begin", key: "K-1" });
-		expect(await s.call({ action: "slices", slices: [] })).toBe("ERROR slices needs at least one slice");
-		expect(await s.call({ action: "slices", slices: [{ id: "", parallel: false, files: ["a"] }] })).toBe("ERROR every slice needs an id");
-		expect(await s.call({ action: "slices", slices: [disjoint[0], disjoint[0]] })).toBe("ERROR duplicate slice id S1");
-		expect(await s.call({ action: "slices", slices: [{ id: "S1", parallel: true, files: [] }] })).toBe("ERROR slice S1 lists no files");
+		expect(await s.call({ action: "slices", slices: [] })).toBe("ERROR declare at least one squad");
+		expect(await s.call({ action: "slices", slices: [{ id: "", parallel: false, files: ["a"] }] })).toBe("ERROR every squad needs an id");
+		expect(await s.call({ action: "slices", slices: [disjoint[0], disjoint[0]] })).toBe("ERROR duplicate squad id S1");
+		expect(await s.call({ action: "slices", slices: [{ id: "S1", parallel: true, files: [] }] })).toBe("ERROR squad S1 lists no files");
 	});
 
 	test.skipIf(process.platform === "linux")("overlap is found across case and separators", async () => {
@@ -567,13 +567,13 @@ describe("the Captain's limits", () => {
 				{ id: "S2", parallel: true, files: ["ALARM\\vox.ts"] },
 			],
 		});
-		expect(out).toStartWith("ERROR slices S1 and S2 are both parallel and both change alarm/vox.ts.");
+		expect(out).toStartWith("ERROR squads S1 and S2 are both parallel and both change alarm/vox.ts.");
 	});
 
-	describe("slices whose agents have stopped", () => {
+	describe("squads whose agents have stopped", () => {
 		const a = { id: "S1g-device-site", parallel: true, files: ["src/cards/attachments.ts"] };
 		const b = { id: "S2b-grid-device-site", parallel: true, files: ["src/cards/attachments.ts", "src/grid.ts"] };
-		const brother = (name: string, slice: string) => ({ agent: "battle-brother", name, isolated: true, task: `Read local://K-1-plan.md; build slice ${slice}.` });
+		const brother = (name: string, slice: string) => ({ agent: "battle-brother", name, isolated: true, task: `Read local://K-1-plan.md; build squad ${slice}.` });
 		// The host's two halves of a launch: the call (may be refused) and its result, with the agent ids it allocated.
 		const launch = (s: Host, tasks: unknown[], ids: string[], status = "running") => {
 			const verdict = toolCall(s, "task", { tasks });
@@ -591,20 +591,20 @@ describe("the Captain's limits", () => {
 			return s;
 		};
 
-		test("a stopped slice still listed is a warning, while a running one is an error", async () => {
+		test("a stopped squad still listed is a warning, while a running one is an error", async () => {
 			const s = await start();
 			await s.call({ action: "slices", slices: [a, { ...b, files: ["src/grid.ts"] }] });
 			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
-			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR squads S1g-device-site and S2b-grid-device-site");
 			end(s, "S1gDeviceSite");
 			expect((await s.call({ action: "slices", slices: [a, b] })).split("\n")).toEqual([
-				"WARN slice S1g-device-site is no longer active (its agent has stopped); sharing src/cards/attachments.ts with S2b-grid-device-site is not a conflict. " +
+				"WARN squad S1g-device-site is no longer active (its agent has stopped); sharing src/cards/attachments.ts with S2b-grid-device-site is not a conflict. " +
 					'Remove it from the list, e.g. slices: [{"id":"S2b-grid-device-site","parallel":true,"files":["src/cards/attachments.ts","src/grid.ts"]}].',
-				"SLICES S2b-grid-device-site (parallel)",
+				"SQUADS S2b-grid-device-site (parallel)",
 			]);
 		});
 
-		test("a stopped slice cannot be launched again on files a running agent is changing", async () => {
+		test("a stopped squad cannot be launched again on files a running agent is changing", async () => {
 			const s = await start();
 			await s.call({ action: "slices", slices: [a, { ...b, files: ["src/grid.ts"] }] });
 			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
@@ -612,19 +612,19 @@ describe("the Captain's limits", () => {
 			await s.call({ action: "slices", slices: [a, b] });
 			// The rally would share attachments.ts with S2b, still running.
 			expect(launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite-2"])?.reason).toBe(
-				"Strategium: slice S1g-device-site changes src/cards/attachments.ts, which slice S2b-grid-device-site is changing right now. " +
+				"Strategium: squad S1g-device-site changes src/cards/attachments.ts, which squad S2b-grid-device-site is changing right now. " +
 					"Two agents working on the same file at the same time overwrite each other's changes. Wait until that agent has finished, then launch this one.",
 			);
 			end(s, "Grid");
 			expect(launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite-2"])).toBeUndefined();
 			// The first run's completion, still in the history, does not stop the rally.
 			end(s, "S1gDeviceSite");
-			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN slice S2b-grid-device-site is no longer active");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN squad S2b-grid-device-site is no longer active");
 			end(s, "S1gDeviceSite-2");
-			expect(await s.call({ action: "slices", slices: [a, b] })).toEndWith("SLICES none");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toEndWith("SQUADS none");
 		});
 
-		test("a name reused for two slices: each agent id stops only its own slice", async () => {
+		test("a name reused for two slices: each agent id stops only its own squad", async () => {
 			const s = await start();
 			const x = { id: "S1", parallel: true, files: ["x.ts"] };
 			const y = { id: "S2", parallel: true, files: ["y.ts"] };
@@ -632,34 +632,34 @@ describe("the Captain's limits", () => {
 			launch(s, [brother("Builder", "S1"), brother("Builder", "S2")], ["Builder", "Builder-2"]);
 			end(s, "Builder");
 			const out = await s.call({ action: "slices", slices: [x, { ...y, files: ["x.ts", "y.ts"] }] });
-			expect(out.split("\n")[0]).toStartWith("WARN slice S1 is no longer active");
-			expect(out).toEndWith("SLICES S2 (parallel)");
+			expect(out.split("\n")[0]).toStartWith("WARN squad S1 is no longer active");
+			expect(out).toEndWith("SQUADS S2 (parallel)");
 		});
 
-		test("a slice stops only when every agent building it has ended", async () => {
+		test("a squad stops only when every agent building it has ended", async () => {
 			const s = await start();
 			const x = { id: "S1", parallel: true, files: ["x.ts"] };
 			const y = { id: "S2", parallel: true, files: ["x.ts"] };
 			await s.call({ action: "slices", slices: [x] });
-			// Two agents for one slice in one call are refused...
-			expect(launch(s, [brother("A", "S1"), brother("B", "S1")], ["A", "B"])?.reason).toContain("which another agent for the same slice is changing right now");
+			// Two agents for one squad in one call are refused...
+			expect(launch(s, [brother("A", "S1"), brother("B", "S1")], ["A", "B"])?.reason).toContain("which another agent for the same squad is changing right now");
 			// ...and so is a second one while the first runs.
 			launch(s, [brother("A", "S1")], ["A"]);
-			expect(launch(s, [brother("B", "S1")], ["B"])?.reason).toContain("another agent for the same slice");
-			// Should two run anyway (the host bound both), the first end leaves the slice running.
+			expect(launch(s, [brother("B", "S1")], ["B"])?.reason).toContain("another agent for the same squad");
+			// Should two run anyway (the host bound both), the first end leaves the squad running.
 			for (const h of s.handlers.tool_result)
 				h({ toolName: "task", input: { tasks: [brother("B", "S1")] }, details: { progress: [{ index: 0, id: "B", status: "running" }] }, isError: false }, s.ctx);
 			end(s, "A");
-			expect(await s.call({ action: "slices", slices: [x, y] })).toStartWith("ERROR slices S1 and S2");
+			expect(await s.call({ action: "slices", slices: [x, y] })).toStartWith("ERROR squads S1 and S2");
 			end(s, "B");
-			expect(await s.call({ action: "slices", slices: [x, y] })).toStartWith("WARN slice S1 is no longer active");
+			expect(await s.call({ action: "slices", slices: [x, y] })).toStartWith("WARN squad S1 is no longer active");
 		});
 
 		test("an agent that already ended when its call returned never counts as running", async () => {
 			const s = await start();
 			await s.call({ action: "slices", slices: [a] });
 			launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite"], "completed");
-			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN slice S1g-device-site is no longer active");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN squad S1g-device-site is no longer active");
 		});
 
 		const b2 = { ...b, files: ["src/grid.ts"] };
@@ -681,20 +681,20 @@ describe("the Captain's limits", () => {
 			end(s, "S1gDeviceSite");
 			const lines = (await s.call({ action: "slices", slices: [a, b2, c] })).split("\n");
 			expect(lines).toHaveLength(2);
-			expect(lines[0]).toStartWith("WARN slice S1g-device-site is no longer active");
-			expect(lines[1]).toStartWith("ERROR slices S2b-grid-device-site and S3 are both parallel and both change src/grid.ts.");
+			expect(lines[0]).toStartWith("WARN squad S1g-device-site is no longer active");
+			expect(lines[1]).toStartWith("ERROR squads S2b-grid-device-site and S3 are both parallel and both change src/grid.ts.");
 		});
 
-		test("a new slice on the files of a stopped slice is warned, and again on the next declaration", async () => {
+		test("a new squad on the files of a stopped squad is warned, and again on the next declaration", async () => {
 			const s = await start();
 			const c = { id: "S3", parallel: true, files: ["src/cards/attachments.ts"] };
 			await s.call({ action: "slices", slices: [a, b2] });
 			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
 			end(s, "S1gDeviceSite");
 			const want = [
-				"WARN slice S3 changes src/cards/attachments.ts, which slice S1g-device-site already changed and its agent has stopped. " +
+				"WARN squad S3 changes src/cards/attachments.ts, which squad S1g-device-site already changed and its agent has stopped. " +
 					"Tell S3's agent what S1g-device-site changed there, so it builds on that work instead of undoing it.",
-				"SLICES S2b-grid-device-site (parallel), S3 (parallel)",
+				"SQUADS S2b-grid-device-site (parallel), S3 (parallel)",
 			];
 			expect((await s.call({ action: "slices", slices: [b2, c] })).split("\n")).toEqual(want);
 			expect((await s.call({ action: "slices", slices: [b2, c] })).split("\n")).toEqual(want);
@@ -705,7 +705,7 @@ describe("the Captain's limits", () => {
 			await s.call({ action: "slices", slices: [a, b2] });
 			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"], "pending");
 			// Running, so the overlap is an error; a launch that is not counted as running reads as already stopped (a warning).
-			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR squads S1g-device-site and S2b-grid-device-site");
 		});
 
 		test("an agent launched in an earlier call keeps running when a later one ends", async () => {
@@ -717,11 +717,11 @@ describe("the Captain's limits", () => {
 			launch(s, [brother("B", "S2")], ["B"]);
 			end(s, "A");
 			// S1 stopped (a warning, not an error) and S2 still runs: nobody may start on its files.
-			expect(await s.call({ action: "slices", slices: [x, { ...y, parallel: true, files: ["x.ts", "y.ts"] }] })).toStartWith("WARN slice S1 is no longer active");
-			expect(launch(s, [brother("C", "S2")], ["C"])?.reason).toContain("another agent for the same slice");
+			expect(await s.call({ action: "slices", slices: [x, { ...y, parallel: true, files: ["x.ts", "y.ts"] }] })).toStartWith("WARN squad S1 is no longer active");
+			expect(launch(s, [brother("C", "S2")], ["C"])?.reason).toContain("another agent for the same squad");
 		});
 
-		test("a slice relaunched after it left the list is listed again", async () => {
+		test("a squad relaunched after it left the list is listed again", async () => {
 			const s = await start();
 			await s.call({ action: "slices", slices: [a, b2] });
 			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
@@ -731,15 +731,15 @@ describe("the Captain's limits", () => {
 			expect(runOf(s).slices.map((x: { id: string }) => x.id)).toEqual([b.id, a.id]);
 		});
 
-		test("two agents of one slice ending together stop it once", async () => {
+		test("two agents of one squad ending together stop it once", async () => {
 			const s = await start();
 			const x = { id: "S1", parallel: true, files: ["x.ts"] };
 			await s.call({ action: "slices", slices: [x] });
 			report(s, "task", [brother("A", "S1"), brother("B", "S1")], ["A", "B"]);
 			end(s, "A", "B");
 			expect((await s.call({ action: "slices", slices: [{ id: "S2", parallel: true, files: ["x.ts"] }] })).split("\n")).toEqual([
-				"WARN slice S2 changes x.ts, which slice S1 already changed and its agent has stopped. Tell S2's agent what S1 changed there, so it builds on that work instead of undoing it.",
-				"SLICES S2 (parallel)",
+				"WARN squad S2 changes x.ts, which squad S1 already changed and its agent has stopped. Tell S2's agent what S1 changed there, so it builds on that work instead of undoing it.",
+				"SQUADS S2 (parallel)",
 			]);
 		});
 
@@ -749,9 +749,9 @@ describe("the Captain's limits", () => {
 			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
 			end(s, "S1gDeviceSite", "Grid");
 			expect((await s.call({ action: "slices", slices: [a, b2] })).split("\n")).toEqual([
-				"WARN slice S1g-device-site is no longer active (its agent has stopped). Remove it from the list.",
-				"WARN slice S2b-grid-device-site is no longer active (its agent has stopped). Remove it from the list.",
-				"SLICES none",
+				"WARN squad S1g-device-site is no longer active (its agent has stopped). Remove it from the list.",
+				"WARN squad S2b-grid-device-site is no longer active (its agent has stopped). Remove it from the list.",
+				"SQUADS none",
 			]);
 		});
 
@@ -760,12 +760,12 @@ describe("the Captain's limits", () => {
 			await s.call({ action: "slices", slices: [a, b2] });
 			report(s, "task", [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite"], subOf(s));
 			end(s, "S1gDeviceSite");
-			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR squads S1g-device-site and S2b-grid-device-site");
 			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
 			endAs(s, subOf(s), "S1gDeviceSite");
-			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR squads S1g-device-site and S2b-grid-device-site");
 			end(s, "S1gDeviceSite");
-			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN slice S1g-device-site is no longer active");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN squad S1g-device-site is no longer active");
 		});
 
 		test("only a task result binds an agent, under either spelling of the name", async () => {
@@ -773,24 +773,24 @@ describe("the Captain's limits", () => {
 			await s.call({ action: "slices", slices: [a, { ...b2, parallel: false }] });
 			report(s, "read", [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite"]);
 			end(s, "S1gDeviceSite");
-			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR squads S1g-device-site and S2b-grid-device-site");
 			report(s, "_task", [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite"]);
 			end(s, "S1gDeviceSite");
-			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN slice S1g-device-site is no longer active");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN squad S1g-device-site is no longer active");
 		});
 
-		test("a sequential slice is held back too, with every shared file named", async () => {
+		test("a sequential squad is held back too, with every shared file named", async () => {
 			const s = await start();
 			const x = { id: "S1", parallel: true, files: ["x.ts", "y.ts"] };
 			const z = { id: "S2", parallel: false, files: ["y.ts", "x.ts"] };
 			await s.call({ action: "slices", slices: [x, z] });
 			launch(s, [brother("A", "S1")], ["A"]);
-			expect(launch(s, [brother("B", "S2")], ["B"])?.reason).toStartWith("Strategium: slice S2 changes y.ts, x.ts, which slice S1 is changing right now.");
+			expect(launch(s, [brother("B", "S2")], ["B"])?.reason).toStartWith("Strategium: squad S2 changes y.ts, x.ts, which squad S1 is changing right now.");
 		});
 
-		describe("which agents build a slice", () => {
-			const stoppedWarning = "WARN slice S1g-device-site is no longer active";
-			// Bound as running, so its end stops the slice (a warning); unbound, the overlap would stay an error.
+		describe("which agents build a squad", () => {
+			const stoppedWarning = "WARN squad S1g-device-site is no longer active";
+			// Bound as running, so its end stops the squad (a warning); unbound, the overlap would stay an error.
 			const bound = async (item: Record<string, unknown>) => {
 				const s = await start();
 				await s.call({ action: "slices", slices: [a, { ...b, parallel: false, files: ["src/grid.ts"] }] });
@@ -800,9 +800,11 @@ describe("the Captain's limits", () => {
 			};
 			test.each<[string, Record<string, unknown>]>([
 				["by its name alone", { agent: "battle-brother", name: "S1gDeviceSite", task: "go" }],
-				["a veteran", { agent: "veteran", name: "X", task: "build slice S1g-device-site" }],
-				["an agent name with a prefix", { agent: "omp:Battle-Brother", name: "X", task: "build slice S1g-device-site" }],
-				["a brief in capitals", { agent: "battle-brother", name: "X", task: "Build Slice S1g-device-site." }],
+				["a veteran", { agent: "veteran", name: "X", task: "build squad S1g-device-site" }],
+				["an agent name with a prefix", { agent: "omp:Battle-Brother", name: "X", task: "build squad S1g-device-site" }],
+				["a brief with a plan path and a squad", { agent: "battle-brother", name: "X", task: "Read local://K-1-plan.md; build squad S1g-device-site." }],
+				["a brief in capitals", { agent: "battle-brother", name: "X", task: "Build Squad S1g-device-site." }],
+				["a brief that still says slice", { agent: "battle-brother", name: "X", task: "Read local://K-1-plan.md; build slice S1g-device-site." }],
 			])("is bound: %s", async (_label, item) => expect(await bound(item)).toStartWith(stoppedWarning));
 		});
 	});
@@ -1287,7 +1289,7 @@ describe("tools, begin and end", () => {
 		];
 		const brothers = (n: number) => ({ tasks: Array.from({ length: n }, () => ({ agent: "battle-brother" })) });
 
-		test("keeps hidden, repo, slices and launched", async () => {
+		test("keeps hidden, repo, squads and launched", async () => {
 			const s = setup();
 			await s.call({ action: "begin", key: "K-1" });
 			await s.call({ action: "repo", repo: s.dir });
@@ -1347,20 +1349,20 @@ describe("the Captain's hooks never throw and keep their wording", () => {
 		expect(tool("task", brothers(1))?.block).toBe(true);
 	});
 
-	test("a sequential slice is not counted as parallel", async () => {
+	test("a sequential squad is not counted as parallel", async () => {
 		const { tool } = await run([disjoint[0], { id: "S2", parallel: false, files: ["b.ts"] }]);
 		expect(tool("task", brothers(1))).toBeUndefined();
 	});
 
 	test("the single form of task is judged like a batch item", async () => {
 		const none = await run();
-		expect(none.tool("task", { agent: "battle-brother", task: "x" })?.reason).toContain("declare the plan's slices first");
+		expect(none.tool("task", { agent: "battle-brother", task: "x" })?.reason).toContain("declare the plan's squads first");
 		const two = await run(disjoint);
-		expect(two.tool("task", { agent: "battle-brother", task: "x" })?.reason).toContain("launch every parallel slice (S1, S2)");
+		expect(two.tool("task", { agent: "battle-brother", task: "x" })?.reason).toContain("launch every parallel squad (S1, S2)");
 		expect(two.tool("task", { agent: "scout", task: "x" })).toBeUndefined();
 	});
 
-	test("declaring the slices again resets the launch", async () => {
+	test("declaring the squads again resets the launch", async () => {
 		const { s, tool } = await run(disjoint);
 		expect(tool("task", brothers(2))).toBeUndefined();
 		expect(tool("task", brothers(1))).toBeUndefined();
@@ -1375,7 +1377,7 @@ describe("the Captain's hooks never throw and keep their wording", () => {
 		expect(spawn("battle-brother")).toBeUndefined();
 		await s.call({ action: "repo", repo: s.dir });
 		for (const name of ["battle-brother", "Battle-Brother", "omp:battle-brother", "x/battle-brother"])
-			expect(spawn(name)?.reason).toContain("declare the plan's slices first");
+			expect(spawn(name)?.reason).toContain("declare the plan's squads first");
 		expect(spawn("x/scout")).toBeUndefined();
 		expect(spawn("OMP:Sonic")).toBeUndefined();
 	});

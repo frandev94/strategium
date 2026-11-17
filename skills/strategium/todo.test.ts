@@ -7,7 +7,7 @@ Muster
   captain: Muster
 # a comment
 Scriptorium
-  librarian: Plan as slices
+  librarian: Plan as squads
   [seal] Plan
 `;
 
@@ -18,7 +18,7 @@ describe("the todo of a run", () => {
 				op: "init",
 				list: [
 					{ phase: "Muster", items: ["[captain] Muster"] },
-					{ phase: "Scriptorium", items: ["[librarian] Plan as slices", "[seal] Plan"] },
+					{ phase: "Scriptorium", items: ["[librarian] Plan as squads", "[seal] Plan"] },
 				],
 			},
 		]));
@@ -27,7 +27,7 @@ describe("the todo of a run", () => {
 		const [call] = buildTodo(stations, { glyphs: true });
 		expect(call.op === "init" && call.list[0].items).toEqual(["\u{f18bc} captain · Muster"]);
 		expect(call.op === "init" && call.list[1].items).toEqual([
-			"\u{f05da} librarian · Plan as slices",
+			"\u{f05da} librarian · Plan as squads",
 			"\u{f047a} seal · Plan",
 		]);
 	});
@@ -76,8 +76,8 @@ describe("the todo of a run", () => {
 	});
 
 	test("append gives one call per station, for a return", () =>
-		expect(buildTodo("Scriptorium\n  librarian: Redraft slice 2", { append: true })).toEqual([
-			{ op: "append", phase: "Scriptorium", items: ["[librarian] Redraft slice 2"] },
+		expect(buildTodo("Scriptorium\n  librarian: Redraft squad 2", { append: true })).toEqual([
+			{ op: "append", phase: "Scriptorium", items: ["[librarian] Redraft squad 2"] },
 		]));
 
 	test("mistakes are refused with their line, before the todo tool sees them", () => {

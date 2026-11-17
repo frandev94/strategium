@@ -9,7 +9,7 @@
 //   Muster
 //     captain: Muster
 //   Scriptorium
-//     librarian: Plan as slices → local://KEY-plan.md
+//     librarian: Plan as squads → local://KEY-plan.md
 //     seal: Plan
 //
 // Prints one JSON object per todo call: `init` for the whole list, or with --append one `append` per station.
