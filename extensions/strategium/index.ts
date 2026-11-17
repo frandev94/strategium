@@ -86,7 +86,17 @@ function writeAtomic(file: string, data: string): void {
 	mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
 	const tmp = `${file}.${process.pid}.tmp`;
 	writeFileSync(tmp, data, { mode: 0o600 });
-	renameSync(tmp, file);
+	// Windows refuses the rename for a moment while a scanner or indexer holds the target or the temp file open.
+	// ponytail: ~1 s of bounded retries (blocking, like the sync write); a longer lock still throws.
+	for (let tries = 0; ; tries++) {
+		try {
+			return renameSync(tmp, file);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (tries >= 20 || !(code === "EPERM" || code === "EBUSY" || code === "EACCES")) throw err;
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+		}
+	}
 }
 
 const beat = (sid: string) => writeAtomic(beatFile(sid), nowIso());
