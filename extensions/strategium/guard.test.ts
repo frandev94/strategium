@@ -177,6 +177,9 @@ describe("checkSlices", () => {
 	test("overlap is found between non-adjacent parallel slices", () => {
 		expect(checkSlices([s("A", ["a"]), s("M", ["m"], false), s("B", ["a"])])).toContain("slices A and B");
 	});
+	test("overlap is found between non-adjacent parallel slices that are not neighbours in the parallel list either", () => {
+		expect(checkSlices([s("A", ["a"]), s("B", ["b"]), s("C", ["a"])])).toContain("slices A and C");
+	});
 	test("the first error in the plan's order wins", () => {
 		expect(checkSlices([])).toBe("slices needs at least one slice");
 		expect(checkSlices([s(" ", [])])).toBe("every slice needs an id");
@@ -199,11 +202,29 @@ describe("sliceWarnings", () => {
 			'slice A is no longer active (its agent has stopped); sharing a with B is not a conflict. Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["a","b"]}].',
 		]);
 	});
-	test("a new slice on the files of a stopped one is told to build on that work", () => {
-		const [w] = sliceWarnings([s("B", ["a"]), s("C", ["c"])], [s("A", ["a"])]);
-		expect(w).toBe(
+	test("a new slice on the files of a stopped one is told to build on that work, and only that slice", () => {
+		expect(sliceWarnings([s("B", ["a"]), s("C", ["c"])], [s("A", ["a"])])).toEqual([
 			"slice B changes a, which slice A already changed and its agent has stopped. Tell B's agent what A changed there, so it builds on that work instead of undoing it.",
-		);
+		]);
+	});
+	test("every live slice that shares files with a stopped one is named, each in its own warning", () => {
+		expect(sliceWarnings([s("B", ["a"]), s("C", ["b"]), s("D", ["d"])], [s("A", ["a", "b"])])).toEqual([
+			"slice B changes a, which slice A already changed and its agent has stopped. Tell B's agent what A changed there, so it builds on that work instead of undoing it.",
+			"slice C changes b, which slice A already changed and its agent has stopped. Tell C's agent what A changed there, so it builds on that work instead of undoing it.",
+		]);
+	});
+	test("a stopped slice still listed names every live slice it shares with", () => {
+		expect(sliceWarnings([s("A", ["a", "b"]), s("B", ["a"]), s("C", ["b"])], [s("A", ["a", "b"])])).toEqual([
+			'slice A is no longer active (its agent has stopped); sharing a with B and b with C is not a conflict. Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["a"]},{"id":"C","parallel":true,"files":["b"]}].',
+		]);
+	});
+	test("with nothing live there is no example list", () => {
+		expect(sliceWarnings([s("A", ["a"])], [s("A", ["a"])])).toEqual(["slice A is no longer active (its agent has stopped). Remove it from the list."]);
+	});
+	test("a stopped slice that shares nothing has no sharing note", () => {
+		expect(sliceWarnings([s("A", ["a"]), s("B", ["b"])], [s("A", ["a"])])).toEqual([
+			'slice A is no longer active (its agent has stopped). Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["b"]}].',
+		]);
 	});
 });
 
@@ -216,6 +237,11 @@ describe("endedAgents", () => {
 			{ role: "user", content: "hi" },
 		];
 		expect(endedAgents(messages)).toEqual(["S1", "S2-2"]);
+	});
+	test("a job without a text label and a missing message list end nothing", () => {
+		const jobs = [{ jobId: "j1", type: "task", status: "completed" }, { jobId: "j2", type: "task", status: "completed", label: 5 }];
+		expect(endedAgents([{ details: { jobs } }])).toEqual([]);
+		expect(endedAgents(undefined)).toEqual([]);
 	});
 });
 

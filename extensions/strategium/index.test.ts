@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { whereFrom } from "./index";
@@ -458,6 +458,57 @@ describe("the Captain's limits", () => {
 		});
 	});
 
+	describe("the edit guard in every shape of a target", () => {
+		const BLOCK = {
+			block: true as const,
+			reason: "Strategium: the Captain does not edit repository files. Delegate this change to a battle-brother agent.",
+		};
+		const editing = async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			s.setActive([...s.activeTools(), "edit"]);
+			return s;
+		};
+		const outsideDir = () => {
+			const d = mkdtempSync(join(tmpdir(), "st-outside-"));
+			dirs.push(d);
+			return d;
+		};
+
+		test("the host's underscored name _edit is guarded like edit", async () => {
+			const s = await editing();
+			expect(toolCall(s, "_edit", { path: join(s.dir, "a.ts") })).toEqual(BLOCK);
+		});
+
+		test("a file outside the repository passes", async () => {
+			const s = await editing();
+			const outside = outsideDir();
+			expect(toolCall(s, "edit", { path: join(outside, "a.ts") })).toBeUndefined();
+			expect(toolCall(s, "_edit", { path: join(outside, "a.ts") })).toBeUndefined();
+		});
+
+		test("a file in the worktrees next to the repository is guarded", async () => {
+			const s = await editing();
+			const wt = `${s.dir}-worktrees`;
+			dirs.push(wt);
+			mkdirSync(join(wt, "x"), { recursive: true });
+			expect(toolCall(s, "edit", { path: join(wt, "x", "a.ts") })).toEqual(BLOCK);
+		});
+
+		test("a relative path is resolved against the session cwd, not the process cwd", async () => {
+			const s = await editing();
+			expect(toolCall(s, "edit", { path: "a.ts" })).toEqual(BLOCK);
+			const elsewhere = { handlers: s.handlers, ctx: { ...(s.ctx as object), cwd: outsideDir() } };
+			expect(toolCall(elsewhere, "edit", { path: "a.ts" })).toBeUndefined();
+		});
+
+		test.skipIf(process.platform === "linux")("a path written in another case still hits the repository", async () => {
+			const s = await editing();
+			expect(toolCall(s, "edit", { path: join(s.dir, "a.ts").toUpperCase() })).toEqual(BLOCK);
+		});
+	});
+
 	test("an agent outside the roster is refused during a run, allowed without one", async () => {
 		const s = setup();
 		expect(spawn(s, "code-reviewer")).toBeUndefined();
@@ -610,6 +661,150 @@ describe("the Captain's limits", () => {
 			launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite"], "completed");
 			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN slice S1g-device-site is no longer active");
 		});
+
+		const b2 = { ...b, files: ["src/grid.ts"] };
+		const runOf = (s: Host & { dir: string }) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8"));
+		// The result half of a launch for any tool name and context, without the call guard.
+		const report = (s: Host, toolName: string, tasks: unknown[], ids: string[], ctx: unknown = s.ctx) => {
+			const details = { progress: ids.map((id, index) => ({ index, id, status: "running" })) };
+			for (const h of s.handlers.tool_result) h({ toolName, input: { tasks }, details, isError: false }, ctx);
+		};
+		const endAs = (s: Host, ctx: unknown, ...ids: string[]) =>
+			s.handlers.context[0]({ type: "context", messages: [{ role: "custom", details: { jobs: ids.map(label => ({ jobId: `j-${label}`, type: "task", status: "completed", label })) } }] }, ctx);
+		const subOf = (s: Host) => ({ ...(s.ctx as object), agent: { kind: "sub" } });
+
+		test("a warning and an error come in one answer, warning first", async () => {
+			const s = await start();
+			const c = { id: "S3", parallel: true, files: ["src/grid.ts"] };
+			await s.call({ action: "slices", slices: [a, b2] });
+			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
+			end(s, "S1gDeviceSite");
+			const lines = (await s.call({ action: "slices", slices: [a, b2, c] })).split("\n");
+			expect(lines).toHaveLength(2);
+			expect(lines[0]).toStartWith("WARN slice S1g-device-site is no longer active");
+			expect(lines[1]).toStartWith("ERROR slices S2b-grid-device-site and S3 are both parallel and both change src/grid.ts.");
+		});
+
+		test("a new slice on the files of a stopped slice is warned, and again on the next declaration", async () => {
+			const s = await start();
+			const c = { id: "S3", parallel: true, files: ["src/cards/attachments.ts"] };
+			await s.call({ action: "slices", slices: [a, b2] });
+			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
+			end(s, "S1gDeviceSite");
+			const want = [
+				"WARN slice S3 changes src/cards/attachments.ts, which slice S1g-device-site already changed and its agent has stopped. " +
+					"Tell S3's agent what S1g-device-site changed there, so it builds on that work instead of undoing it.",
+				"SLICES S2b-grid-device-site (parallel), S3 (parallel)",
+			];
+			expect((await s.call({ action: "slices", slices: [b2, c] })).split("\n")).toEqual(want);
+			expect((await s.call({ action: "slices", slices: [b2, c] })).split("\n")).toEqual(want);
+		});
+
+		test("a task that is still pending counts as running", async () => {
+			const s = await start();
+			await s.call({ action: "slices", slices: [a, b2] });
+			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"], "pending");
+			// Running, so the overlap is an error; a launch that is not counted as running reads as already stopped (a warning).
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+		});
+
+		test("an agent launched in an earlier call keeps running when a later one ends", async () => {
+			const s = await start();
+			const x = { id: "S1", parallel: true, files: ["x.ts"] };
+			const y = { id: "S2", parallel: false, files: ["y.ts"] };
+			await s.call({ action: "slices", slices: [x, y] });
+			launch(s, [brother("A", "S1")], ["A"]);
+			launch(s, [brother("B", "S2")], ["B"]);
+			end(s, "A");
+			// S1 stopped (a warning, not an error) and S2 still runs: nobody may start on its files.
+			expect(await s.call({ action: "slices", slices: [x, { ...y, parallel: true, files: ["x.ts", "y.ts"] }] })).toStartWith("WARN slice S1 is no longer active");
+			expect(launch(s, [brother("C", "S2")], ["C"])?.reason).toContain("another agent for the same slice");
+		});
+
+		test("a slice relaunched after it left the list is listed again", async () => {
+			const s = await start();
+			await s.call({ action: "slices", slices: [a, b2] });
+			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
+			end(s, "S1gDeviceSite");
+			await s.call({ action: "slices", slices: [b2] });
+			expect(launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite-2"])).toBeUndefined();
+			expect(runOf(s).slices.map((x: { id: string }) => x.id)).toEqual([b.id, a.id]);
+		});
+
+		test("two agents of one slice ending together stop it once", async () => {
+			const s = await start();
+			const x = { id: "S1", parallel: true, files: ["x.ts"] };
+			await s.call({ action: "slices", slices: [x] });
+			report(s, "task", [brother("A", "S1"), brother("B", "S1")], ["A", "B"]);
+			end(s, "A", "B");
+			expect((await s.call({ action: "slices", slices: [{ id: "S2", parallel: true, files: ["x.ts"] }] })).split("\n")).toEqual([
+				"WARN slice S2 changes x.ts, which slice S1 already changed and its agent has stopped. Tell S2's agent what S1 changed there, so it builds on that work instead of undoing it.",
+				"SLICES S2 (parallel)",
+			]);
+		});
+
+		test("every agent that ends in one message is handled, not only the first", async () => {
+			const s = await start();
+			await s.call({ action: "slices", slices: [a, b2] });
+			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
+			end(s, "S1gDeviceSite", "Grid");
+			expect((await s.call({ action: "slices", slices: [a, b2] })).split("\n")).toEqual([
+				"WARN slice S1g-device-site is no longer active (its agent has stopped). Remove it from the list.",
+				"WARN slice S2b-grid-device-site is no longer active (its agent has stopped). Remove it from the list.",
+				"SLICES none",
+			]);
+		});
+
+		test("a sub-agent's task result binds nothing and its context ends nothing", async () => {
+			const s = await start();
+			await s.call({ action: "slices", slices: [a, b2] });
+			report(s, "task", [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite"], subOf(s));
+			end(s, "S1gDeviceSite");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
+			endAs(s, subOf(s), "S1gDeviceSite");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+			end(s, "S1gDeviceSite");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN slice S1g-device-site is no longer active");
+		});
+
+		test("only a task result binds an agent, under either spelling of the name", async () => {
+			const s = await start();
+			await s.call({ action: "slices", slices: [a, { ...b2, parallel: false }] });
+			report(s, "read", [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite"]);
+			end(s, "S1gDeviceSite");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+			report(s, "_task", [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite"]);
+			end(s, "S1gDeviceSite");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN slice S1g-device-site is no longer active");
+		});
+
+		test("a sequential slice is held back too, with every shared file named", async () => {
+			const s = await start();
+			const x = { id: "S1", parallel: true, files: ["x.ts", "y.ts"] };
+			const z = { id: "S2", parallel: false, files: ["y.ts", "x.ts"] };
+			await s.call({ action: "slices", slices: [x, z] });
+			launch(s, [brother("A", "S1")], ["A"]);
+			expect(launch(s, [brother("B", "S2")], ["B"])?.reason).toStartWith("Strategium: slice S2 changes y.ts, x.ts, which slice S1 is changing right now.");
+		});
+
+		describe("which agents build a slice", () => {
+			const stoppedWarning = "WARN slice S1g-device-site is no longer active";
+			// Bound as running, so its end stops the slice (a warning); unbound, the overlap would stay an error.
+			const bound = async (item: Record<string, unknown>) => {
+				const s = await start();
+				await s.call({ action: "slices", slices: [a, { ...b, parallel: false, files: ["src/grid.ts"] }] });
+				expect(launch(s, [item], ["X"])).toBeUndefined();
+				end(s, "X");
+				return s.call({ action: "slices", slices: [a, b] });
+			};
+			test.each<[string, Record<string, unknown>]>([
+				["by its name alone", { agent: "battle-brother", name: "S1gDeviceSite", task: "go" }],
+				["a veteran", { agent: "veteran", name: "X", task: "build slice S1g-device-site" }],
+				["an agent name with a prefix", { agent: "omp:Battle-Brother", name: "X", task: "build slice S1g-device-site" }],
+				["a brief in capitals", { agent: "battle-brother", name: "X", task: "Build Slice S1g-device-site." }],
+			])("is bound: %s", async (_label, item) => expect(await bound(item)).toStartWith(stoppedWarning));
+		});
 	});
 
 	describe("the theme when the run ends", () => {
@@ -724,23 +919,66 @@ describe("the run follows an approved plan", () => {
 
 	test("approve and execute moves the run to the new session", async () => {
 		const { s, sm, ctx, notes } = await owner();
-		const before = JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.json"), "utf8"));
+		// A run with everything a run can carry: the move must copy all of it.
+		const file = join(s.dir, "runs", "sess-A.json");
+		const slice = { id: "S1", parallel: true, files: ["a.ts"] };
+		writeFileSync(
+			file,
+			JSON.stringify({
+				...JSON.parse(readFileSync(file, "utf8")),
+				slices: [slice],
+				agents: { "agent-1": slice },
+				stopped: [{ id: "S0", parallel: false, files: ["z.ts"] }],
+				where: { station: "Skirmish" },
+				launched: true,
+			}),
+		);
+		const before = JSON.parse(readFileSync(file, "utf8"));
+		expect(before).toMatchObject({ untimed: true, hidden: ["edit"], repo: s.dir, launched: true });
 		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
 		sm.sid = "sess-B";
 		await emit(s, "session_switch", { reason: "new", previousSessionFile: "a.jsonl" }, ctx);
+		const moved = () => JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.json"), "utf8"));
+		// Before the review closes: the move itself carries every field, hidden tools included.
+		expect(moved()).toEqual({ ...before, sid: "sess-B" });
 		// omp gives the tools back with the plan-mode tool set, then reports the review as closed.
 		s.setActive([...s.activeTools(), "edit"]);
 		await emit(s, "plan_review_resolved", { sessionId: "sess-B", choice: "execute" }, ctx);
 		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-B");
-		expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.json"), "utf8"))).toEqual({ ...before, sid: "sess-B" });
+		expect(moved()).toEqual({ ...before, sid: "sess-B" });
 		expect(files(s.dir, "sess-A")).toEqual({ run: false, beat: false });
 		expect(files(s.dir, "sess-B")).toEqual({ run: true, beat: true });
 		expect(s.activeTools()).not.toContain("edit");
 		expect(openKeys(load(join(s.dir, "2026-11-16.jsonl")))).toEqual(["K-1"]);
 		await s.commands["strategium-status"].handler("", ctx);
-		expect(notes.at(-1)).toContain("K-1");
+		expect(notes.at(-1)).toMatch(/^RUN K-1 .* \(this session\)$/m);
+		expect(notes.at(-1)).not.toContain("stale");
 		await s.commands["strategium-config"].handler("", ctx);
 		expect(notes.at(-1)).toContain("notify: off (this session)");
+	});
+
+	test.each(["resume", "fork"])("a %s with a review open moves nothing", async reason => {
+		const { s, sm, ctx } = await owner();
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason }, ctx);
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-A");
+		expect(files(s.dir, "sess-A").run).toBe(true);
+		expect(files(s.dir, "sess-B").run).toBe(false);
+	});
+
+	test("a new session that already has a run keeps its own", async () => {
+		const { s, sm, ctx } = await owner();
+		const other = setup("sess-B", s.dir);
+		await other.call({ action: "begin", key: "K-2" });
+		const kept = JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.json"), "utf8"));
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new" }, ctx);
+		expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.json"), "utf8"))).toEqual(kept);
+		expect(kept).toMatchObject({ key: "K-2", sid: "sess-B" });
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-A");
+		expect(files(s.dir, "sess-A").run).toBe(true);
 	});
 
 	test("a plain /new leaves the run with its session", async () => {
@@ -763,7 +1001,7 @@ describe("the run follows an approved plan", () => {
 		expect(files(s.dir, "sess-B").run).toBe(false);
 	});
 
-	test("a review in a session without a run moves nothing", async () => {
+	test("a review in a session without a run moves nothing and hides nothing", async () => {
 		const s = setup("sess-A");
 		const { sm, ctx } = shared("sess-A", s.dir, s.footer);
 		await s.handlers.session_start[0]({}, ctx);
@@ -773,6 +1011,7 @@ describe("the run follows an approved plan", () => {
 		await emit(s, "plan_review_resolved", { sessionId: "sess-B", choice: "execute" }, ctx);
 		expect(files(s.dir, "sess-B").run).toBe(false);
 		expect(existsSync(lockPath(s.dir, "K-1"))).toBe(false);
+		expect(s.activeTools()).toContain("edit");
 	});
 
 	test("closing a plan review hides edit again", async () => {
@@ -782,6 +1021,32 @@ describe("the run follows an approved plan", () => {
 		expect(s.activeTools()).not.toContain("edit");
 		expect(s.activeTools()).not.toContain("ast_edit");
 		expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.json"), "utf8")).hidden).toEqual(expect.arrayContaining(["edit", "ast_edit"]));
+	});
+
+	test("closing a review keeps the tools the run already hid when the host restored none", async () => {
+		const { s, ctx } = await owner();
+		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "keep" }, ctx);
+		expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.json"), "utf8")).hidden).toEqual(["edit"]);
+	});
+
+	test("a sub-agent cannot open a review", async () => {
+		const { s, sm, ctx } = await owner();
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, { ...ctx, agent: { kind: "sub" } });
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new" }, ctx);
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-A");
+		expect(files(s.dir, "sess-B").run).toBe(false);
+	});
+
+	test("a sub-agent cannot close a review: no tools hidden, the review stays open", async () => {
+		const { s, sm, ctx } = await owner();
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		s.setActive([...s.activeTools(), "edit"]);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "keep" }, { ...ctx, agent: { kind: "sub" } });
+		expect(s.activeTools()).toContain("edit");
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new" }, ctx);
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-B");
 	});
 });
 
