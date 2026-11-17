@@ -1598,6 +1598,8 @@ describe("the archmagos guard", () => {
 		expect(await none.call({ action: "redraft" })).toBe("ERROR no active run in this session");
 		const { s, spawn, two } = await run();
 		two();
+		// Before the first archmagos there is nothing to redraft: the budget stays 1.
+		expect(await s.call({ action: "redraft" })).toBe("ERROR K-1 has no archmagos to redraft");
 		expect(spawn("archmagos")).toBeUndefined();
 		expect(await s.call({ action: "redraft" })).toBe("REDRAFT K-1: one more archmagos may be spawned");
 		expect(spawn("archmagos")).toBeUndefined();
