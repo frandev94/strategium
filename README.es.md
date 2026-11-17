@@ -109,6 +109,7 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 /strategium-add <min>                 corrección manual, en negativo para restar
 /strategium-status                    todas las runs y su tiempo
 /strategium-config [notify on|off | idle <min> | archmagos on|off]    ajustes; notify on|off, los minutos de inactividad o archmagos on|off para esta sesión
+/strategium-cockpit                   abre el cockpit (también Alt+C)
 /strategium-end                       cierra la run
 ```
 
@@ -119,6 +120,8 @@ Cada sesión es dueña de una run, con una reserva atómica, así que varias ses
 Pausa por inactividad: cuando ningún agente trabaja y nada espera para ejecutarse, el reloj de la run se pausa tras `STRATEGIUM_IDLE_MIN` minutos de inactividad (3 por defecto), suena el sonido `idle` (con las notificaciones activas) y el pie la muestra pausada. El siguiente turno la reanuda sola; el Capitán no llama a `start`. Una run que pausaste a mano (`/strategium-pause`, acción `stop`, el stand down) nunca se reanuda sola. Una pregunta o una revisión de plan que te espera cuenta como actividad: el reloj sigue corriendo y la alarma `attention` te avisa (con las notificaciones activas). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy.
 
 Pie: la estación se muestra como `<estación> › <tarea>`, donde `<tarea>` es la tarea activa del todo sin su etiqueta de agente, cortada a 32 caracteres con `…`. Un sello mantiene `⏳ seal <nombre>`; un retorno muestra `↩ <estación> › <tarea>`. Durante los pasos 0-2 de Muster aún no existe una run, así que no hay pie; desde `begin` muestra p. ej. `Muster › Begin run and theatre status`.
+
+Cockpit: mientras esta sesión tiene una run abierta, un widget compacto (hasta 6 líneas) queda sobre el editor con la clave, el reloj, los sellos y las últimas entradas de la crónica. `/strategium-cockpit` (o Alt+C) abre el overlay completo; Esc o `q` lo cierra. Cada caja y su origen: STRATEGOS es la estación y la tarea del todo; LIBRARIAN, APOTHECARY e INQUISITOR son las tareas del todo con esa etiqueta de rol (activa, última completada o en reposo); cada caja SQUAD sale de los escuadrones declarados y de los agentes lanzados y devueltos (battle-brother, o ‡ VETERAN tras una escalada). Un sello concedido pasa a ✠ y, con las notificaciones activas, suena el sonido `done`. La crónica vive solo en memoria, así que reiniciar omp la borra. Los colores son truecolor si el terminal lo admite y 256 colores si no. El cockpit no puede mostrar recuentos de tests ni de mutantes: los eventos de los agentes ocurren dentro de subagentes, que el padre no ve. El cockpit dibuja glifos Nerd Font con `STRATEGIUM_GLYPHS=1` y símbolos simples si no, nunca emoji.
 
 ### Ticketing (opcional)
 
@@ -144,7 +147,7 @@ El estado (un JSONL por día más las reservas de las runs) vive fuera del repos
 
 ### La alarma
 
-`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras y sin dependencias. Los niveles son `50`, `80`, `100`, `done`, `attention`, `idle` (un sonido corto de espera cuando el reloj se pausa por inactividad) y `theme` (15 s, suena cuando termina la run de la sesión, o a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
+`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras y sin dependencias. Los niveles son `50`, `80`, `100`, `done` (también el sonido de un sello concedido en el cockpit), `attention`, `idle` (un sonido corto de espera cuando el reloj se pausa por inactividad) y `theme` (15 s, suena cuando termina la run de la sesión, o a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
 
 ```
 bun alarm/vox.ts 100 "la reserva se ha agotado"

@@ -109,6 +109,7 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 /strategium-add <min>               manual correction, negative to subtract
 /strategium-status                  every run and its time
 /strategium-config [notify on|off | idle <min> | archmagos on|off]  show the effective settings; notify on|off, the idle minutes or archmagos on|off for this session
+/strategium-cockpit                 open the cockpit (also Alt+C)
 /strategium-end                     close the run
 ```
 
@@ -119,6 +120,8 @@ Every session owns one run, claimed atomically, so several omp sessions can work
 Idle pause: when no agent works and nothing waits to run, the run's clock pauses after `STRATEGIUM_IDLE_MIN` idle minutes (default 3), the `idle` sound plays (with notifications on) and the footer shows it paused. The next turn resumes it on its own; the Captain does not call `start`. A run you paused by hand (`/strategium-pause`, action `stop`, the stand down) never resumes by itself. A question or a plan review waiting for you counts as busy: the clock keeps running and the `attention` alarm calls you (with notifications on). A timed run on a new day stays paused until today's booking is given.
 
 Footer: the station shows as `<station> › <task>`, where `<task>` is the active todo task without its agent tag, cut to 32 characters with `…`. A seal keeps `⏳ seal <name>`; a return shows `↩ <station> › <task>`. During Muster steps 0-2 no run exists yet, so there is no footer; from `begin` on it shows e.g. `Muster › Begin run and theatre status`.
+
+Cockpit: while this session has a run open, a compact widget (up to 6 lines) sits above the editor with the key, the clock, the seals and the latest chronicle entries. `/strategium-cockpit` (or Alt+C) opens the full overlay; Esc or `q` closes it. Each box and where it comes from: STRATEGOS is the station and task from the todo; LIBRARIAN, APOTHECARY and INQUISITOR are the todo tasks tagged with that role (active, last completed, or idle); each SQUAD box comes from the declared squads and the agents spawned and returned (battle-brother, or ‡ VETERAN after an escalation). A granted seal turns ✠ and, with notifications on, plays the `done` sound. The chronicle is kept in memory only, so an omp restart clears it. Colours are truecolor when the terminal supports it and 256-colour otherwise. The cockpit cannot show test or mutant counts: the agents' events happen inside subagents, which the parent does not see. The cockpit draws Nerd Font glyphs with `STRATEGIUM_GLYPHS=1` and plain symbols otherwise, never emoji.
 
 ### Ticketing (optional)
 
@@ -144,7 +147,7 @@ The state (one JSONL per day plus the run claims) stays outside the repository, 
 
 ### The alarm
 
-`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done`, `attention`, `idle` (a short stand-by sound when the clock pauses after idle) and `theme` (15 s, plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
+`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done` (also the sound of a seal granted in the cockpit), `attention`, `idle` (a short stand-by sound when the clock pauses after idle) and `theme` (15 s, plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
 
 ```
 bun alarm/vox.ts 100 "the booking is over"
