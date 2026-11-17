@@ -11,7 +11,7 @@ El plugin trae tres cosas:
 | Parte | Qué es |
 |---|---|
 | **Extensión** | el tool `strategium` y el comando `/strategium`: reserva de la run por sesión, bloqueo de edición, temporizador de reserva opcional |
-| **Agentes** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, más los incluidos `scout` y `sonic` |
+| **Agentes** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, `archmagos`, más los incluidos `scout` y `sonic` |
 | **Skills** | `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-study`, `strategium-ui` |
 
 ## Cómo funciona una run
@@ -24,7 +24,7 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 
 1. **Muster** — el objetivo, los sellos y, con ticketing, la reserva.
 2. **Auspex** — los scouts mapean el código que toca el objetivo.
-3. **Scriptorium** — un librarian escribe una especificación, de 1 a 5 squads y una Merge bar; cuando el objetivo se divide en áreas, un librarian por área y después un líder une las partes.
+3. **Scriptorium** — un librarian escribe una especificación, de 1 a 5 squads y una Merge bar; cuando el objetivo se divide en áreas, un librarian por área y después un líder une las partes (con el Archmagos Dominus marcado en Muster, un `archmagos` integra las partes en lugar del líder).
 4. **Deployment** — una rama para la run, los squads declarados con sus ficheros; cada agente aislado trabaja en su propio checkout de omp.
 5. **Skirmish** — un `battle-brother` implementa cada squad con los tests primero; un `apothecary` intenta romper los tests nuevos, solo en squads con lógica nueva y dentro de un presupuesto fijo.
 6. **Inquisition** — un `inquisitor` revisa el diff contra la Merge bar; un `sonic` ejecuta las comprobaciones del repo.
@@ -53,7 +53,7 @@ flowchart TB
   R["Estado por día<br/>JSONL + reservas por run"] --- C
 ```
 
-Los nombres de estación, los nombres de agente y las alertas tienen su propia voz. Los tickets, los mensajes de commit y las merge requests se quedan planos y profesionales.
+Los nombres de estación, los nombres de agente y las alertas tienen su propia voz; el `archmagos` la usa solo en el chat y el todo, nunca en el fichero del plan. Los tickets, los mensajes de commit y las merge requests se quedan planos y profesionales.
 
 ### Volver atrás
 
@@ -62,7 +62,7 @@ Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un de
 | Vuelta | Detonante | Destino | Presupuesto |
 |---|---|---|---|
 | **Recon** | el mapa del código está equivocado | un `scout` más con ese hueco concreto | 1 por run |
-| **Redraft** | el plan está equivocado, o el check de un squad no se puede cumplir tal cual está escrito | el mismo `librarian` reescribe el trabajo restante (con áreas, solo el área afectada, y el líder vuelve a unir) | 1 por run |
+| **Redraft** | el plan está equivocado, o el check de un squad no se puede cumplir tal cual está escrito | el mismo `librarian` reescribe el trabajo restante (con áreas, solo el área afectada, y el líder vuelve a unir; en una run marcada para el Archmagos Dominus, un `archmagos` nuevo vuelve a integrar solo esa área) | 1 por run |
 | **Rally** | el código está equivocado: check rojo, supervivientes del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con todos los IDs de hallazgos abiertos en un solo brief, nunca el informe anterior | 2 rondas por squad, luego un `veteran` |
 | **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez, solo sobre los IDs de hallazgos abiertos y el rango del arreglo, y luego `sonic` para los checks | 2 rondas por item del Merge bar |
 | **Stand down** | se agotó el presupuesto, o el fallo no está en el código | tú, con los puntos abiertos | — |
@@ -108,7 +108,7 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 /strategium-resume [booked]           continúa (una run con reserva pasa los minutos de hoy en un día nuevo)
 /strategium-add <min>                 corrección manual, en negativo para restar
 /strategium-status                    todas las runs y su tiempo
-/strategium-config [notify on|off | idle <min>]    ajustes; notify on|off o los minutos de inactividad para esta sesión
+/strategium-config [notify on|off | idle <min> | archmagos on|off]    ajustes; notify on|off, los minutos de inactividad o archmagos on|off para esta sesión
 /strategium-end                       cierra la run
 ```
 
@@ -136,8 +136,9 @@ Una run **sin temporizador** sigue contando su tiempo (`status`, `report`), sin 
 | `STRATEGIUM_GLYPHS` | `1` para usar glifos de Nerd Font en lugar de emoji |
 | `STRATEGIUM_NOTIFY` | `1` activa los sonidos y las notificaciones de escritorio; apagado por defecto; `/strategium-config notify on` u `off` lo cambia para la sesión |
 | `STRATEGIUM_IDLE_MIN` | minutos enteros sin trabajo antes de pausar el reloj de la run; por defecto `3`, `0` lo desactiva; `/strategium-config idle <min>` lo cambia para la sesión |
+| `STRATEGIUM_ARCHMAGOS` | `1` deja que una run marque al Archmagos Dominus en Muster; apagado por defecto; `/strategium-config archmagos on` u `off` lo cambia para la sesión |
 
-`/strategium-config` muestra los valores efectivos: el aviso y los minutos de inactividad, cada uno con su origen, el teatro, la alarma, los glifos y el directorio de estado.
+`/strategium-config` muestra los valores efectivos: el aviso, los minutos de inactividad y el ajuste del archmagos, cada uno con su origen, el teatro, la alarma, los glifos y el directorio de estado.
 
 El estado (un JSONL por día más las reservas de las runs) vive fuera del repositorio, así que nunca se commitean datos de sesión.
 
