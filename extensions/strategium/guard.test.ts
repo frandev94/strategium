@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bashBlock, checkSlices, editTargets } from "./index";
+import { bashBlock, checkSlices, editTargets, endedAgents, sliceWarnings } from "./index";
 
 // The edit tool has five wire contracts; the guard must see the file in every one of them,
 // or the Captain edits the repository it is not allowed to touch.
@@ -150,15 +150,25 @@ describe("bash writes, every pattern", () => {
 describe("checkSlices", () => {
 	const s = (id: string, files: string[], parallel = true) => ({ id, parallel, files });
 	test("a folder overlaps its files, a name prefix does not", () => {
-		expect(checkSlices([s("A", ["src"]), s("B", ["src/a.ts"])])).toBe("slices A and B both touch src; mark one parallel: false");
-		expect(checkSlices([s("A", ["src/a.ts"]), s("B", ["src"])])).toContain("both touch");
+		expect(checkSlices([s("A", ["src"]), s("B", ["src/a.ts"])])).toContain("both change src/a.ts (inside src).");
+		expect(checkSlices([s("A", ["src/a.ts"]), s("B", ["src"])])).toContain("both change src/a.ts (inside src).");
 		expect(checkSlices([s("A", ["src/a"]), s("B", ["src/ab"])])).toBeUndefined();
 	});
 	test("paths are normalised", () => {
-		for (const f of ["./a", "a/", " a", "a\\"]) expect(checkSlices([s("A", ["a"]), s("B", [f])])).toContain("both touch a;");
+		for (const f of ["./a", "a/", " a", "a\\"]) expect(checkSlices([s("A", ["a"]), s("B", [f])])).toContain("both change a.");
 	});
-	test("any file of either slice counts", () => {
-		expect(checkSlices([s("A", ["x", "y"]), s("B", ["z", "y"])])).toContain("both touch y;");
+	test("every shared file is named", () => {
+		expect(checkSlices([s("A", ["x", "y", "w"]), s("B", ["z", "y", "w"])])).toContain("both change y, w.");
+	});
+	test("the error explains the risk and shows the list fixed", () => {
+		const err = checkSlices([s("A", ["a"]), s("B", ["a", "b"])]);
+		expect(err).toContain("overwrite each other's changes");
+		expect(err).toContain('e.g. slices: [{"id":"A","parallel":true,"files":["a"]},{"id":"B","parallel":false,"files":["a","b"]}]');
+		expect(err).toContain("If one of them has already finished, remove it from the list");
+	});
+	test("a slice whose agent stopped collides with nothing", () => {
+		expect(checkSlices([s("A", ["a"]), s("B", ["a"])], [s("A", ["a"])])).toBeUndefined();
+		expect(checkSlices([s("A", ["a"]), s("B", ["a"]), s("C", ["a"])], [s("A", ["a"])])).toContain("slices B and C");
 	});
 	test("sequential slices may share files", () => {
 		expect(checkSlices([s("A", ["a"], false), s("B", ["a"])])).toBeUndefined();
@@ -175,7 +185,37 @@ describe("checkSlices", () => {
 		expect(checkSlices([s("A", ["a"]), s("A", ["a"])])).toBe("duplicate slice id A");
 	});
 	test.skipIf(process.platform === "linux")("case folds off Linux", () => {
-		expect(checkSlices([s("A", ["Alarm/Vox.ts"]), s("B", ["alarm/vox.ts"])])).toContain("both touch alarm/vox.ts");
+		expect(checkSlices([s("A", ["Alarm/Vox.ts"]), s("B", ["alarm/vox.ts"])])).toContain("both change alarm/vox.ts.");
+	});
+});
+
+describe("sliceWarnings", () => {
+	const s = (id: string, files: string[], parallel = true) => ({ id, parallel, files });
+	test("no stopped slice, no warning", () => {
+		expect(sliceWarnings([s("A", ["a"]), s("B", ["a"])], [])).toEqual([]);
+	});
+	test("a stopped slice still listed is to be removed, with the list fixed", () => {
+		expect(sliceWarnings([s("A", ["a"]), s("B", ["a", "b"])], [s("A", ["a"])])).toEqual([
+			'slice A is no longer active (its agent has stopped); sharing a with B is not a conflict. Remove it from the list, e.g. slices: [{"id":"B","parallel":true,"files":["a","b"]}].',
+		]);
+	});
+	test("a new slice on the files of a stopped one is told to build on that work", () => {
+		const [w] = sliceWarnings([s("B", ["a"]), s("C", ["c"])], [s("A", ["a"])]);
+		expect(w).toBe(
+			"slice B changes a, which slice A already changed and its agent has stopped. Tell B's agent what A changed there, so it builds on that work instead of undoing it.",
+		);
+	});
+});
+
+describe("endedAgents", () => {
+	test("reads task jobs that ended from completion messages and wait results, not running or other jobs", () => {
+		const messages = [
+			{ role: "custom", customType: "async-result", details: { jobs: [{ jobId: "j1", type: "task", status: "completed", label: "S1" }] } },
+			{ role: "toolResult", details: { jobs: [{ id: "j2", type: "task", status: "failed", label: "S2-2" }, { id: "j3", type: "task", status: "running", label: "S3" }] } },
+			{ role: "custom", details: { jobs: [{ jobId: "j4", type: "bash", status: "completed", label: "ls" }] } },
+			{ role: "user", content: "hi" },
+		];
+		expect(endedAgents(messages)).toEqual(["S1", "S2-2"]);
 	});
 });
 
@@ -189,6 +229,6 @@ describe("runner binaries by path", () => {
 describe("checkSlices, a trailing slash", () => {
 	test("a folder written with a trailing slash overlaps the files in it", () => {
 		const s = (id: string, files: string[]) => ({ id, parallel: true, files });
-		expect(checkSlices([s("A", ["src/"]), s("B", ["src/a.ts"])])).toBe("slices A and B both touch src; mark one parallel: false");
+		expect(checkSlices([s("A", ["src/"]), s("B", ["src/a.ts"])])).toContain("both change src/a.ts (inside src).");
 	});
 });

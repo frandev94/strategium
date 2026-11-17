@@ -496,7 +496,100 @@ describe("the Captain's limits", () => {
 				{ id: "S2", parallel: true, files: ["ALARM\\vox.ts"] },
 			],
 		});
-		expect(out).toBe("ERROR slices S1 and S2 both touch alarm/vox.ts; mark one parallel: false");
+		expect(out).toStartWith("ERROR slices S1 and S2 are both parallel and both change alarm/vox.ts.");
+	});
+
+	describe("slices whose agents have stopped", () => {
+		const a = { id: "S1g-device-site", parallel: true, files: ["src/cards/attachments.ts"] };
+		const b = { id: "S2b-grid-device-site", parallel: true, files: ["src/cards/attachments.ts", "src/grid.ts"] };
+		const brother = (name: string, slice: string) => ({ agent: "battle-brother", name, isolated: true, task: `Read local://K-1-plan.md; build slice ${slice}.` });
+		// The host's two halves of a launch: the call (may be refused) and its result, with the agent ids it allocated.
+		const launch = (s: Host, tasks: unknown[], ids: string[], status = "running") => {
+			const verdict = toolCall(s, "task", { tasks });
+			if (verdict?.block) return verdict;
+			const details = { progress: ids.map((id, index) => ({ index, id, status })) };
+			for (const h of s.handlers.tool_result) h({ toolName: "task", input: { tasks }, details, isError: false }, s.ctx);
+			return undefined;
+		};
+		const end = (s: Host, ...ids: string[]) =>
+			s.handlers.context[0]({ type: "context", messages: [{ role: "custom", customType: "async-result", details: { jobs: ids.map((label, i) => ({ jobId: `j-${label}-${i}`, type: "task", status: "completed", label })) } }] }, s.ctx);
+		const start = async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			return s;
+		};
+
+		test("a stopped slice still listed is a warning, while a running one is an error", async () => {
+			const s = await start();
+			await s.call({ action: "slices", slices: [a, { ...b, files: ["src/grid.ts"] }] });
+			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("ERROR slices S1g-device-site and S2b-grid-device-site");
+			end(s, "S1gDeviceSite");
+			expect((await s.call({ action: "slices", slices: [a, b] })).split("\n")).toEqual([
+				"WARN slice S1g-device-site is no longer active (its agent has stopped); sharing src/cards/attachments.ts with S2b-grid-device-site is not a conflict. " +
+					'Remove it from the list, e.g. slices: [{"id":"S2b-grid-device-site","parallel":true,"files":["src/cards/attachments.ts","src/grid.ts"]}].',
+				"SLICES S2b-grid-device-site (parallel)",
+			]);
+		});
+
+		test("a stopped slice cannot be launched again on files a running agent is changing", async () => {
+			const s = await start();
+			await s.call({ action: "slices", slices: [a, { ...b, files: ["src/grid.ts"] }] });
+			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
+			end(s, "S1gDeviceSite");
+			await s.call({ action: "slices", slices: [a, b] });
+			// The rally would share attachments.ts with S2b, still running.
+			expect(launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite-2"])?.reason).toBe(
+				"Strategium: slice S1g-device-site changes src/cards/attachments.ts, which slice S2b-grid-device-site is changing right now. " +
+					"Two agents working on the same file at the same time overwrite each other's changes. Wait until that agent has finished, then launch this one.",
+			);
+			end(s, "Grid");
+			expect(launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite-2"])).toBeUndefined();
+			// The first run's completion, still in the history, does not stop the rally.
+			end(s, "S1gDeviceSite");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN slice S2b-grid-device-site is no longer active");
+			end(s, "S1gDeviceSite-2");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toEndWith("SLICES none");
+		});
+
+		test("a name reused for two slices: each agent id stops only its own slice", async () => {
+			const s = await start();
+			const x = { id: "S1", parallel: true, files: ["x.ts"] };
+			const y = { id: "S2", parallel: true, files: ["y.ts"] };
+			await s.call({ action: "slices", slices: [x, y] });
+			launch(s, [brother("Builder", "S1"), brother("Builder", "S2")], ["Builder", "Builder-2"]);
+			end(s, "Builder");
+			const out = await s.call({ action: "slices", slices: [x, { ...y, files: ["x.ts", "y.ts"] }] });
+			expect(out.split("\n")[0]).toStartWith("WARN slice S1 is no longer active");
+			expect(out).toEndWith("SLICES S2 (parallel)");
+		});
+
+		test("a slice stops only when every agent building it has ended", async () => {
+			const s = await start();
+			const x = { id: "S1", parallel: true, files: ["x.ts"] };
+			const y = { id: "S2", parallel: true, files: ["x.ts"] };
+			await s.call({ action: "slices", slices: [x] });
+			// Two agents for one slice in one call are refused...
+			expect(launch(s, [brother("A", "S1"), brother("B", "S1")], ["A", "B"])?.reason).toContain("which another agent for the same slice is changing right now");
+			// ...and so is a second one while the first runs.
+			launch(s, [brother("A", "S1")], ["A"]);
+			expect(launch(s, [brother("B", "S1")], ["B"])?.reason).toContain("another agent for the same slice");
+			// Should two run anyway (the host bound both), the first end leaves the slice running.
+			for (const h of s.handlers.tool_result)
+				h({ toolName: "task", input: { tasks: [brother("B", "S1")] }, details: { progress: [{ index: 0, id: "B", status: "running" }] }, isError: false }, s.ctx);
+			end(s, "A");
+			expect(await s.call({ action: "slices", slices: [x, y] })).toStartWith("ERROR slices S1 and S2");
+			end(s, "B");
+			expect(await s.call({ action: "slices", slices: [x, y] })).toStartWith("WARN slice S1 is no longer active");
+		});
+
+		test("an agent that already ended when its call returned never counts as running", async () => {
+			const s = await start();
+			await s.call({ action: "slices", slices: [a] });
+			launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite"], "completed");
+			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN slice S1g-device-site is no longer active");
+		});
 	});
 
 	describe("the theme when the run ends", () => {
