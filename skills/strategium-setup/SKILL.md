@@ -68,6 +68,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 | `STRATEGIUM_GLYPHS` | optional | `1` only if the user's terminal font is a Nerd Font (ask; show one glyph, e.g. U+F05DA, and ask whether it renders as a book); else leave unset and todo tags stay `[name]` |
 | `STRATEGIUM_NOTIFY` | recommended | `0` (off; sounds and desktop notifications on with `1`; per session `/strategium-config notify on` or `off`) |
 | `STRATEGIUM_IDLE_MIN` | optional | `3` (minutes of idle before the run's clock pauses; `0` off; per session `/strategium-config idle <min>`) |
+| `STRATEGIUM_COCKPIT` | optional | `0` (off; `1` shows the cockpit widget above the editor; per session `/strategium-config cockpit on` or `off`) |
 | `STRATEGIUM_ARCHMAGOS` | optional | `0` (off; `1` lets runs mark the Archmagos Dominus in Muster; per session `/strategium-config archmagos on` or `off`) |
 | `OBSIDIAN_VAULT_PATH` | only with obsidian-second-brain | absolute path of the vault; check the folder exists and contains `.obsidian/` |
 
