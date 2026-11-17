@@ -65,6 +65,9 @@ const fakeCtx = (sid: string, cwd: string, notes: string[] = [], footer: string[
 	agent: { kind: "main" },
 });
 
+// omp loads ~/.omp/agent/.env into the process; a default theatre there must not change what the tests expect.
+delete process.env.STRATEGIUM_THEATRE;
+
 const dirs: string[] = [];
 afterEach(() => {
 	setSystemTime();
