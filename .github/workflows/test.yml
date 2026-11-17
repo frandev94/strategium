@@ -16,4 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+      - if: matrix.os == 'ubuntu-latest'
+        run: bun install --frozen-lockfile && bun run check
       - run: bun test

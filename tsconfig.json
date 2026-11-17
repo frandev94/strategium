@@ -1,0 +1,14 @@
+{
+	"compilerOptions": {
+		"strict": true,
+		"noEmit": true,
+		"target": "ESNext",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"allowImportingTsExtensions": true,
+		"skipLibCheck": true,
+		"types": ["bun"],
+		"paths": { "@oh-my-pi/pi-coding-agent": ["./node_modules/@oh-my-pi/pi-coding-agent/dist/types/index.d.ts"] }
+	},
+	"include": ["extensions/**/*.ts"]
+}

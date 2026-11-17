@@ -677,29 +677,33 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.setLabel("Strategium");
 
+	const schema = z.object({
+		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices"]),
+		key: z.string().optional(),
+		booked: z.number().int().positive().optional(),
+		spent: z.number().int().nonnegative().optional(),
+		theatre: z.string().optional(),
+		repo: z.string().optional(),
+		date: z.string().optional(),
+		takeover: z.string().optional(),
+		message: z.string().optional(),
+		minutes: z.number().int().optional(),
+		on: z.boolean().optional(),
+		slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()) })).optional(),
+	});
+
 	pi.registerTool({
 		name: "strategium",
 		label: "Strategium",
 		description:
 			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. slices (slices: [{id, parallel, files}]: the plan's slices; parallel slices must not share a file; required before any battle-brother). A slice whose battle-brothers and veterans have all stopped (known when the task item's name is the slice id or its brief says build slice <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing.",
-		parameters: z.object({
-			action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices"]),
-			key: z.string().optional(),
-			booked: z.number().int().positive().optional(),
-			spent: z.number().int().nonnegative().optional(),
-			theatre: z.string().optional(),
-			repo: z.string().optional(),
-			date: z.string().optional(),
-			takeover: z.string().optional(),
-			message: z.string().optional(),
-			minutes: z.number().int().optional(),
-			on: z.boolean().optional(),
-			slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()) })).optional(),
-		}),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		parameters: schema,
+		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
 			const sid = sidOf(ctx);
 			try {
+				// The host validated input against `schema` before calling execute.
+				const params = input as (typeof schema)["_output"];
 				switch (params.action) {
 					case "begin": {
 						if (!params.key) throw new Error("begin needs key");

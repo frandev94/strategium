@@ -59,9 +59,9 @@ function fakePi() {
 
 const fakeCtx = (sid: string, cwd: string, notes: string[] = [], footer: string[] = []) => ({
 	sessionManager: { getSessionId: () => sid },
-	ui: { notify: (m: string) => notes.push(m), setStatus: (_k: string, v?: string) => footer.push(v ?? "") },
+	ui: { notify: (m: string) => void notes.push(m), setStatus: (_k: string, v?: string) => footer.push(v ?? "") },
 	cwd,
-	setInterval: () => 0,
+	setInterval: (_fn: () => void, _ms: number) => 0,
 	agent: { kind: "main" },
 });
 

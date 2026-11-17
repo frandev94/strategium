@@ -7,7 +7,7 @@ test("the child does not inherit the credential variables", () => {
 	try {
 		expect(childEnv().OPENAI_API_KEY).toBeUndefined();
 		expect(childEnv({ STRATEGIUM_P: "50" }).STRATEGIUM_P).toBe("50");
-		expect(childEnv().PATH).toBe(process.env.PATH);
+		expect(childEnv()).toMatchObject({ PATH: process.env.PATH });
 	} finally {
 		delete process.env.OPENAI_API_KEY;
 	}
