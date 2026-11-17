@@ -451,7 +451,7 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 	const value = run.untimed && bookedMin(evs, key) === undefined
 		? running ? `${el} min` : "paused"
 		: bookedMin(evs, key) === undefined
-			? "new day: /strategium resume"
+			? "new day: /strategium-resume"
 			: `${stage} ${el}/${bk} min (${pct}%)${running ? "" : " paused"}`;
 	// Where the run is: a seal waiting for the user (⏳, md-timer_sand F051F, in yellow), a return (↩, md-undo
 	// F054C) or just the station. Codepoints checked in the Nerd Fonts glyphnames.json.
@@ -474,6 +474,14 @@ export default function (pi: ExtensionAPI) {
 	// omp switches sessions by mutating one SessionManager, so the previous id has to be kept as a string.
 	let liveSid: string | undefined;
 	let timerSet = false;
+	// /strategium-config notify on|off per session id; it wins over STRATEGIUM_NOTIFY (1, true, on, yes), which is off when unset.
+	const notifyBySession = new Map<string, boolean>();
+	const notifyOn = (sid: string) =>
+		notifyBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_NOTIFY?.trim() ?? "");
+	const notifyState = (sid: string) =>
+		`${notifyOn(sid) ? "on" : "off"} (${notifyBySession.has(sid) ? "this session" : "STRATEGIUM_NOTIFY"})`;
+	/** The alarm, only when notifications are on for this session. */
+	const alert = (sid: string, level: string, msg: string) => (notifyOn(sid) ? signal(level, msg) : undefined);
 
 	const HIDDEN_TOOLS = ["edit", "ast_edit"];
 	const bareName = (n: string) => n.replace(/^_+/, "");
@@ -493,19 +501,19 @@ export default function (pi: ExtensionAPI) {
 		const result = endRun(sid, key, takeover);
 		if (mine && result === `ENDED ${mine.key}`) {
 			await restoreTools(mine.hidden);
-			const err = signal("theme", `${mine.key}: run ended`);
+			const err = alert(sid, "theme", `${mine.key}: run ended`);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 		}
 		return result;
 	}
 
 	// Only the owning session alerts for its key, so each alert fires once.
-	const maybeAlert = (ctx: SessionCtx, file: string, evs: Ev[], key: string, now: Date, el: number, bk: number) => {
+	const maybeAlert = (ctx: SessionCtx, sid: string, file: string, evs: Ev[], key: string, now: Date, el: number, bk: number) => {
 		const p = dueAlert(evs, key, now);
 		if (p === undefined) return;
 		append(file, { ts: nowIso(), event: "alert", key, p });
 		ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}`, p === 100 ? "warning" : "info");
-		const alarmError = signal(String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`);
+		const alarmError = alert(sid, String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`);
 		if (alarmError) ctx.ui.notify(`Strategium: ${alarmError}`, "warning");
 		pi.sendMessage(
 			{ customType: "strategium-timer", content: `TIMER ${p}% ${key} ${el}/${bk} min`, display: true, attribution: "agent" },
@@ -524,10 +532,10 @@ export default function (pi: ExtensionAPI) {
 			if (gap) {
 				const at = gap.slice(11, 16);
 				ctx.ui.notify(
-					`Strategium: ${found.key} paused at ${at}; this session was silent since then (sleep or freeze). /strategium resume to continue.`,
+					`Strategium: ${found.key} paused at ${at}; this session was silent since then (sleep or freeze). /strategium-resume to continue.`,
 					"warning",
 				);
-				signal("attention", `${found.key}: paused at ${at} after a silent gap; resume when you are back`);
+				alert(sid, "attention", `${found.key}: paused at ${at} after a silent gap; resume when you are back`);
 			}
 			beat(sid);
 			const file = today();
@@ -539,7 +547,7 @@ export default function (pi: ExtensionAPI) {
 			const bk = bookedMin(evs, key) ?? 0;
 			ctx.ui.setStatus("strategium", renderFooter(found, evs, running, el, bk));
 			// A paused run never alerts.
-			if (running) maybeAlert(ctx, file, evs, key, now, el, bk);
+			if (running) maybeAlert(ctx, sid, file, evs, key, now, el, bk);
 		} catch (err) {
 			ctx.ui.notify(`Strategium timer: ${err instanceof Error ? err.message : String(err)}`, "warning");
 		}
@@ -550,9 +558,9 @@ export default function (pi: ExtensionAPI) {
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), slices (slices). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). slices (slices: [{id, parallel, files}]: the plan's slices; parallel slices must not share a file; required before any battle-brother).",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. slices (slices: [{id, parallel, files}]: the plan's slices; parallel slices must not share a file; required before any battle-brother).",
 		parameters: z.object({
-			action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "slices"]),
+			action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices"]),
 			key: z.string().optional(),
 			booked: z.number().int().positive().optional(),
 			spent: z.number().int().nonnegative().optional(),
@@ -562,6 +570,7 @@ export default function (pi: ExtensionAPI) {
 			takeover: z.string().optional(),
 			message: z.string().optional(),
 			minutes: z.number().int().optional(),
+			on: z.boolean().optional(),
 			slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()) })).optional(),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -610,11 +619,17 @@ export default function (pi: ExtensionAPI) {
 					case "attention": {
 						const key = ownRun(sid)?.key;
 						const msg = params.message?.trim() || "Your attention is needed";
-						const err = signal("attention", key ? `${key}: ${msg}` : msg);
+						const err = alert(sid, "attention", key ? `${key}: ${msg}` : msg);
 						if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
-						// Without STRATEGIUM_ALARM the call makes no sound; say so, so the Captain does not count on it.
-						const silent = process.env.STRATEGIUM_ALARM?.trim() ? "" : " (silent: STRATEGIUM_ALARM is not set; see /skill:strategium-setup)";
+						// A silent call makes no sound; say so, so the Captain does not count on it.
+						const silent = !notifyOn(sid)
+							? " (silent: notifications are off; /strategium-config notify on)"
+							: process.env.STRATEGIUM_ALARM?.trim() ? "" : " (silent: STRATEGIUM_ALARM is not set; see /skill:strategium-setup)";
 						return text(err ? `ERROR ${err}` : `ATTENTION ${msg}${silent}`);
+					}
+					case "notify": {
+						if (params.on !== undefined) notifyBySession.set(sid, params.on);
+						return text(`NOTIFY ${notifyState(sid)}`);
 					}
 					case "slices": {
 						const run = ownRun(sid);
@@ -638,66 +653,14 @@ export default function (pi: ExtensionAPI) {
 		description: "Run one objective through the Strategium workflow: a ticket, a @file or \"free text\"",
 		handler: async (args, ctx) => {
 			const raw = (args ?? "").trim();
-			const [first, second] = raw.split(/\s+/).filter(Boolean);
-			const sid = sidOf(ctx);
-			try {
-				switch (first) {
-					case undefined:
-						ctx.ui.notify(
-							'Usage: /strategium <ticket | @file | "free text"> [theatre] | pause | resume [booked] | add <min> | status | end',
-							"warning",
-						);
-						return;
-					case "pause": {
-						const run = ownRun(sid);
-						ctx.ui.notify(`Strategium: paused (${run && stopKey(run.key) ? run.key : "idle"})`, "info");
-						return;
-					}
-					case "resume": {
-						const run = ownRun(sid);
-						if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
-						const bk = second === undefined ? undefined : Number(second);
-						if (bk !== undefined && !(Number.isInteger(bk) && bk > 0))
-							throw new Error("resume takes the booked minutes as a whole number, e.g. /strategium resume 240");
-						try {
-							ctx.ui.notify(`Strategium: ${shift(run, bk)}`, "info");
-						} catch (err) {
-							if (!(err instanceof NewShift)) throw err;
-							const skill = run.theatre.startsWith("strategium-") ? run.theatre : `strategium-${run.theatre}`;
-							pi.sendUserMessage(
-								run.theatre === "none"
-									? `New Strategium shift for ${run.key}: ask me today's booked minutes, then call strategium start with booked.`
-									: `New Strategium shift for ${run.key}: read today's booked minutes for it as skill://${skill} Muster says (not booked today: tell me and stop), then call strategium start with booked. If I already worked on it today before this, propose those minutes as Muster does and record them with strategium add after my OK.`,
-							);
-						}
-						return;
-					}
-					case "add": {
-						const run = ownRun(sid);
-						if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
-						ctx.ui.notify(`Strategium: ${addMin(run, Number(second))}`, "info");
-						return;
-					}
-					case "status":
-						ctx.ui.notify(fullStatus(sid), "info");
-						return;
-					case "end":
-						ctx.ui.notify(await finish(sid, ctx), "info");
-						// undefined removes the line; "" would leave an empty one under the other plugins' lines.
-						ctx.ui.setStatus("strategium", undefined);
-						return;
-				}
-			} catch (err) {
-				ctx.ui.notify(`Strategium: ${err instanceof Error ? err.message : String(err)}`, "warning");
-				return;
-			} finally {
-				refreshFooter?.();
-			}
 			// The objective: "free text" in quotes, @path to a spec or an approved plan, or a key (a ticket or a short name).
-			// A theatre name may follow. Free text needs the quotes: unquoted words would clash with the subcommands.
+			// A theatre name may follow. Free text needs the quotes: unquoted words would read as a key and a theatre.
 			const parsed = raw.match(/^"([^"]+)"(?:\s+(\S+))?$/) ?? raw.match(/^(\S+)(?:\s+(\S+))?$/);
 			if (!parsed) {
-				ctx.ui.notify('Strategium: put a free objective in quotes, e.g. /strategium "add a dark mode"', "warning");
+				ctx.ui.notify(
+					'Usage: /strategium <ticket | @file | "free text"> [theatre]; also /strategium-pause, -resume, -add, -status, -config, -end',
+					"warning",
+				);
 				return;
 			}
 			const objective = raw.startsWith('"') ? `"${parsed[1]}"` : parsed[1];
@@ -708,6 +671,79 @@ export default function (pi: ExtensionAPI) {
 					: `Read skill://strategium and run it for the objective ${objective} with theatre skill://strategium-${theatre}.`,
 			);
 		},
+	});
+
+	/** One /strategium-<name> command: errors become a warning and the footer is redrawn after it. */
+	const subcommand = (name: string, description: string, run: (arg: string | undefined, ctx: SessionCtx, sid: string) => unknown) =>
+		pi.registerCommand(`strategium-${name}`, {
+			description,
+			handler: async (args, ctx) => {
+				try {
+					await run((args ?? "").trim() || undefined, ctx, sidOf(ctx));
+				} catch (err) {
+					ctx.ui.notify(`Strategium: ${err instanceof Error ? err.message : String(err)}`, "warning");
+				} finally {
+					refreshFooter?.();
+				}
+			},
+		});
+
+	subcommand("pause", "Stop this session's Strategium clock", (_arg, ctx, sid) => {
+		const run = ownRun(sid);
+		ctx.ui.notify(`Strategium: paused (${run && stopKey(run.key) ? run.key : "idle"})`, "info");
+	});
+
+	subcommand("resume", "Continue this session's Strategium run; on a new day pass today's booked minutes", (arg, ctx, sid) => {
+		const run = ownRun(sid);
+		if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
+		const bk = arg === undefined ? undefined : Number(arg);
+		if (bk !== undefined && !(Number.isInteger(bk) && bk > 0))
+			throw new Error("resume takes the booked minutes as a whole number, e.g. /strategium-resume 240");
+		try {
+			ctx.ui.notify(`Strategium: ${shift(run, bk)}`, "info");
+		} catch (err) {
+			if (!(err instanceof NewShift)) throw err;
+			const skill = run.theatre.startsWith("strategium-") ? run.theatre : `strategium-${run.theatre}`;
+			pi.sendUserMessage(
+				run.theatre === "none"
+					? `New Strategium shift for ${run.key}: ask me today's booked minutes, then call strategium start with booked.`
+					: `New Strategium shift for ${run.key}: read today's booked minutes for it as skill://${skill} Muster says (not booked today: tell me and stop), then call strategium start with booked. If I already worked on it today before this, propose those minutes as Muster does and record them with strategium add after my OK.`,
+			);
+		}
+	});
+
+	subcommand("add", "Correct today's time of this session's run in minutes (negative to subtract)", (arg, ctx, sid) => {
+		const run = ownRun(sid);
+		if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
+		ctx.ui.notify(`Strategium: ${addMin(run, Number(arg))}`, "info");
+	});
+
+	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
+
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications", (arg, ctx, sid) => {
+		if (arg !== undefined) {
+			const m = arg.match(/^notify\s+(on|off)$/);
+			if (!m) throw new Error("config takes notify on|off; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			notifyBySession.set(sid, m[1] === "on");
+		}
+		const env = (k: string) => process.env[k]?.trim() || "not set";
+		ctx.ui.notify(
+			[
+				"Strategium config",
+				`notify: ${notifyState(sid)}`,
+				`theatre: ${env("STRATEGIUM_THEATRE")}`,
+				`alarm: ${env("STRATEGIUM_ALARM")}`,
+				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
+				`state: ${stateDir()}`,
+			].join("\n"),
+			"info",
+		);
+	});
+
+	subcommand("end", "Close this session's Strategium run", async (_arg, ctx, sid) => {
+		ctx.ui.notify(await finish(sid, ctx), "info");
+		// undefined removes the line; "" would leave an empty one under the other plugins' lines.
+		ctx.ui.setStatus("strategium", undefined);
 	});
 
 	const onSession = async (_e: unknown, ctx: SessionCtx) => {
@@ -744,7 +780,7 @@ export default function (pi: ExtensionAPI) {
 						beat(sid);
 					} catch (err) {
 						ctx.ui.notify(
-							err instanceof NewShift ? `Strategium: ${own.key} needs today's booking; /strategium resume <min>` : `Strategium: ${err instanceof Error ? err.message : String(err)}`,
+							err instanceof NewShift ? `Strategium: ${own.key} needs today's booking; /strategium-resume <min>` : `Strategium: ${err instanceof Error ? err.message : String(err)}`,
 							"warning",
 						);
 					}
@@ -809,7 +845,7 @@ export default function (pi: ExtensionAPI) {
 		const name = e.toolName.replace(/^_+/, "");
 		// A question to the user during a run needs them at the keyboard, wherever they are.
 		if (name === "ask" && run) {
-			const err = signal("attention", `${run.key}: your answer is needed`);
+			const err = alert(sidOf(ctx), "attention", `${run.key}: your answer is needed`);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 		}
 		if (!run?.repo) return;

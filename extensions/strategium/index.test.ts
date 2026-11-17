@@ -70,6 +70,7 @@ afterEach(() => {
 	setSystemTime();
 	delete process.env.STRATEGIUM_STATE_DIR;
 	delete process.env.STRATEGIUM_GLYPHS;
+	delete process.env.STRATEGIUM_NOTIFY;
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -83,6 +84,8 @@ function setup(sid = "sess-0001", shared?: string) {
 	// No test sounds the user's real alarm.
 	delete process.env.STRATEGIUM_ALARM;
 	delete process.env.STRATEGIUM_GLYPHS;
+	// The alarm tests need notifications on; the tests of the default turn them off again.
+	process.env.STRATEGIUM_NOTIFY = "1";
 	const { pi, tools, commands, handlers, sent, calls, activeTools, setActive } = fakePi();
 	// What the footer and the alert had seen the moment each notification went out.
 	const seen: { via: string; footer: string; events: number }[] = [];
@@ -103,12 +106,14 @@ function setup(sid = "sess-0001", shared?: string) {
 	};
 	const call = async (params: Record<string, unknown>) => (await tool.execute("id", params, undefined, undefined, ctx)).content[0].text;
 	const command = (args: string) => commands.strategium.handler(args, ctx);
+	// The /strategium-<name> commands.
+	const sub = (name: string, args = "") => commands[`strategium-${name}`].handler(args, ctx);
 	// The session starts (it draws the footer), and the Captain updates the todo.
 	const start = () => handlers.session_start[0]({}, ctx);
 	const todo = (phases: unknown) => handlers.tool_result[0]({ toolName: "todo", isError: false, details: { phases } }, ctx);
 	// The last footer line, without its colours.
 	const shown = () => (footer.at(-1) ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-	return { dir, call, command, sent, calls, seen, footer, notes, commands, handlers, ctx, start, todo, shown, activeTools, setActive };
+	return { dir, call, command, sub, sent, calls, seen, footer, notes, commands, handlers, ctx, start, todo, shown, activeTools, setActive };
 }
 
 describe("the strategium tool", () => {
@@ -214,11 +219,61 @@ describe("the /strategium command", () => {
 		expect(sent[0]).not.toContain("strategium-strategium-");
 	});
 
-	test("unquoted free text is refused, so it never clashes with a subcommand", async () => {
+	test("unquoted free text is refused: it would read as a key and a theatre", async () => {
 		const { command, sent, notes } = setup();
 		await command("make the header blue");
 		expect(sent).toEqual([]);
-		expect(notes[0]).toContain("put a free objective in quotes");
+		expect(notes[0]).toContain('"free text"');
+	});
+});
+
+// Sounds and desktop notifications: off unless STRATEGIUM_NOTIFY or the session turns them on.
+// A missing alarm binary makes the call fail at once, so a note "the alarm failed" proves the alarm ran, with no waiting.
+describe("notifications", () => {
+	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
+	const ran = (notes: string[]) => notes.some(n => n.includes("the alarm failed"));
+	afterEach(() => delete process.env.STRATEGIUM_ALARM);
+
+	test("off by default: an unset STRATEGIUM_NOTIFY runs no alarm and says attention was silent", async () => {
+		const s = setup();
+		delete process.env.STRATEGIUM_NOTIFY;
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		expect(await s.call({ action: "attention", message: "seal ready" })).toBe(
+			"ATTENTION seal ready (silent: notifications are off; /strategium-config notify on)",
+		);
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "end" });
+		expect(ran(s.notes)).toBe(false);
+	});
+
+	test("/strategium-config notify on wins over STRATEGIUM_NOTIFY=0, for this session only", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_NOTIFY = "0";
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		await s.sub("config", "notify on");
+		expect(s.notes.at(-1)).toContain("notify: on (this session)");
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "end" });
+		expect(ran(s.notes)).toBe(true);
+		const otherNotes: string[] = [];
+		await s.commands["strategium-config"].handler("", fakeCtx("sess-0002", s.dir, otherNotes));
+		expect(otherNotes[0]).toContain("notify: off (STRATEGIUM_NOTIFY)");
+	});
+
+	test("notify off from the tool silences the session even with STRATEGIUM_NOTIFY=1", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		expect(await s.call({ action: "notify", on: false })).toBe("NOTIFY off (this session)");
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "end" });
+		expect(ran(s.notes)).toBe(false);
+		expect(await s.call({ action: "notify" })).toBe("NOTIFY off (this session)");
+	});
+
+	test("config refuses anything but notify on|off", async () => {
+		const s = setup();
+		await s.sub("config", "theatre acme");
+		expect(s.notes[0]).toContain("config takes notify on|off");
 	});
 });
 
@@ -470,11 +525,11 @@ describe("the Captain's limits", () => {
 			expect(await lines(1)).toEqual(["theme|K-1: run ended"]);
 		});
 
-		test("/strategium end plays it too", async () => {
+		test("/strategium-end plays it too", async () => {
 			const s = setup();
 			const lines = recorder(s.dir);
 			await s.call({ action: "begin", key: "K-1" });
-			await s.command("end");
+			await s.sub("end");
 			expect(await lines(1)).toEqual(["theme|K-1: run ended"]);
 			expect(s.activeTools()).toContain("edit");
 		});
@@ -583,7 +638,7 @@ describe("resume after a reload", () => {
 		const s = setup();
 		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 		await s.call({ action: "begin", key: "dark-mode" });
-		await s.command("pause");
+		await s.sub("pause");
 		await reload(s);
 		expect(await s.call({ action: "status" })).toContain("stopped");
 		expect(s.shown()).toContain("paused");
@@ -607,8 +662,8 @@ describe("resume after a reload", () => {
 		await s.call({ action: "begin", key: "K-1", booked: 120 });
 		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 		await s.handlers.session_start[0]({}, s.ctx);
-		expect(s.notes).toContain("Strategium: K-1 needs today's booking; /strategium resume <min>");
-		expect(s.shown()).toContain("new day: /strategium resume");
+		expect(s.notes).toContain("Strategium: K-1 needs today's booking; /strategium-resume <min>");
+		expect(s.shown()).toContain("new day: /strategium-resume");
 	});
 
 	test("an untimed run shut down yesterday runs again today", async () => {
@@ -630,8 +685,8 @@ describe("resume after a reload", () => {
 		await s.handlers.session_shutdown[0]({}, s.ctx);
 		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 		await s.handlers.session_start[0]({}, s.ctx);
-		expect(s.notes).toContain("Strategium: K-1 needs today's booking; /strategium resume <min>");
-		expect(s.shown()).toContain("new day: /strategium resume");
+		expect(s.notes).toContain("Strategium: K-1 needs today's booking; /strategium-resume <min>");
+		expect(s.shown()).toContain("new day: /strategium-resume");
 	});
 
 	test("the mark is spent: a pause after the resume survives the next reload", async () => {
@@ -639,7 +694,7 @@ describe("resume after a reload", () => {
 		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 		await s.call({ action: "begin", key: "dark-mode" });
 		await reload(s);
-		await s.command("pause");
+		await s.sub("pause");
 		await reload(s);
 		expect(await s.call({ action: "status" })).toContain("stopped");
 	});
@@ -648,7 +703,7 @@ describe("resume after a reload", () => {
 		const s = setup();
 		setSystemTime(new Date(2026, 10, 15, 23, 30, 0));
 		await s.call({ action: "begin", key: "dark-mode" });
-		await s.command("pause");
+		await s.sub("pause");
 		await s.handlers.session_shutdown[0]({}, s.ctx);
 		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 		await s.handlers.session_start[0]({}, s.ctx);

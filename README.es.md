@@ -104,16 +104,17 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 /strategium "texto libre" [theatre]   trabaja un objetivo con tus palabras
 /strategium @ruta [theatre]           trabaja un fichero de spec o un plan aprobado
 /strategium <clave> [theatre]         trabaja un ticket que conoce el teatro, o un nombre corto
-/strategium pause                     para el reloj
-/strategium resume [booked]           continúa (una run con reserva pasa los minutos de hoy en un día nuevo)
-/strategium add <min>                 corrección manual, en negativo para restar
-/strategium status                    todas las runs y su tiempo
-/strategium end                       cierra la run
+/strategium-pause                     para el reloj
+/strategium-resume [booked]           continúa (una run con reserva pasa los minutos de hoy en un día nuevo)
+/strategium-add <min>                 corrección manual, en negativo para restar
+/strategium-status                    todas las runs y su tiempo
+/strategium-config [notify on|off]    ajustes; notify on|off para esta sesión
+/strategium-end                       cierra la run
 ```
 
 El texto libre necesita las comillas, para no chocar nunca con un subcomando. Sin ticket, el librarian propone los criterios de aceptación y tú los confirmas en el sello Plan, que no se puede saltar.
 
-Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. Cerrar una sesión pausa su run y libera la reserva; al reabrir esa sesión la recupera y la reanuda sola, salvo que tú la hubieras pausado (`/strategium pause`, acción `stop`, el stand down). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy. El Capitán no puede editar el repositorio de la run: mientras la run está abierta `edit` y `ast_edit` se ocultan de la sesión principal, `write` está bloqueado dentro del repo de la run y de su carpeta `<repo>-worktrees`, los ejecutores de tests y builds por bash y las escrituras de ficheros por bash están bloqueados (solo pasan las redirecciones a `$TEMP`), se rechazan los agentes fuera del plantel de Strategium y se rechazan los battle-brothers hasta que se declaren los slices del plan (`strategium` `slices`; los slices en paralelo no pueden compartir un fichero).
+Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. Cerrar una sesión pausa su run y libera la reserva; al reabrir esa sesión la recupera y la reanuda sola, salvo que tú la hubieras pausado (`/strategium-pause`, acción `stop`, el stand down). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy. El Capitán no puede editar el repositorio de la run: mientras la run está abierta `edit` y `ast_edit` se ocultan de la sesión principal, `write` está bloqueado dentro del repo de la run y de su carpeta `<repo>-worktrees`, los ejecutores de tests y builds por bash y las escrituras de ficheros por bash están bloqueados (solo pasan las redirecciones a `$TEMP`), se rechazan los agentes fuera del plantel de Strategium y se rechazan los battle-brothers hasta que se declaren los slices del plan (`strategium` `slices`; los slices en paralelo no pueden compartir un fichero).
 
 ### Ticketing (opcional)
 
@@ -129,6 +130,9 @@ Una run **sin temporizador** sigue contando su tiempo (`status`, `report`), sin 
 | `STRATEGIUM_ALARM` | comando que se ejecuta cuando suena el temporizador, p. ej. `bun /ruta/al/strategium/alarm/vox.ts`; entrecomilla una ruta con espacios (`bun "C:/mis herramientas/vox.ts"`) |
 | `STRATEGIUM_STATE_DIR` | dónde vive el estado de las sesiones (por defecto `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | `1` para usar glifos de Nerd Font en lugar de emoji |
+| `STRATEGIUM_NOTIFY` | `1` activa los sonidos y las notificaciones de escritorio; apagado por defecto; `/strategium-config notify on` u `off` lo cambia para la sesión |
+
+`/strategium-config` muestra los valores efectivos: el aviso con su origen, el teatro, la alarma, los glifos y el directorio de estado.
 
 El estado (un JSONL por día más las reservas de las runs) vive fuera del repositorio, así que nunca se commitean datos de sesión.
 
