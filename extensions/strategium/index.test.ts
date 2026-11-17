@@ -90,6 +90,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
+	delete process.env.STRATEGIUM_ARCHMAGOS;
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1359,7 +1360,7 @@ describe("tools, begin and end", () => {
 });
 
 describe("the Captain's hooks never throw and keep their wording", () => {
-	const ROSTER = ["scout", "librarian", "battle-brother", "veteran", "apothecary", "inquisitor", "security-reviewer", "sonic", "task"];
+	const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "security-reviewer", "sonic", "task"];
 	type Verdict = { block?: true; reason?: string } | undefined;
 	const disjoint = [
 		{ id: "S1", parallel: true, files: ["a.ts"] },
@@ -1417,7 +1418,8 @@ describe("the Captain's hooks never throw and keep their wording", () => {
 
 	test("the whole roster passes, anything else is refused with the roster in the reason", async () => {
 		const { spawn } = await run(disjoint);
-		for (const name of ROSTER) expect(spawn(name)).toBeUndefined();
+		// The archmagos has its own guards (setting, mark, librarians, budget): see "the archmagos guard".
+		for (const name of ROSTER.filter(n => n !== "archmagos")) expect(spawn(name)).toBeUndefined();
 		expect(spawn("code-reviewer")).toEqual({
 			block: true,
 			reason: `Strategium: during a run only these agents may be spawned: ${ROSTER.join(", ")}.`,
@@ -1448,6 +1450,199 @@ describe("the Captain's hooks never throw and keep their wording", () => {
 		expect(tool("write", undefined)).toBeUndefined();
 		expect(tool("write", null)).toBeUndefined();
 		expect(tool("edit", undefined)).toBeUndefined();
+	});
+});
+
+describe("the archmagos setting", () => {
+	const runOf = (dir: string) => JSON.parse(readFileSync(join(dir, "runs", "sess-0001.json"), "utf8"));
+
+	test("off by default; STRATEGIUM_ARCHMAGOS turns it on (1, true, on, yes) and status reports it", async () => {
+		const s = setup();
+		expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)");
+		await s.call({ action: "begin", key: "K-1" });
+		expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)");
+		for (const v of ["1", "true", "on", "YES", " 1 "]) {
+			process.env.STRATEGIUM_ARCHMAGOS = v;
+			expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS on (STRATEGIUM_ARCHMAGOS)");
+		}
+		process.env.STRATEGIUM_ARCHMAGOS = "0";
+		expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)");
+		// Also with no run at all.
+		const bare = setup("sess-0002");
+		process.env.STRATEGIUM_ARCHMAGOS = "1";
+		expect(await bare.call({ action: "status" })).toEndWith("ARCHMAGOS on (STRATEGIUM_ARCHMAGOS)");
+	});
+
+	test("STRATEGIUM_ARCHMAGOS only turns on for a whole word, not a part of one", async () => {
+		const s = setup();
+		for (const v of ["xon", "maybe-yes", "10", "1x", "yesno"]) {
+			process.env.STRATEGIUM_ARCHMAGOS = v;
+			expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)");
+		}
+	});
+
+	test("/strategium-config archmagos on wins over STRATEGIUM_ARCHMAGOS=0, for this session only", async () => {
+		process.env.STRATEGIUM_ARCHMAGOS = "0";
+		const s = setup();
+		await s.sub("config", "archmagos on");
+		expect(s.notes.at(-1)).toContain("archmagos: on (this session)");
+		expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS on (this session)");
+		const other = setup("sess-0002");
+		await other.sub("config");
+		expect(other.notes.at(-1)).toContain("archmagos: off (STRATEGIUM_ARCHMAGOS)");
+		// Off wins over the env too, and a bad value is refused with the full usage.
+		process.env.STRATEGIUM_ARCHMAGOS = "1";
+		await s.sub("config", "archmagos off");
+		expect(s.notes.at(-1)).toContain("archmagos: off (this session)");
+		await s.sub("config", "archmagos maybe");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off");
+	});
+
+	test("the archmagos setting follows an approved plan to the new session", async () => {
+		const s = setup("sess-A");
+		await s.call({ action: "begin", key: "K-1" });
+		const notes: string[] = [];
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer, notes);
+		await s.handlers.session_start[0]({}, ctx);
+		await s.commands["strategium-config"].handler("archmagos on", ctx);
+		await s.handlers.plan_review_requested[0]({ sessionId: "sess-A" }, ctx);
+		await s.handlers.plan_review_resolved[0]({ sessionId: "sess-A", choice: "execute" }, ctx);
+		sm.sid = "sess-B";
+		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
+		await s.commands["strategium-config"].handler("", ctx);
+		expect(notes.at(-1)).toContain("archmagos: on (this session)");
+	});
+
+	test("begin archmagos: true marks the run, a same-key begin keeps it, archmagos: false clears it", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		expect(runOf(s.dir).archmagos).toBeUndefined();
+		await s.call({ action: "begin", key: "K-1", archmagos: true });
+		expect(runOf(s.dir).archmagos).toBe(true);
+		await s.call({ action: "begin", key: "K-1" });
+		expect(runOf(s.dir).archmagos).toBe(true);
+		await s.call({ action: "begin", key: "K-1", archmagos: false });
+		expect(runOf(s.dir).archmagos).toBeUndefined();
+	});
+});
+
+describe("the archmagos guard", () => {
+	type Verdict = { block?: true; reason?: string } | undefined;
+	const OFF =
+		"Strategium: the archmagos is off in this session. The user turns it on with /strategium-config archmagos on or STRATEGIUM_ARCHMAGOS=1; until then the lead librarian merges the plan.";
+	const UNMARKED =
+		"Strategium: this run was not marked for the archmagos in Muster (strategium begin with archmagos: true); the lead librarian merges the plan.";
+	const waits = (n: number) =>
+		`Strategium: the archmagos integrates the librarians' parts: at least 2 librarians of this run must have finished first; ${n} have.`;
+	const AGAIN = "Strategium: this run already spawned its archmagos. Only a redraft allows one more: call strategium action redraft first.";
+	const SPENT = "Strategium: this run already spawned its archmagos and spent its one redraft.";
+
+	// A run with no repo and no squads: the librarians are counted all the same.
+	async function run(opts: { on?: boolean; marked?: boolean } = {}) {
+		const { on = true, marked = true } = opts;
+		if (on) process.env.STRATEGIUM_ARCHMAGOS = "1";
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1", ...(marked ? { archmagos: true } : {}) });
+		const spawn = (agent: string) => s.handlers.before_subagent_spawn[0]({ agent }, s.ctx) as Verdict;
+		// The host's task result: the agent of each item and the status and id it allocated.
+		const result = (items: [string, string, string][]) => {
+			const input = { tasks: items.map(([agent]) => ({ agent })) };
+			const details = { progress: items.map(([, id, status], index) => ({ index, id, status })) };
+			for (const h of s.handlers.tool_result) h({ toolName: "task", input, details, isError: false }, s.ctx);
+		};
+		const jobs = (status: string, ...ids: string[]) =>
+			s.handlers.context[0]({ type: "context", messages: [{ role: "custom", details: { jobs: ids.map(label => ({ jobId: `j-${label}`, type: "task", status, label })) } }] }, s.ctx);
+		const two = () => result([["librarian", "L1", "completed"], ["librarian", "L2", "completed"]]);
+		return { s, spawn, result, jobs, two };
+	}
+
+	test("archmagos is refused while the setting is off, with the reason", async () => {
+		const { spawn, two } = await run({ on: false });
+		two();
+		expect(spawn("archmagos")).toEqual({ block: true, reason: OFF });
+	});
+
+	test("archmagos is refused on a run not marked in Muster", async () => {
+		const { spawn, two } = await run({ marked: false });
+		two();
+		expect(spawn("archmagos")).toEqual({ block: true, reason: UNMARKED });
+	});
+
+	test("archmagos waits for 2 finished librarians of the run, before any squads", async () => {
+		const { spawn, result, jobs } = await run();
+		expect(spawn("archmagos")).toEqual({ block: true, reason: waits(0) });
+		// Running librarians, a finished scout and a failed librarian never count.
+		result([["librarian", "L1", "running"], ["librarian", "L2", "pending"], ["scout", "S1", "completed"], ["librarian", "L4", "failed"]]);
+		expect(spawn("archmagos")).toEqual({ block: true, reason: waits(0) });
+		// A job that failed is not finished work.
+		jobs("failed", "L1");
+		expect(spawn("archmagos")).toEqual({ block: true, reason: waits(0) });
+		// A running librarian that completes in a later context counts.
+		jobs("completed", "L2");
+		expect(spawn("archmagos")).toEqual({ block: true, reason: waits(1) });
+		// One that completed in its task result counts too.
+		result([["librarian", "L3", "completed"]]);
+		expect(spawn("archmagos")).toBeUndefined();
+	});
+
+	test("a second archmagos is refused, also in the same task call", async () => {
+		const { spawn, two } = await run();
+		two();
+		expect(spawn("archmagos")).toBeUndefined();
+		expect(spawn("archmagos")).toEqual({ block: true, reason: AGAIN });
+		expect(spawn("archmagos")).toEqual({ block: true, reason: AGAIN });
+	});
+
+	test("a redraft allows exactly one more archmagos", async () => {
+		const none = setup("sess-0009");
+		expect(await none.call({ action: "redraft" })).toBe("ERROR no active run in this session");
+		const { s, spawn, two } = await run();
+		two();
+		expect(spawn("archmagos")).toBeUndefined();
+		expect(await s.call({ action: "redraft" })).toBe("REDRAFT K-1: one more archmagos may be spawned");
+		expect(spawn("archmagos")).toBeUndefined();
+		expect(spawn("archmagos")).toEqual({ block: true, reason: SPENT });
+		expect(await s.call({ action: "redraft" })).toBe("ERROR the redraft of K-1 is spent (1 per run)");
+	});
+
+	test("a completed job of an id that is no running librarian changes nothing", async () => {
+		const { spawn, result, jobs } = await run();
+		result([["librarian", "L1", "running"], ["scout", "S1", "running"]]);
+		jobs("completed", "S1", "X9");
+		expect(spawn("archmagos")).toEqual({ block: true, reason: waits(0) });
+		jobs("completed", "L1");
+		expect(spawn("archmagos")).toEqual({ block: true, reason: waits(1) });
+	});
+
+	test("a librarian already done stays done when a later result reports it running", async () => {
+		const { spawn, result, two } = await run();
+		two();
+		result([["librarian", "L1", "running"], ["librarian", "L2", "pending"]]);
+		expect(spawn("archmagos")).toBeUndefined();
+	});
+
+	test("librarians reported running in a task result become done on their completed jobs", async () => {
+		const { spawn, result, jobs } = await run();
+		result([["librarian", "L1", "running"], ["librarian", "L2", "pending"]]);
+		expect(spawn("archmagos")).toEqual({ block: true, reason: waits(0) });
+		jobs("completed", "L1", "L2");
+		expect(spawn("archmagos")).toBeUndefined();
+	});
+
+	test("the guards run in order: setting, mark, librarians, budget", async () => {
+		const off = await run({ on: false, marked: false });
+		expect(off.spawn("archmagos")).toEqual({ block: true, reason: OFF });
+		const unmarked = await run({ marked: false });
+		expect(unmarked.spawn("archmagos")).toEqual({ block: true, reason: UNMARKED });
+		// Budget spent with no librarian on record: the librarians reason comes first.
+		const { s, spawn, two } = await run();
+		two();
+		expect(spawn("archmagos")).toBeUndefined();
+		const file = join(s.dir, "runs", "sess-0001.json");
+		const saved = JSON.parse(readFileSync(file, "utf8"));
+		delete saved.librarians;
+		writeFileSync(file, JSON.stringify(saved));
+		expect(spawn("archmagos")).toEqual({ block: true, reason: waits(0) });
 	});
 });
 
