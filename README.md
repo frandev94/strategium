@@ -11,7 +11,7 @@ The plugin ships three things:
 | Part | What it is |
 |---|---|
 | **Extension** | the `strategium` tool and the `/strategium` command: per-session claims, edit guard, optional booking timer |
-| **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, plus the bundled `scout` and `sonic` |
+| **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, `archmagos`, plus the bundled `scout` and `sonic` |
 | **Skills** | `strategium`, `strategium-alarm`, `strategium-release`, `strategium-setup`, `strategium-study`, `strategium-ui` |
 
 ## How a run works
@@ -24,7 +24,7 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 
 1. **Muster** — the objective, the seals and, with ticketing, the booking.
 2. **Auspex** — scouts map the code the objective touches.
-3. **Scriptorium** — one librarian writes a spec, 1–5 squads and a Merge bar; when the objective splits into areas, one librarian per area, then a lead merges the parts.
+3. **Scriptorium** — one librarian writes a spec, 1–5 squads and a Merge bar; when the objective splits into areas, one librarian per area, then a lead merges the parts (with the Archmagos Dominus marked in Muster, an `archmagos` integrates the parts instead of the lead).
 4. **Deployment** — one branch for the run, the squads declared with their files; each isolated agent works in its own omp checkout.
 5. **Skirmish** — a `battle-brother` implements each squad test-first; an `apothecary` tries to break the new tests, only on squads with new logic and within a fixed budget.
 6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar; a `sonic` runs the repo's checks.
@@ -53,7 +53,7 @@ flowchart TB
   R["State per day<br/>JSONL + claims per run"] --- C
 ```
 
-Station names, agent names and alerts have their own voice. Tickets, commit messages and merge requests stay plain and professional.
+Station names, agent names and alerts have their own voice; the `archmagos` speaks in that voice only in chat and todo, never in the plan file. Tickets, commit messages and merge requests stay plain and professional.
 
 ### Going back
 
@@ -62,7 +62,7 @@ A run goes back instead of forward, and every return has a trigger, a target and
 | Return | Trigger | Target | Budget |
 |---|---|---|---|
 | **Recon** | the map of the code is wrong | one more `scout` with that exact gap | 1 per run |
-| **Redraft** | the plan is wrong, or a squad's acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work (with areas, only the affected area, then the lead merges again) | 1 per run |
+| **Redraft** | the plan is wrong, or a squad's acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work (with areas, only the affected area, then the lead merges again; on a run marked for the Archmagos Dominus, one new `archmagos` re-integrates only that area) | 1 per run |
 | **Rally** | the code is wrong: check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with every open finding ID in one brief, never the previous report | 2 rounds per squad, then one `veteran` run |
 | **Retrial** | the fixed code needs a new look | the `inquisitor` again on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item |
 | **Stand down** | the budget is spent, or the failure is not in the code | you, with the open items | — |
@@ -108,7 +108,7 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 /strategium-resume [booked]         continue (a timed run passes today's booked minutes on a new day)
 /strategium-add <min>               manual correction, negative to subtract
 /strategium-status                  every run and its time
-/strategium-config [notify on|off | idle <min>]  show the effective settings; notify on|off or the idle minutes for this session
+/strategium-config [notify on|off | idle <min> | archmagos on|off]  show the effective settings; notify on|off, the idle minutes or archmagos on|off for this session
 /strategium-end                     close the run
 ```
 
@@ -136,8 +136,9 @@ An **untimed** run still counts its time (`status`, `report`), with no alerts, n
 | `STRATEGIUM_GLYPHS` | `1` to use Nerd Font glyphs instead of emoji |
 | `STRATEGIUM_NOTIFY` | `1` turns on sounds and desktop notifications; off by default; `/strategium-config notify on` or `off` overrides it for the session |
 | `STRATEGIUM_IDLE_MIN` | whole minutes without work before the run's clock pauses; default `3`, `0` turns it off; `/strategium-config idle <min>` overrides it for the session |
+| `STRATEGIUM_ARCHMAGOS` | `1` lets a run mark the Archmagos Dominus in Muster; off by default; `/strategium-config archmagos on` or `off` overrides it for the session |
 
-`/strategium-config` shows the effective values: the notify setting and the idle minutes, each with its source, the theatre, the alarm, the glyphs and the state directory.
+`/strategium-config` shows the effective values: the notify setting, the idle minutes and the archmagos setting, each with its source, the theatre, the alarm, the glyphs and the state directory.
 
 The state (one JSONL per day plus the run claims) stays outside the repository, so no session data is ever committed.
 
