@@ -108,7 +108,7 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 /strategium-resume [booked]         continue (a timed run passes today's booked minutes on a new day)
 /strategium-add <min>               manual correction, negative to subtract
 /strategium-status                  every run and its time
-/strategium-config [notify on|off | idle <min> | archmagos on|off | cockpit on|off]  show the effective settings; notify on|off, the idle minutes or archmagos on|off or cockpit on|off for this session
+/strategium-config [notify on|off | idle <min> | archmagos on|off]  show the effective settings; notify on|off, the idle minutes or archmagos on|off for this session
 /strategium-cockpit                 open the cockpit (also Alt+C)
 /strategium-end                     close the run
 ```
@@ -121,7 +121,7 @@ Idle pause: when no agent works and nothing waits to run, the run's clock pauses
 
 Footer: the station shows as `<station> › <task>`, where `<task>` is the active todo task without its agent tag, cut to 32 characters with `…`. A seal keeps `⏳ seal <name>`; a return shows `↩ <station> › <task>`. During Muster steps 0-2 no run exists yet, so there is no footer; from `begin` on it shows e.g. `Muster › Begin run and theatre status`.
 
-Cockpit: the widget is off by default; `/strategium-config cockpit on` (or `STRATEGIUM_COCKPIT=1`) turns it on for the session and `cockpit off` removes it. While this session has a run open and the widget is on, a compact widget (up to 6 lines) sits above the editor with the key, the clock, the seals and the latest chronicle entries. `/strategium-cockpit` (or Alt+C) opens the full overlay; Esc or `q` closes it. Each box and where it comes from: STRATEGOS is the station and task from the todo; LIBRARIAN, APOTHECARY and INQUISITOR are the todo tasks tagged with that role (active, last completed, or idle), and the LIBRARIAN box also shows the Archmagos planner's tasks (tagged `[archmagos]`); each SQUAD box comes from the declared squads and the agents spawned and returned (battle-brother, or ‡ VETERAN after an escalation). A granted seal turns ✠ and, with notifications on, plays the `done` sound. The chronicle is kept in memory only, so an omp restart clears it. Colours are truecolor when the terminal supports it and 256-colour otherwise. The cockpit cannot show test or mutant counts: the agents' events happen inside subagents, which the parent does not see. The cockpit draws Nerd Font glyphs with `STRATEGIUM_GLYPHS=1` and plain symbols otherwise, never emoji.
+Cockpit: `/strategium-cockpit` (or Alt+C) opens the overlay while this session has a run open: the key, the clock and the seals on top, then only the active station (the first phase with a running todo task; else the first with a waiting one) as a title (`▶` running, `↶` after a return, `○` waiting; a waiting seal adds `· seal <name> awaits you`), one box per agent type present in it, and the latest chronicle entries; Esc or `q` closes it. The boxes, in this order, take the todo tasks with that tag and the agents deployed in that station: CAPTAIN, SCOUTS, LIBRARIANS (also `[archmagos]`), BATTLE-BROTHERS (also `[veteran]`), APOTHECARIES, INQUISITOR, SECURITY-REVIEWER, SONIC, ADEPTS (`[task]`) and SEAL. A box shows only when the station has a task or an agent of its type. Each line has its state mark: `▶` running, `✓` done, `○` waiting, `✗` failed; BATTLE-BROTHERS lines carry `†` (or `‡` for a veteran), and add one `squad <id> …` line per declared squad. A granted seal turns ✠ and, with notifications on, plays the `done` sound. The chronicle and the list of deployed agents are kept in memory only, so an omp restart clears them; an agent launched from eval never reports an end, so it stays `▶` until the run key changes. Colours are truecolor when the terminal supports it and 256-colour otherwise. The cockpit cannot show test or mutant counts: the agents' events happen inside subagents, which the parent does not see. The cockpit draws Nerd Font glyphs with `STRATEGIUM_GLYPHS=1` and plain symbols otherwise, never emoji.
 
 ### Ticketing (optional)
 
@@ -139,10 +139,9 @@ An **untimed** run still counts its time (`status`, `report`), with no alerts, n
 | `STRATEGIUM_GLYPHS` | `1` to use Nerd Font glyphs instead of emoji |
 | `STRATEGIUM_NOTIFY` | `1` turns on sounds and desktop notifications; off by default; `/strategium-config notify on` or `off` overrides it for the session |
 | `STRATEGIUM_IDLE_MIN` | whole minutes without work before the run's clock pauses; default `3`, `0` turns it off; `/strategium-config idle <min>` overrides it for the session |
-| `STRATEGIUM_COCKPIT` | `1` shows the widget above the editor while a run is open; off by default; `/strategium-config cockpit on` or `off` overrides it for the session; Alt+C opens the overlay either way |
 | `STRATEGIUM_ARCHMAGOS` | `1` lets a run mark the Archmagos Dominus in Muster; off by default; `/strategium-config archmagos on` or `off` overrides it for the session |
 
-`/strategium-config` shows the effective values: the notify setting, the idle minutes, the archmagos setting and the cockpit setting, each with its source, the theatre, the alarm, the glyphs and the state directory.
+`/strategium-config` shows the effective values: the notify setting, the idle minutes and the archmagos setting, each with its source, the theatre, the alarm, the glyphs and the state directory.
 
 The state (one JSONL per day plus the run claims) stays outside the repository, so no session data is ever committed.
 
