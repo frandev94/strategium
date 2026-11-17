@@ -1,6 +1,6 @@
 ---
 name: strategium
-description: Use when running /strategium <objective> or asked to work an objective in orchestrator mode (a ticket, a spec or plan file, or free text); the main session only plans, delegates to scout/librarian/battle-brother/apothecary/inquisitor/sonic agents (and the archmagos, when the run is marked for it in Muster) and runs the user's seals. Ticketing (a ticket, its booking and the booking timer) is optional; a theatre skill adds the organisation's systems.
+description: Use when running /strategium <objective> or asked to work an objective in orchestrator mode (a ticket, a spec or plan file, or free text); the main session only plans, delegates to scout/librarian/battle-brother/apothecary/inquisitor/confessor/sonic agents (and the archmagos, when the run is marked for it in Muster) and runs the user's seals. Ticketing (a ticket, its booking and the booking timer) is optional; a theatre skill adds the organisation's systems.
 ---
 
 # Strategium (orchestrator workflow for one objective)
@@ -41,7 +41,7 @@ With no theatre, skip all external writes: the delivery is the branch with its c
 
 - Plugin `agent-skills@addy-agent-skills`, which provides the skills the agents autoload and the briefs name. Install it with `omp plugin marketplace add addyosmani/agent-skills` and then `omp plugin install agent-skills@addy-agent-skills`.
 - Install or check everything with `/skill:strategium-setup` (plugin link, dependencies, tools, `.env`).
-- Agents name a Claude model first, then fall back (another vendor where it helps, then the role aliases `@plan`, `@task`, `@slow`; the bundled agents use `@smol`), so each machine's `modelRoles` decides when the preferred provider is missing.
+- Agents name a Claude model first, then fall back (another vendor where it helps, then the role aliases `@plan`, `@task`, `@slow`; the bundled agents use `@smol`), so each machine's `modelRoles` decides when the preferred provider is missing. The `confessor` is the exception: it names `gpt-6-astra` first on purpose, so the second review comes from another model family when available.
 - Optional: env `STRATEGIUM_THEATRE` (default theatre for `/strategium`) and env `STRATEGIUM_ALARM` (a command to run as the alarm sound); env `STRATEGIUM_NOTIFY` is off by default (`1` turns the sounds and desktop notifications on); env `STRATEGIUM_ARCHMAGOS` is off by default (`1` lets a run mark the Archmagos Dominus in Muster; the user sets it per session with `/strategium-config archmagos on|off`); env `STRATEGIUM_IDLE_MIN` (whole minutes, default 3, `0` off) pauses the run's clock after that many idle minutes.
 
 ## Captain's rules
@@ -56,7 +56,7 @@ With no theatre, skip all external writes: the delivery is the branch with its c
   Never work around it.
 - Allowed for the Captain: read and grep; git read commands; `git switch`, `git merge`, `git reset --soft`, `git reset` to unstage, `git add` and `git commit` on the run's branch; `git clone` into `$TEMP` and the repo's install command there, for the apothecary; the `strategium` tool; eval `agent()` for the apothecary; writing `local://` files and the theatre's records.
 - After a compaction or an omp restart, rebuild where the run is from the todo, `local://<KEY>-plan.md` and `local://<KEY>-plan-*.md`, `local://<KEY>-auspex.md`, the agents' `agent://<id>` outputs and `git log origin/main..HEAD`, never from memory.
-- Every todo item starts with the agent that does it: `[captain]`, `[scout]`, `[librarian]`, `[archmagos]`, `[battle-brother]`, `[veteran]`, `[apothecary]`, `[inquisitor]`, `[security-reviewer]`, `[sonic]`, `[task]`, `[seal]` (waits for the user). Todo phases are the stations below, in order, each named after its station (`Muster`, `Auspex`…): the footer shows the active phase's name as the station. A return reopens the phase of the station it returns to (see Returns).
+- Every todo item starts with the agent that does it: `[captain]`, `[scout]`, `[librarian]`, `[archmagos]`, `[battle-brother]`, `[veteran]`, `[apothecary]`, `[inquisitor]`, `[confessor]`, `[security-reviewer]`, `[sonic]`, `[task]`, `[seal]` (waits for the user). Todo phases are the stations below, in order, each named after its station (`Muster`, `Auspex`…): the footer shows the active phase's name as the station. A return reopens the phase of the station it returns to (see Returns).
 - Build the todo with `todo.ts` from this skill's directory, never by hand: it tags each task with its agent, checks the agent names and the duplicates the todo tool would refuse, and owns the glyph table. Write the stations as unindented lines and their tasks indented below (`agent: text` or `[agent] text`), then pass each printed JSON line to `todo` as it is:
 
   ```bash
@@ -87,6 +87,7 @@ With no theatre, skip all external writes: the delivery is the branch with its c
   | Veteran | `veteran` | claude-sonnet-5-5 / high (`@task`); escalation only |
   | Apothecary | `apothecary` | claude-sonnet-5-5 / medium (`@task`) |
   | Inquisitor | `inquisitor` | claude-opus-5-5 / high (gpt-6-astra, then `@slow`) |
+  | Confessor | `confessor` | gpt-6-astra / high (claude-opus-5-5, then `@slow`); read-only; only when the plan flags it |
   | Sentinel | `security-reviewer` | bundled, `@slow` unless overridden |
   | Servitor | `sonic` | `@smol` / medium |
   | Adept | `task` | `@task` / auto |
@@ -143,15 +144,16 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 |---|---|---|---|
 | **Recon** | the map of the code is wrong: a file the scouts missed, a helper that is not there | one more `scout` with that exact gap, never a full sweep again | 1 per run |
 | **Redraft** | the plan is wrong: scope beyond the ticket, squads that do not cover the acceptance criteria, or a squad whose acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work; with areas, only the affected area is redrafted (its librarian, or a new one given its part file and the gap) and the lead integrates again; with the archmagos, the Captain calls `strategium` `redraft` after the area's part is redrafted and one new `archmagos` gets the current plan, the redrafted part and the gap; what already passed stays as it is | 1 per run |
-| **Rally** | the code is wrong: acceptance check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with every open finding ID in one brief, never the previous report | 2 rounds per squad, then one `veteran` run |
-| **Retrial** | the fixed code needs a new look | the `inquisitor` again on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item, then the item stays FAIL |
+| **Penance** | the code is wrong: acceptance check red, apothecary survivors or fuzz crashes, BLOCKING findings | a `battle-brother` fix run with every open finding ID in one brief, never the previous report; it first reproduces each finding, and one it cannot reproduce comes back NOT REPRODUCED | 2 rounds per squad, then one `veteran` run |
+| **Retrial** | the fixed code needs a new look | the `inquisitor` again (the `confessor` re-checks its own IDs) on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item, then the item stays FAIL |
 | **Stand down** | the budget is spent, or the failure is not in the code: the ticket is wrong, the environment is broken, a theatre is missing | the user, with the open items and what was tried | — |
 
-- **Rally or redraft:** if the code can satisfy the squad's acceptance check as written, it is a rally; if it cannot, the squad was cut wrong and it is a redraft. Never spend a rally on a squad that cannot pass.
+- **Penance or redraft:** if the code can satisfy the squad's acceptance check as written, it is a penance; if it cannot, the squad was cut wrong and it is a redraft. Never spend a penance on a squad that cannot pass.
 - **A return past a granted seal breaks the seal**: ask for it again when the flow reaches it (`[seal] UI (2)`). The user may waive it when the change does not touch what was sealed.
 - **Reopen the station you return to**: `todo append` its new tasks to that phase (`todo.ts --append`) and `todo start` the first of them, so the panel shows the run going back. Never reopen a completed task.
 - **A return never rewrites what already passed**: Merge bar items that were PASS stay PASS.
-- A squad rewritten by a redraft is a new squad with its own rally budget.
+- **NOT REPRODUCED:** the Captain drops each finding that comes back so. It costs no round: a penance whose findings all come back NOT REPRODUCED does not count against the 2-round budget.
+- A squad rewritten by a redraft is a new squad with its own penance budget.
 
 ## Stations
 
@@ -171,7 +173,7 @@ Muster opens by building only its own phase: write the five Muster tasks of the 
 
 ### 1. Auspex [scout]
 - **[theatre]** Find the repo. Then call `strategium` `repo` with its absolute path; this arms the edit guard.
-- 1–3 `scout` agents in one `task` batch, distinct focuses: code paths the ticket touches; existing helpers, patterns and tests to reuse; repo conventions (MR template, commit rules, i18n, test and check commands, repo skills, line endings (`.gitattributes`, `git config core.autocrlf`, `git ls-files --eol` grouped by extension)). Briefs give file ranges for anything large (transcripts, logs, generated files), never "read the whole file".
+- 1–3 `scout` agents in one `task` batch, distinct focuses: code paths the ticket touches; existing helpers, patterns and tests to reuse; repo conventions (MR template, commit rules, i18n, test and check commands, the property-test library if any, repo skills, line endings (`.gitattributes`, `git config core.autocrlf`, `git ls-files --eol` grouped by extension)). Briefs give file ranges for anything large (transcripts, logs, generated files), never "read the whole file".
 - One `sonic` runs the repo's check commands once on `origin/main` and reports exact numbers and every failing test by name. The Captain records them under `## Baseline` in the auspex file. Briefs pass those failures as known, and the Merge bar compares against them.
 - The Captain merges their outputs into `local://<KEY>-auspex.md`.
 - Split: when the plan will need 2 or more areas that barely share files, or more than about 5 squads, the Captain divides the objective into areas from the scouts' map and writes `## Areas` in the auspex file: one row per area (kebab-case name, files, the acceptance criteria it covers). Every criterion belongs to exactly one area. Below that, one librarian, as now. A run marked for the archmagos always writes `## Areas` with at least 2 areas, because the plugin refuses the archmagos before 2 librarians have finished.
@@ -194,29 +196,32 @@ Muster opens by building only its own phase: write the five Muster tasks of the 
 - No drop pods: omp gives every isolated agent its own checkout and lands its work on the run's branch (`task.isolation.enabled: true`, `task.isolation.merge: branch`).
 
 ### 4. Skirmish [battle-brother] [apothecary]
-- Parallel squads: one `task` call with one `battle-brother` item per parallel squad, every item `isolated: true` and `name` set to the squad id, so the plugin knows which squad each agent builds. The plugin refuses a builder (a rally or veteran included) on files another running builder is changing: wait for that agent first. Sequential squads: one isolated battle-brother at a time, after the parallel ones landed. Rally and veteran runs are isolated too.
+- Parallel squads: one `task` call with one `battle-brother` item per parallel squad, every item `isolated: true` and `name` set to the squad id, so the plugin knows which squad each agent builds. The plugin refuses a builder (a penance or veteran included) on files another running builder is changing: wait for that agent first. Sequential squads: one isolated battle-brother at a time, after the parallel ones landed. Penance and veteran runs are isolated too.
 - Each brief: `Read local://<KEY>-plan.md; build squad <id>` plus what the plan cannot know: the baseline's known failures, the auspex conventions, and the interfaces of squads already landed. Quote the user's strings verbatim; never paraphrase the plan. Also the extra skills to read (`strategium-ui` for UI squads; `source-driven-development` for external APIs/libraries; `debugging-and-error-recovery` when fixing failures; plus the theatre's **Extra skills** for that kind of squad), and "commit nothing".
 - omp commits each isolated run on its task branch and cherry-picks it onto the run's branch when it ends. A result reporting a merge or stash conflict → one `task` agent resolves it on the run's branch.
 - When a squad has landed, run one apothecary from eval. With `task.isolation.enabled` true (`omp config get task.isolation.enabled`), isolated and never applied, so its mutations never reach the branch: `agent("<brief>", agent="apothecary", isolated=True, apply=False)`. Otherwise (isolation is off) the Captain first commits the landed squad as a wip commit so `<base>..<head>` exists, then clones the run's branch into a fresh directory: `git clone -q --branch <branch> <repo> "$TEMP/<KEY>-apothecary-<n>"`, then `bun install --frozen-lockfile --cwd "$TEMP/<KEY>-apothecary-<n>"` (or the repo's install command run in that directory), and runs `agent("<brief>", agent="apothecary")` without `isolated`/`apply`. The apothecary never clones by itself. The apothecary deletes the clone at the end, after its restore proof. Skip it for a squad that is docs or prompts only, or that adds under about 30 lines of new production logic (comments, imports, types, logging and constants don't count): the inquisitor covers it, and the Captain says so in one line when the squad lands.
   - The brief has the squad's diff range `<base>..<head>`, the spec's acceptance criteria for that squad, the new or changed test files, the production paths and the repo's test command from the auspex file. Never the battle-brother's report. When isolation is off, the brief (campaign and retrial) says `isolation is off`, gives the clone path as the only working directory, and gives the workspace path so the apothecary never touches it.
   - Effort is medium, also for a retrial after a veteran run.
-- Survivors or weak tests → a rally: a `battle-brother` fix run with the apothecary table (see Returns). After the rally, the apothecary retrial (medium like any other run) gets the previous survivors table (with the mutant diffs) and the fix range, and re-checks only those survivors and the lines the fix touched.
+  - A squad with `input: untrusted (<entry point>)` always gets the apothecary, even under the skip above; its brief carries the entry point, and says `fuzz only` when the skip applies.
+- Survivors, weak tests or fuzz crashes → a penance: a `battle-brother` fix run with the apothecary table (see Returns); a survivor's reproduction is a test that kills its mutant, and a fuzz crash enters the penance as an `F<n>` finding. After the penance, the apothecary retrial (medium like any other run) gets the previous survivors table (with the mutant diffs), the crash table (`F<n>` with exact inputs) if any, and the fix range, and re-checks only those survivors, those crash inputs and the lines the fix touched.
 - A squad that fails twice (acceptance check red, or two fix runs that leave survivors) → one `veteran` run (same brief, plus both failure reports). Still failing → stand down and show the user. Medium is the default for code because higher effort did not reliably pass more tests in published coding benchmarks; high is spent only where medium visibly failed.
-- A squad whose acceptance check cannot be satisfied as written is not a rally: redraft it (see Returns) instead of spending another round.
+- A squad whose acceptance check cannot be satisfied as written is not a penance: redraft it (see Returns) instead of spending another round.
 - `[seal] Commit` only if chosen in Muster.
 
 ### 5. Inquisition [inquisitor] → seal UI
-- One `inquisitor` on `origin/main..HEAD` with `local://<KEY>-plan.md`. Add one `security-reviewer` in the same batch only if the diff touches auth, external input, secrets or network exposure.
-- BLOCKING findings or FAIL items → a rally with all of them (by finding ID), then a retrial by the inquisitor on those IDs and the fix range. Max 2 rounds; then the item stays FAIL and the run shows the open items (see Returns). A new finding during a retrial opens no new round and goes to the user at Extraction.
-- A FAIL item that shows the squad's acceptance check was wrong, not the code, is a redraft (see Returns), not another rally.
+- One `inquisitor` on `origin/main..HEAD` with `local://<KEY>-plan.md`. When the plan's first line under the Merge bar is `Review: confessor — <reason>` (the librarian or archmagos sets it; the Captain never decides it), run one `confessor` in the same batch and add a `[confessor] Review` todo item. Add one `security-reviewer` in the same batch only if the diff touches auth, external input, secrets or network exposure.
+- BLOCKING findings or FAIL items → a penance with all of them (by finding ID; a NOT REPRODUCED finding is dropped), then a retrial by the inquisitor on those IDs and the fix range. Max 2 rounds; then the item stays FAIL and the run shows the open items (see Returns). A new finding during a retrial opens no new round and goes to the user at Extraction.
+- Reconciliation when the confessor ran: a Merge bar item fails if either reviewer FAILs it. Findings on the same file and overlapping lines with the same defect become one finding, with the higher severity and both IDs. A BLOCKING finding from either reviewer goes to the penance. In a retrial each reviewer re-checks only its own IDs (`B`/`N` the inquisitor, `CB`/`CN` the confessor); when both have open IDs they run in one batch, under the same 2-round budget.
+- A FAIL item that shows the squad's acceptance check was wrong, not the code, is a redraft (see Returns), not another penance.
 - One `sonic` agent runs the repo's full check commands (from the auspex file) and reports exact numbers.
 - One `task` agent, read-only: "Read skill://strategium-study and follow it for <KEY> on origin/main..HEAD; write to local://<KEY>-study.md; change no files", plus the theatre's additions for study notes.
 - `[seal] UI` (objectives that change UI): run the app and open the changed screen in a visible browser so the user can click through it.
 - After the seal, turn the wip commits into Conventional Commits: `git reset --soft origin/main`, `git reset -q`, then per commit `git add <its paths>` and `git commit` (git signs per its config). Never the eval `commit` namespace: with `core.autocrlf` it mixes line endings. With the Commit seal, ask before these commits.
 
 ### 6. Extraction [captain] → seal MR
-- **[theatre]** Delivery: MR title and description, including a `## Merge bar` checklist ticked from the inquisitor's PASS items; show it to the user: `[seal] MR`. After the OK: push once, open the MR as draft, watch the pipeline as a background bash job, and mark it ready when green.
+- **[theatre]** Delivery: MR title and description, including a `## Merge bar` checklist ticked from the PASS items of the inquisitor (and the confessor, when it ran); show it to the user: `[seal] MR`. After the OK: push once, open the MR as draft, watch the pipeline as a background bash job, and mark it ready when green.
 - With no theatre: nothing is pushed. Show the branch and its `git log`; that is the delivery.
+- Show the user every dropped NOT REPRODUCED finding with its attempt (the test or command and its output), and every `properties: no library` a squad reported (it covered its invariants with example tests; the user decides).
 - If omp left task branches (see the auspex `## Isolation probe`), delete this run's: `git branch -D omp/task/<agent id>` for each agent of the run.
 
 ### 7. Debrief [captain]
