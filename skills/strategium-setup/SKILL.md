@@ -67,6 +67,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 | `STRATEGIUM_STATE_DIR` | optional | leave unset (default `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | optional | `1` only if the user's terminal font is a Nerd Font (ask; show one glyph, e.g. U+F05DA, and ask whether it renders as a book); else leave unset and todo tags stay `[name]` |
 | `STRATEGIUM_NOTIFY` | recommended | `0` (off; sounds and desktop notifications on with `1`; per session `/strategium-config notify on` or `off`) |
+| `STRATEGIUM_IDLE_MIN` | optional | `3` (minutes of idle before the run's clock pauses; `0` off; per session `/strategium-config idle <min>`) |
 | `OBSIDIAN_VAULT_PATH` | only with obsidian-second-brain | absolute path of the vault; check the folder exists and contains `.obsidian/` |
 
 - Ask the user for the values in one `ask` form (text inputs prefilled with the defaults; the vault path has no default).

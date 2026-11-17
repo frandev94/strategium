@@ -108,13 +108,15 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 /strategium-resume [booked]           continúa (una run con reserva pasa los minutos de hoy en un día nuevo)
 /strategium-add <min>                 corrección manual, en negativo para restar
 /strategium-status                    todas las runs y su tiempo
-/strategium-config [notify on|off]    ajustes; notify on|off para esta sesión
+/strategium-config [notify on|off | idle <min>]    ajustes; notify on|off o los minutos de inactividad para esta sesión
 /strategium-end                       cierra la run
 ```
 
 El texto libre necesita las comillas, para no chocar nunca con un subcomando. Sin ticket, el librarian propone los criterios de aceptación y tú los confirmas en el sello Plan, que no se puede saltar.
 
 Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. Cerrar una sesión pausa su run y libera la reserva; al reabrir esa sesión la recupera y la reanuda sola, salvo que tú la hubieras pausado (`/strategium-pause`, acción `stop`, el stand down). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy. El Capitán no puede editar el repositorio de la run: mientras la run está abierta `edit` y `ast_edit` se ocultan de la sesión principal, `write` está bloqueado dentro del repo de la run y de su carpeta `<repo>-worktrees`, los ejecutores de tests y builds por bash y las escrituras de ficheros por bash están bloqueados (solo pasan las redirecciones a `$TEMP` y `local://`), se rechazan los agentes fuera del plantel de Strategium y se rechazan los battle-brothers hasta que se declaren los squads del plan (`strategium` `slices`; los squads en paralelo no pueden compartir un fichero). Cuando el plan se aprueba en el modo plan de omp, "Approve and execute" abre una sesión nueva y la run se va con ella; un `/new` normal deja la run en su propia sesión.
+
+Pausa por inactividad: cuando ningún agente trabaja y nada espera para ejecutarse, el reloj de la run se pausa tras `STRATEGIUM_IDLE_MIN` minutos de inactividad (3 por defecto), suena el sonido `idle` (con las notificaciones activas) y el pie la muestra pausada. El siguiente turno la reanuda sola; el Capitán no llama a `start`. Una run que pausaste a mano (`/strategium-pause`, acción `stop`, el stand down) nunca se reanuda sola. Una pregunta o una revisión de plan que te espera cuenta como actividad: el reloj sigue corriendo y la alarma `attention` te avisa (con las notificaciones activas). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy.
 
 ### Ticketing (opcional)
 
@@ -131,14 +133,15 @@ Una run **sin temporizador** sigue contando su tiempo (`status`, `report`), sin 
 | `STRATEGIUM_STATE_DIR` | dónde vive el estado de las sesiones (por defecto `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | `1` para usar glifos de Nerd Font en lugar de emoji |
 | `STRATEGIUM_NOTIFY` | `1` activa los sonidos y las notificaciones de escritorio; apagado por defecto; `/strategium-config notify on` u `off` lo cambia para la sesión |
+| `STRATEGIUM_IDLE_MIN` | minutos enteros sin trabajo antes de pausar el reloj de la run; por defecto `3`, `0` lo desactiva; `/strategium-config idle <min>` lo cambia para la sesión |
 
-`/strategium-config` muestra los valores efectivos: el aviso con su origen, el teatro, la alarma, los glifos y el directorio de estado.
+`/strategium-config` muestra los valores efectivos: el aviso y los minutos de inactividad, cada uno con su origen, el teatro, la alarma, los glifos y el directorio de estado.
 
 El estado (un JSONL por día más las reservas de las runs) vive fuera del repositorio, así que nunca se commitean datos de sesión.
 
 ### La alarma
 
-`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras y sin dependencias. Los niveles son `50`, `80`, `100`, `done`, `attention` y `theme` (15 s, suena cuando termina la run de la sesión, o a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
+`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras y sin dependencias. Los niveles son `50`, `80`, `100`, `done`, `attention`, `idle` (un sonido corto de espera cuando el reloj se pausa por inactividad) y `theme` (15 s, suena cuando termina la run de la sesión, o a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
 
 ```
 bun alarm/vox.ts 100 "la reserva se ha agotado"

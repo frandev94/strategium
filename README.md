@@ -108,13 +108,15 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 /strategium-resume [booked]         continue (a timed run passes today's booked minutes on a new day)
 /strategium-add <min>               manual correction, negative to subtract
 /strategium-status                  every run and its time
-/strategium-config [notify on|off]  show the effective settings; notify on|off for this session
+/strategium-config [notify on|off | idle <min>]  show the effective settings; notify on|off or the idle minutes for this session
 /strategium-end                     close the run
 ```
 
 Free text needs the quotes, so it never clashes with a subcommand. Without a ticket, the librarian proposes the acceptance criteria and you confirm them at seal Plan, which cannot be skipped.
 
 Every session owns one run, claimed atomically, so several omp sessions can work on different objectives at the same time. Closing a session pauses its run and releases the claim; reopening that session takes it back and resumes it on its own, unless you had paused it (`/strategium-pause`, action `stop`, the stand down). A timed run on a new day stays paused until today's booking is given. The Captain cannot edit the run's repository: while the run is open `edit` and `ast_edit` are hidden from the main session, `write` is blocked inside the run's repo and its `<repo>-worktrees` folder, bash test and build runners and bash file writes are blocked (only redirects into `$TEMP` and `local://` pass), agents outside the Strategium roster are refused, and battle-brothers are refused until the plan's squads are declared (`strategium` `slices`; parallel squads must not share a file). When the plan is approved in omp's plan mode, "Approve and execute" opens a fresh session and the run moves with it; a plain `/new` leaves the run with its own session.
+
+Idle pause: when no agent works and nothing waits to run, the run's clock pauses after `STRATEGIUM_IDLE_MIN` idle minutes (default 3), the `idle` sound plays (with notifications on) and the footer shows it paused. The next turn resumes it on its own; the Captain does not call `start`. A run you paused by hand (`/strategium-pause`, action `stop`, the stand down) never resumes by itself. A question or a plan review waiting for you counts as busy: the clock keeps running and the `attention` alarm calls you (with notifications on). A timed run on a new day stays paused until today's booking is given.
 
 ### Ticketing (optional)
 
@@ -131,14 +133,15 @@ An **untimed** run still counts its time (`status`, `report`), with no alerts, n
 | `STRATEGIUM_STATE_DIR` | where the session state lives (default `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | `1` to use Nerd Font glyphs instead of emoji |
 | `STRATEGIUM_NOTIFY` | `1` turns on sounds and desktop notifications; off by default; `/strategium-config notify on` or `off` overrides it for the session |
+| `STRATEGIUM_IDLE_MIN` | whole minutes without work before the run's clock pauses; default `3`, `0` turns it off; `/strategium-config idle <min>` overrides it for the session |
 
-`/strategium-config` shows the effective values: the notify setting with its source, the theatre, the alarm, the glyphs and the state directory.
+`/strategium-config` shows the effective values: the notify setting and the idle minutes, each with its source, the theatre, the alarm, the glyphs and the state directory.
 
 The state (one JSONL per day plus the run claims) stays outside the repository, so no session data is ever committed.
 
 ### The alarm
 
-`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done`, `attention` and `theme` (15 s, plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
+`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done`, `attention`, `idle` (a short stand-by sound when the clock pauses after idle) and `theme` (15 s, plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
 
 ```
 bun alarm/vox.ts 100 "the booking is over"
