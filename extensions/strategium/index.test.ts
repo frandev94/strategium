@@ -935,17 +935,19 @@ describe("the run follows an approved plan", () => {
 		);
 		const before = JSON.parse(readFileSync(file, "utf8"));
 		expect(before).toMatchObject({ untimed: true, hidden: ["edit"], repo: s.dir, launched: true });
+		// omp's order: the review closes (old session id) before the new session exists, and the host restores
+		// the plan-mode tool set both before and after the switch.
 		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		s.setActive([...s.activeTools(), "edit"]);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "execute" }, ctx);
 		sm.sid = "sess-B";
 		await emit(s, "session_switch", { reason: "new", previousSessionFile: "a.jsonl" }, ctx);
 		const moved = () => JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.json"), "utf8"));
-		// Before the review closes: the move itself carries every field, hidden tools included.
-		expect(moved()).toEqual({ ...before, sid: "sess-B" });
-		// omp gives the tools back with the plan-mode tool set, then reports the review as closed.
+		// The move carries every field; omp cancelled the old session's agents, so none is running and S1 is stopped.
+		expect(moved()).toEqual({ ...before, sid: "sess-B", agents: {}, stopped: [...before.stopped, slice] });
 		s.setActive([...s.activeTools(), "edit"]);
-		await emit(s, "plan_review_resolved", { sessionId: "sess-B", choice: "execute" }, ctx);
+		await emit(s, "before_agent_start", { prompt: "plan approved" }, ctx);
 		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-B");
-		expect(moved()).toEqual({ ...before, sid: "sess-B" });
 		expect(files(s.dir, "sess-A")).toEqual({ run: false, beat: false });
 		expect(files(s.dir, "sess-B")).toEqual({ run: true, beat: true });
 		expect(s.activeTools()).not.toContain("edit");
@@ -1006,12 +1008,37 @@ describe("the run follows an approved plan", () => {
 		const { sm, ctx } = shared("sess-A", s.dir, s.footer);
 		await s.handlers.session_start[0]({}, ctx);
 		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "execute" }, ctx);
 		sm.sid = "sess-B";
 		await emit(s, "session_switch", { reason: "new" }, ctx);
-		await emit(s, "plan_review_resolved", { sessionId: "sess-B", choice: "execute" }, ctx);
+		await emit(s, "before_agent_start", { prompt: "plan approved" }, ctx);
 		expect(files(s.dir, "sess-B").run).toBe(false);
 		expect(existsSync(lockPath(s.dir, "K-1"))).toBe(false);
 		expect(s.activeTools()).toContain("edit");
+	});
+
+	test("a claim error during the move does not break the session switch", async () => {
+		const { s, sm, ctx } = await owner();
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "execute" }, ctx);
+		// Another session took the key over meanwhile.
+		writeFileSync(lockPath(s.dir, "K-1"), "sess-X");
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new" }, ctx);
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-X");
+		// The switch did not throw, and nothing moved to the new session.
+		expect(files(s.dir, "sess-B").run).toBe(false);
+	});
+
+	test("an approval that never opened a new session does not move a later /new", async () => {
+		const { s, sm, ctx } = await owner();
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "execute" }, ctx);
+		await emit(s, "before_agent_start", { prompt: "plan approved" }, ctx);
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new" }, ctx);
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-A");
+		expect(files(s.dir, "sess-B").run).toBe(false);
 	});
 
 	test("closing a plan review hides edit again", async () => {

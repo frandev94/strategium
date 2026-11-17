@@ -87,13 +87,13 @@ function writeAtomic(file: string, data: string): void {
 	const tmp = `${file}.${process.pid}.tmp`;
 	writeFileSync(tmp, data, { mode: 0o600 });
 	// Windows refuses the rename for a moment while a scanner or indexer holds the target or the temp file open.
-	// ponytail: ~1 s of bounded retries (blocking, like the sync write); a longer lock still throws.
+	// ponytail: ~1 s of bounded retries, Windows only (blocking, like the sync write); a longer lock still throws.
 	for (let tries = 0; ; tries++) {
 		try {
 			return renameSync(tmp, file);
 		} catch (err) {
 			const code = (err as NodeJS.ErrnoException).code;
-			if (tries >= 20 || !(code === "EPERM" || code === "EBUSY" || code === "EACCES")) throw err;
+			if (process.platform !== "win32" || tries >= 20 || !(code === "EPERM" || code === "EBUSY" || code === "EACCES")) throw err;
 			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
 		}
 	}
@@ -897,17 +897,25 @@ export default function (pi: ExtensionAPI) {
 		live = ctx;
 		const sid = sidOf(ctx);
 		liveSid = sid;
+		// The mark is spent by the first switch after the review closed.
+		const reviewed = reviewSid;
+		reviewSid = undefined;
 		// The fresh session of an approved plan takes over the run of the session that asked for the review.
-		if (e.reason === "new" && prevSid && prevSid === reviewSid && prevSid !== sid && !readRun(sid)) {
+		if (e.reason === "new" && prevSid && prevSid === reviewed && prevSid !== sid && !readRun(sid)) {
 			const moved = ownRun(prevSid);
 			if (moved) {
-				claim(stateDir(), moved.key, sid, prevSid);
-				writeRun({ ...moved, sid });
-				rmSync(runFile(prevSid), { force: true });
-				rmSync(beatFile(prevSid), { force: true });
-				beat(sid);
-				const n = notifyBySession.get(prevSid);
-				if (n !== undefined) notifyBySession.set(sid, n);
+				try {
+					claim(stateDir(), moved.key, sid, prevSid);
+					// omp cancelled the old session's background agents: none runs any more.
+					writeRun(settle({ ...moved, sid }, {}, Object.values(moved.agents ?? {})));
+					rmSync(runFile(prevSid), { force: true });
+					rmSync(beatFile(prevSid), { force: true });
+					beat(sid);
+					const n = notifyBySession.get(prevSid);
+					if (n !== undefined) notifyBySession.set(sid, n);
+				} catch {
+					// Another session took the key meanwhile: the run stays where it is.
+				}
 			}
 		}
 		// A session without a run does not inherit the previous session's hidden tools.
@@ -962,14 +970,24 @@ export default function (pi: ExtensionAPI) {
 		if (ctx?.agent?.kind === "sub") return;
 		reviewSid = ownRun(e.sessionId) ? e.sessionId : undefined;
 	});
-	// omp has restored the plan-mode tool set by now: hide the editing tools again.
-	pi.on("plan_review_resolved", async (_e, ctx) => {
+	// "Approve and execute" closes the review before the new session exists, so its mark stays until the switch
+	// (onSession spends it); omp restores the plan-mode tool set only after that, see before_agent_start. Any other
+	// choice stays in this session: omp has restored the tools by now, hide the editing tools again.
+	pi.on("plan_review_resolved", async (e, ctx) => {
 		if (ctx?.agent?.kind === "sub") return;
+		if (e.choice === "execute") return;
 		reviewSid = undefined;
 		const run = ownRun(sidOf(ctx));
 		if (!run) return;
 		const hid = await hideCaptainTools();
 		writeRun({ ...run, hidden: [...new Set([...(run.hidden ?? []), ...hid])] });
+	});
+	// The first turn of an approved plan starts after omp's last tool restore: hide the editing tools once more.
+	// A mark still open here means no new session came, so a later /new must not move the run.
+	pi.on("before_agent_start", async (_e, ctx) => {
+		if (ctx?.agent?.kind === "sub") return;
+		reviewSid = undefined;
+		if (ownRun(sidOf(ctx))?.hidden?.length) await hideCaptainTools();
 	});
 	// One line at startup, like other plugins print, so the user sees the plugin is on and how it is set.
 	pi.on("session_start", (_e: unknown, ctx: SessionCtx) => {
