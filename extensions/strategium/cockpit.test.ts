@@ -305,11 +305,22 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 		expect(text()).toMatch(/SEALS —/);
 	});
 
-	test("seal symbols and tones: granted gold ✠, waiting gold ○, pending iron ○", () => {
+	test("seal symbols and tones: granted gold ✠, waiting gold ○, pending iron ○, one space apart in the widget", () => {
 		const p = phases(["[seal] A", "completed"], ["[seal] B", "in_progress"], ["[seal] C", "pending"]);
 		const head = renderWidget(cockpitView(input({ phases: p })), 80, TRUE)[0];
-		expect(head).toContain(`${GOLD}✠\x1b[39m${GOLD}○\x1b[39m${IRON}○\x1b[39m`);
+		expect(head).toContain(`${GOLD}✠\x1b[39m ${GOLD}○\x1b[39m ${IRON}○\x1b[39m`);
 		expect(text({ phases: p })).toContain("✠ A  ○ B  ○ C");
+	});
+
+	test("nerd seals: U+F047A granted, U+F051F waiting, pending stays iron ○, nothing touches or overflows", () => {
+		const p = phases(["[seal] A", "completed"], ["[seal] B", "in_progress"], ["[seal] C", "pending"]);
+		const view = cockpitView(input({ phases: p, glyphs: true }));
+		const head = renderWidget(view, 80, TRUE)[0];
+		expect(head).toContain(`${GOLD}\u{f047a} \x1b[39m ${GOLD}\u{f051f} \x1b[39m ${IRON}○\x1b[39m`);
+		expect(text({ phases: p, glyphs: true })).toContain("\u{f047a}  A  \u{f051f}  B  ○ C");
+		for (const w of [40, 60, 71]) for (const l of renderWidget(view, w, TRUE)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(w);
+		for (const w of [72, 100]) for (const l of renderCockpit(view, w, 0, TRUE)) expect(Bun.stringWidth(l)).toBe(w);
+		for (const w of [40, 60]) for (const l of renderCockpit(view, w, 0, TRUE)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(w);
 	});
 
 	test.each([
@@ -324,6 +335,41 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 	test("width 71 is stacked, 72 is framed", () => {
 		expect(text({}, 71)).not.toContain("╔");
 		expect(text({}, 72)).toContain("╔");
+	});
+
+	test.each([72, 100, 120])("every framed overlay line is exactly %i cells wide", width => {
+		for (const l of renderCockpit(cockpitView(busy()), width, 0, TRUE)) expect(Bun.stringWidth(l)).toBe(width);
+	});
+
+	test.each([100, 101])("boxes of rows with 1, 2 and 3 squads all end at the same column at width %i", width => {
+		for (const n of [1, 2, 3]) {
+			const slices = Array.from({ length: n }, (_, i) => ({ id: String.fromCharCode(97 + i) }));
+			const rows = renderCockpit(cockpitView(input({ slices })), width, 0, TRUE).map(plain).filter(l => /^║ [┌╔│║└╚]/.test(l));
+			expect(rows.length).toBeGreaterThan(0);
+			for (const l of rows) {
+				// the row's last box starts after the final "border space start" boundary; its own right edge must sit at width - 3
+				const start = [...l.slice(0, width - 2).matchAll(/[┐╗│║┘╝] ([┌╔│║└╚])/g)].at(-1)![1];
+				expect(l[width - 3]).toBe({ "┌": "┐", "╔": "╗", "│": "│", "║": "║", "└": "┘", "╚": "╝" }[start]!);
+				expect(l.length).toBe(width);
+			}
+		}
+	});
+
+	test.each([
+		[100, [31, 31, 32]],
+		[101, [31, 31, 33]],
+	])("the leftover width goes to the last squad box at width %i", (width, widths) => {
+		const slices = ["a", "b", "c"].map(id => ({ id }));
+		const top = renderCockpit(cockpitView(input({ slices })), width, 0, TRUE).map(plain).find(l => l.includes("SQUAD a"))!;
+		expect(top.match(/┌[^┐]*┐/g)!.map(b => b.length)).toEqual(widths);
+	});
+
+	test("the Archmagos planner shows in the planning box", () => {
+		const lines = text({ phases: phases(["[archmagos] merging the plan", "in_progress"]) }).split("\n");
+		const rowOf = (title: string) => lines.slice(lines.findIndex(l => l.includes(title))).slice(0, 3).join("\n");
+		expect(rowOf("LIBRARIAN")).toContain("▶ merging the plan");
+		expect(rowOf("APOTHECARY")).not.toContain("merging the plan");
+		expect(rowOf("INQUISITOR")).not.toContain("merging the plan");
 	});
 
 	test("stacked chronicle shows exactly the 8 newest, newest first", () => {
