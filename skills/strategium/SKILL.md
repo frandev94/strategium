@@ -55,14 +55,18 @@ With no theatre, skip all external writes: the delivery is the branch with its c
 
   Never work around it.
 - Allowed for the Captain: read and grep; git read commands; `git switch`, `git merge`, `git reset --soft`, `git reset` to unstage, `git add` and `git commit` on the run's branch; the `strategium` tool; eval `agent()` for the apothecary; writing `local://` files and the theatre's records.
-- After a compaction or an omp restart, rebuild where the run is from the todo, `local://<KEY>-plan.md`, `local://<KEY>-auspex.md`, the agents' `agent://<id>` outputs and `git log origin/main..HEAD`, never from memory.
+- After a compaction or an omp restart, rebuild where the run is from the todo, `local://<KEY>-plan.md` and `local://<KEY>-plan-*.md`, `local://<KEY>-auspex.md`, the agents' `agent://<id>` outputs and `git log origin/main..HEAD`, never from memory.
 - Every todo item starts with the agent that does it: `[captain]`, `[scout]`, `[librarian]`, `[battle-brother]`, `[veteran]`, `[apothecary]`, `[inquisitor]`, `[security-reviewer]`, `[sonic]`, `[task]`, `[seal]` (waits for the user). Todo phases are the stations below, in order, each named after its station (`Muster`, `Auspex`…): the footer shows the active phase's name as the station. A return reopens the phase of the station it returns to (see Returns).
 - Build the todo with `todo.ts` from this skill's directory, never by hand: it tags each task with its agent, checks the agent names and the duplicates the todo tool would refuse, and owns the glyph table. Write the stations as unindented lines and their tasks indented below (`agent: text` or `[agent] text`), then pass each printed JSON line to `todo` as it is:
 
   ```bash
   bun "$(realpath skill://strategium)/todo.ts" <<'EOF'
   Muster
-    captain: Muster
+    captain: Requirements and theatre skills
+    captain: Objective and booking
+    seal: Seals
+    captain: Begin run and theatre status
+    captain: Build the todo
   Auspex
     scout: Map the code the objective touches
   Scriptorium
@@ -80,7 +84,7 @@ With no theatre, skip all external writes: the delivery is the branch with its c
   | Librarian | `librarian` | claude-opus-5-5 / high (`@plan`) |
   | Battle-Brother | `battle-brother` | claude-sonnet-5-5 / medium (`@task`) |
   | Veteran | `veteran` | claude-sonnet-5-5 / high (`@task`); escalation only |
-  | Apothecary | `apothecary` | claude-sonnet-5-5 / high (`@task`) |
+  | Apothecary | `apothecary` | claude-sonnet-5-5 / medium (`@task`) |
   | Inquisitor | `inquisitor` | claude-opus-5-5 / high (gpt-6-astra, then `@slow`) |
   | Sentinel | `security-reviewer` | bundled, `@slow` unless overridden |
   | Servitor | `sonic` | `@smol` / medium |
@@ -99,6 +103,8 @@ With no theatre, skip all external writes: the delivery is the branch with its c
 Only a timed run (one begun with `booked`) has a booking. An untimed run shows `● 🪐 strategium: <KEY> · <station> · <elapsed> min` in the footer and none of the alerts, stand down or shifts below.
 
 Tool `strategium`: `begin | repo | start | stop | add | status | report | end | attention | slices | notify`. User commands: `/strategium <objective>` starts a run; `/strategium-pause`, `/strategium-resume`, `/strategium-add`, `/strategium-status`, `/strategium-config`, `/strategium-end`. The footer shows `● 🪐 strategium: <KEY> · <station> · <stage> <elapsed>/<booked> min (<pct>%)`: the dot is green under 80 %, yellow from 80 %, red from 100 %, grey `○ … paused` while paused; the stage icon follows the booking: blue world under 50 %, amber meteor from 50 %, orange fire from 80 %, red nuke from 100 %. The station comes from the todo: `↩ <station>` when the run returned there, and `⏳ seal <name>` in yellow when a seal waits for the user. With `STRATEGIUM_GLYPHS=1` the icons are Nerd Font glyphs. Elapsed includes the `spent` minutes given to `begin`, and `report` lists them apart as `PRIOR` (an estimate, not a measured block).
+
+Footer contract: the station part is `<station> › <task>`, where `<task>` is the active todo task's text without its agent tag, cut to 32 characters with `…`. A seal keeps `⏳ seal <name>`; a return shows `↩ <station> › <task>`. No run exists during Muster steps 0-2, so there is no footer until `begin` (step 3); from then on it shows e.g. `Muster › Begin run and theatre status`.
 
 Parallel runs (timed or not): each omp session owns one run (its objective, edit guard, footer and alerts), held through an atomic claim on its `<KEY>`. To work two objectives at once, run each in its own omp session; both count their time at the same time. A `begin` for a key another session holds fails and names that session's id. Closing a session pauses its run and releases the claim; reopening that session takes it back and resumes it on its own, unless the user had paused it (`/strategium-pause`, action `stop`, the stand down). A timed run on a new day stays paused until today's booking is given. While the claim is released, another session's `begin` can take it. Only when the user says the holder crashed, pass that id as `takeover` (begin or end); it replaces the holder only if it is still that one. A session whose run was taken over drops it and stops acting on it. `status` lists every run; `report` adds an `OVERLAP` line with the minutes two runs ran at once, which the user splits before booking time.
 
@@ -121,7 +127,7 @@ Every minute the plugin checks the booking. At 50 %, 80 % and 100 % it plays a s
 ## Resume (objective already in progress)
 
 When the work has commits or uncommitted work from an earlier session, run the stations with these changes:
-- Muster: record the starting state (`git log origin/main..HEAD --oneline`, `git status --short | wc -l`) in `local://<KEY>-auspex.md`.
+- Muster: in **Objective and booking**, record the starting state (`git log origin/main..HEAD --oneline`, `git status --short | wc -l`) in `local://<KEY>-auspex.md`.
 - Auspex: scouts map what is done and what is left, not the whole codebase. Large transcripts are read by tail range only (e.g. `:-300`), and a scout writes its partial result before reading more.
 - Scriptorium: the librarian plans only the remaining work; squad 1 finishes and verifies the in-flight work so the tree is green first.
 - Deployment: no new branch over a dirty tree; on a dirty tree, squads run non-isolated in place, one at a time.
@@ -135,7 +141,7 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 | Return | Trigger | Target | Budget |
 |---|---|---|---|
 | **Recon** | the map of the code is wrong: a file the scouts missed, a helper that is not there | one more `scout` with that exact gap, never a full sweep again | 1 per run |
-| **Redraft** | the plan is wrong: scope beyond the ticket, squads that do not cover the acceptance criteria, or a squad whose acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work; what already passed stays as it is | 1 per run |
+| **Redraft** | the plan is wrong: scope beyond the ticket, squads that do not cover the acceptance criteria, or a squad whose acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work; with areas, only the affected area is redrafted (its librarian, or a new one given its part file and the gap) and the lead integrates again; what already passed stays as it is | 1 per run |
 | **Rally** | the code is wrong: acceptance check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with every open finding ID in one brief, never the previous report | 2 rounds per squad, then one `veteran` run |
 | **Retrial** | the fixed code needs a new look | the `inquisitor` again on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item, then the item stays FAIL |
 | **Stand down** | the budget is spent, or the failure is not in the code: the ticket is wrong, the environment is broken, a theatre is missing | the user, with the open items and what was tried | — |
@@ -149,27 +155,36 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 ## Stations
 
 ### 0. Muster [captain]
-0. Requirements: `read skill://spec-driven-development`, `skill://planning-and-task-breakdown`, `skill://test-driven-development`, `skill://incremental-implementation`, `skill://code-review-and-quality`, `skill://code-simplification`, `skill://debugging-and-error-recovery`, `skill://source-driven-development`, `skill://frontend-ui-engineering` and `skill://doubt-driven-development`. If any read fails, stop and tell the user to install `agent-skills@addy-agent-skills` (see Requirements). Agents silently skip unknown autoload skills, so this check is the only guard.
+Muster opens by building only its own phase: write the five Muster tasks of the example above with `todo.ts` and `todo init` them, then `todo start` the first. Each step below is one task; mark it done when its "Done when" holds, and start the next.
+0. **captain: Requirements and theatre skills**: `read skill://spec-driven-development`, `skill://planning-and-task-breakdown`, `skill://test-driven-development`, `skill://incremental-implementation`, `skill://code-review-and-quality`, `skill://code-simplification`, `skill://debugging-and-error-recovery`, `skill://source-driven-development`, `skill://frontend-ui-engineering` and `skill://doubt-driven-development`. If any read fails, stop and tell the user to install `agent-skills@addy-agent-skills` (see Requirements). Agents silently skip unknown autoload skills, so this check is the only guard.
    Then read every skill the theatre lists under **Extra skills**. A missing one blocks the kind of work it covers (all squads, UI squads, study notes): tell the user, point to `/skill:strategium-setup`, and do not start that work without it. Never drop it from a brief silently.
-1. Resolve the objective (see Objective) and its `<KEY>`. For a ticket, **[theatre]**: ticket text, acceptance criteria, booked minutes and status change; a ticket that is not booked today → stop. For a file, read it; for free text, take it as written.
-2. Seals: ask with `ask` which seals apply. Defaults checked: Plan, UI (only if the objective changes UI), MR (only when the theatre delivers one). Optional: before each commit. Without ticketing, Plan cannot be unchecked. Record them as `[seal]` todo items.
-3. Booking, in the same `ask` as the seals. With ticketing: the booked minutes (from the theatre, editable) and the minutes already worked today that the timer has not tracked (`strategium` `status` shows what it already has; **[theatre]** proposes a figure from its records, with no theatre propose 0). Without ticketing: one optional booking field, empty by default; left empty, the run is untimed.
-4. `strategium` `begin` with `key` and `theatre`, plus `booked` and `spent` for a timed run. If elapsed is already ≥ the booking, apply the 100 % rule now, before any agent starts: say so with the reason and continue only on the user's explicit order.
-5. `todo init` with the stations below and their tagged items, built with `todo.ts`.
+   Done when every required skill and every theatre Extra skill has been read. If a required read fails, the run stops and the task stays open; a missing Extra skill only blocks its kind of work.
+1. **captain: Objective and booking**: resolve the objective (see Objective) and its `<KEY>`. For a ticket, **[theatre]**: ticket text, acceptance criteria, booked minutes; a ticket that is not booked today → stop. For a file, read it; for free text, take it as written. Gather the booking figures for the ask: with ticketing, the booked minutes (from the theatre, editable) and the minutes already worked today that the timer has not tracked (`strategium` `status` shows what it already has; **[theatre]** proposes a figure from its records, with no theatre propose 0); without ticketing, nothing.
+   Done when `<KEY>`, the objective text and its acceptance criteria (if the objective has them) are recorded and the booking figures are ready. A ticket not booked today stops the run with the task open.
+2. **seal: Seals**: one `ask` holds the seals and the booking fields. Seals: Plan, UI (only if the objective changes UI) and MR (only when the theatre delivers one) checked by default; optional: before each commit. Without ticketing, Plan cannot be unchecked. Booking: with ticketing, the booked minutes and the untracked minutes from step 1, editable; without ticketing, one optional booking field, empty by default; left empty, the run is untimed.
+   Done when the user answers that `ask`.
+3. **captain: Begin run and theatre status**: `strategium` `begin` with `key` and `theatre`, plus `booked` and `spent` for a timed run. **[theatre]** make the status change for the ticket. If elapsed is already ≥ the booking, apply the 100 % rule now, before any agent starts: say so with the reason and continue only on the user's explicit order.
+   Done when `begin` has succeeded and the theatre's status change is made (or the theatre has none).
+4. **captain: Build the todo**: record the chosen seals as `[seal]` items and add every remaining station and its tagged items with `todo.ts --append` (the full-list example above is the format).
+   Done when the last `todo append` call has succeeded. Then `todo start` the first Auspex task.
 
 ### 1. Auspex [scout]
 - **[theatre]** Find the repo. Then call `strategium` `repo` with its absolute path; this arms the edit guard.
 - 1–3 `scout` agents in one `task` batch, distinct focuses: code paths the ticket touches; existing helpers, patterns and tests to reuse; repo conventions (MR template, commit rules, i18n, test and check commands, repo skills, line endings (`.gitattributes`, `git config core.autocrlf`, `git ls-files --eol` grouped by extension)). Briefs give file ranges for anything large (transcripts, logs, generated files), never "read the whole file".
 - One `sonic` runs the repo's check commands once on `origin/main` and reports exact numbers and every failing test by name. The Captain records them under `## Baseline` in the auspex file. Briefs pass those failures as known, and the Merge bar compares against them.
 - The Captain merges their outputs into `local://<KEY>-auspex.md`.
+- Split: when the plan will need 2 or more areas that barely share files, or more than about 5 squads, the Captain divides the objective into areas from the scouts' map and writes `## Areas` in the auspex file: one row per area (kebab-case name, files, the acceptance criteria it covers). Every criterion belongs to exactly one area. Below that, one librarian, as now.
 - If later work shows the map is wrong, correct it with one recon (see Returns).
 
 ### 2. Scriptorium [librarian] → seal Plan
 - One `librarian` agent with the objective (a ticket's text with its acceptance criteria verbatim, the file, or the free text) and `local://<KEY>-auspex.md`; it writes `local://<KEY>-plan.md` (Spec, Squads, Merge bar). Without ticketing, the Spec proposes the acceptance criteria. An adopted plan that already has Squads and a Merge bar is checked against the auspex map and written in that shape, not planned again.
+- Several librarians (the auspex file has `## Areas`): one `librarian` per area, all in one `task` batch, each item's `name` set to its area. The task result returns each librarian's id (omp adds a numeric suffix when a name is taken); the Captain hands those ids on, and the others reach a librarian only with `write agent://<id>`. Each brief has the objective, `local://<KEY>-auspex.md`, its area row, its output file `local://<KEY>-plan-<area>.md` and the other areas' names. Each writes its part there: Spec for its criteria; Squads with id (prefixed `<area>-`), parallel, files and check; `Needs from other areas`; no Merge bar. A librarian that needs something from another area (an interface, a shared file) writes to that area's librarian with `write agent://<id>` instead of assuming it. After the split the Captain appends one `librarian: Plan <area> → local://<KEY>-plan-<area>.md` task per area with `todo.ts --append` and `todo start`s the first area task; the "Plan as squads" task becomes the lead's integration and starts after them.
+- Integration: after the batch, a lead librarian merges the parts into `local://<KEY>-plan.md`: the first of the batch (idle, with its context), given all the parts with `write agent://<id>`, or a new librarian given every `local://<KEY>-plan-*.md`. It resolves each `Needs from other areas` entry, gives every shared file one owning squad or puts the squads that share it in sequence (`parallel: false`), and writes one Merge bar. There is still a single `[seal] Plan`.
 - Challenge gaps: scope beyond the objective, squads without a check. Fixes go back to the same librarian (`write agent://<id>`).
 - In omp plan mode subagents can only read and search (no write, no spawns, no messages). The Captain launches the scouts as usual. The librarian's brief asks for the whole plan (Spec; Squads with id, parallel, files, acceptance check; Merge bar) as its final answer. The Captain saves it byte-for-byte with `cat agent://<id> > local://<KEY>-plan.md` (never `cp`, which the plugin blocks, and never retyped). Gap fixes go to a new librarian run given `local://<KEY>-plan.md` and the gaps, saved the same way. The Captain proposes the plan with `xd://propose` (body `<KEY>`); omp's plan approval is `[seal] Plan`, with no separate `ask`. After "Approve and execute" omp opens a fresh session; the run and its `local://` files go with it, and the empty todo is rebuilt with `todo.ts` (stations up to Scriptorium completed).
+- Plan mode with areas: each area librarian returns its part as its final answer, with its `Needs from other areas` listed instead of messages. The Captain saves each with `cat agent://<id> > local://<KEY>-plan-<area>.md` and gives all the parts to a new lead librarian, whose answer is saved with `cat agent://<id> > local://<KEY>-plan.md` and proposed as above.
 - `[seal] Plan`: show the squads and the Merge bar. Nothing is built before the OK.
-- The plan can be redrafted once (see Returns). The Merge bar items that were already PASS stay PASS.
+- The plan can be redrafted once (see Returns). With areas, only the affected area is redrafted, by its librarian or a new one given its part file and the gap, and the lead then integrates again. The Merge bar items that were already PASS stay PASS.
 
 ### 3. Deployment [captain]
 - Branch `<type>/<KEY>-<short-name>` from `origin/main` in the main checkout; for a slug key, `<type>/<KEY>`.
@@ -180,8 +195,10 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 - Parallel squads: one `task` call with one `battle-brother` item per parallel squad, every item `isolated: true` and `name` set to the squad id, so the plugin knows which squad each agent builds. The plugin refuses a builder (a rally or veteran included) on files another running builder is changing: wait for that agent first. Sequential squads: one isolated battle-brother at a time, after the parallel ones landed. Rally and veteran runs are isolated too.
 - Each brief: `Read local://<KEY>-plan.md; build squad <id>` plus what the plan cannot know: the baseline's known failures, the auspex conventions, and the interfaces of squads already landed. Quote the user's strings verbatim; never paraphrase the plan. Also the extra skills to read (`strategium-ui` for UI squads; `source-driven-development` for external APIs/libraries; `debugging-and-error-recovery` when fixing failures; plus the theatre's **Extra skills** for that kind of squad), and "commit nothing".
 - omp commits each isolated run on its task branch and cherry-picks it onto the run's branch when it ends. A result reporting a merge or stash conflict → one `task` agent resolves it on the run's branch.
-- When a squad has landed, run one apothecary from eval, isolated and never applied, so its mutations never reach the branch: `agent("<spec criteria, test files, production paths>", agent="apothecary", isolated=True, apply=False)`, never with the battle-brother's report.
-- Survivors or weak tests → a rally: a `battle-brother` fix run with the apothecary table (see Returns).
+- When a squad has landed, run one apothecary from eval. With `task.isolation.enabled` true (`omp config get task.isolation.enabled`), isolated and never applied, so its mutations never reach the branch: `agent("<brief>", agent="apothecary", isolated=True, apply=False)`. Otherwise `agent("<brief>", agent="apothecary")` without `isolated`/`apply`, AFTER the Captain commits the landed squad as a wip commit so `<base>..<head>` exists and the apothecary's throwaway clone (outside the workspace, never in place) contains it. Skip it for a squad that is docs or prompts only, or that adds under about 30 lines of new production logic (comments, imports, types, logging and constants don't count): the inquisitor covers it, and the Captain says so in one line when the squad lands.
+  - The brief has the squad's diff range `<base>..<head>`, the spec's acceptance criteria for that squad, the new or changed test files, the production paths and the repo's test command from the auspex file. Never the battle-brother's report. When isolation is off, the brief says `isolation is off`, so the apothecary clones `<head>` into a throwaway directory outside the workspace and works only there.
+  - Effort is medium, also for a retrial after a veteran run.
+- Survivors or weak tests → a rally: a `battle-brother` fix run with the apothecary table (see Returns). After the rally, the apothecary retrial (medium like any other run) gets the previous survivors table (with the mutant diffs) and the fix range, and re-checks only those survivors and the lines the fix touched.
 - A squad that fails twice (acceptance check red, or two fix runs that leave survivors) → one `veteran` run (same brief, plus both failure reports). Still failing → stand down and show the user. Medium is the default for code because higher effort did not reliably pass more tests in published coding benchmarks; high is spent only where medium visibly failed.
 - A squad whose acceptance check cannot be satisfied as written is not a rally: redraft it (see Returns) instead of spending another round.
 - `[seal] Commit` only if chosen in Muster.

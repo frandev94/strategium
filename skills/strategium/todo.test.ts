@@ -88,3 +88,21 @@ describe("the todo of a run", () => {
 		expect(() => buildTodo("Muster\nAuspex\n  scout: Map")).toThrow('station "Muster" has no tasks');
 	});
 });
+
+test("the skill's todo example builds without errors", async () => {
+	const skill = await Bun.file(`${import.meta.dir}/SKILL.md`).text();
+	const m = skill.replace(/\r\n/g, "\n").match(/\n( *)bun [^\n]*todo\.ts" <<'EOF'\n([\s\S]*?)\n\1EOF/);
+	expect(m).not.toBeNull();
+	const example = m![2].split("\n").map(l => l.slice(m![1].length)).join("\n");
+	const [call] = buildTodo(example);
+	expect(call.op === "init" && call.list[0]).toEqual({
+		phase: "Muster",
+		items: [
+			"[captain] Requirements and theatre skills",
+			"[captain] Objective and booking",
+			"[seal] Seals",
+			"[captain] Begin run and theatre status",
+			"[captain] Build the todo",
+		],
+	});
+});

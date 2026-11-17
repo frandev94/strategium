@@ -24,9 +24,9 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 
 1. **Muster** — el objetivo, los sellos y, con ticketing, la reserva.
 2. **Auspex** — los scouts mapean el código que toca el objetivo.
-3. **Scriptorium** — el librarian escribe una especificación, de 1 a 5 squads y una Merge bar.
+3. **Scriptorium** — un librarian escribe una especificación, de 1 a 5 squads y una Merge bar; cuando el objetivo se divide en áreas, un librarian por área y después un líder une las partes.
 4. **Deployment** — una rama para la run, los squads declarados con sus ficheros; cada agente aislado trabaja en su propio checkout de omp.
-5. **Skirmish** — un `battle-brother` implementa cada squad con los tests primero; un `apothecary` intenta romper los tests nuevos.
+5. **Skirmish** — un `battle-brother` implementa cada squad con los tests primero; un `apothecary` intenta romper los tests nuevos, solo en squads con lógica nueva y dentro de un presupuesto fijo.
 6. **Inquisition** — un `inquisitor` revisa el diff contra la Merge bar; un `sonic` ejecuta las comprobaciones del repo.
 7. **Extraction** — el commit y la merge request, después de tu sello.
 
@@ -62,7 +62,7 @@ Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un de
 | Vuelta | Detonante | Destino | Presupuesto |
 |---|---|---|---|
 | **Recon** | el mapa del código está equivocado | un `scout` más con ese hueco concreto | 1 por run |
-| **Redraft** | el plan está equivocado, o el check de un squad no se puede cumplir tal cual está escrito | el mismo `librarian` reescribe el trabajo restante | 1 por run |
+| **Redraft** | el plan está equivocado, o el check de un squad no se puede cumplir tal cual está escrito | el mismo `librarian` reescribe el trabajo restante (con áreas, solo el área afectada, y el líder vuelve a unir) | 1 por run |
 | **Rally** | el código está equivocado: check rojo, supervivientes del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con todos los IDs de hallazgos abiertos en un solo brief, nunca el informe anterior | 2 rondas por squad, luego un `veteran` |
 | **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez, solo sobre los IDs de hallazgos abiertos y el rango del arreglo, y luego `sonic` para los checks | 2 rondas por item del Merge bar |
 | **Stand down** | se agotó el presupuesto, o el fallo no está en el código | tú, con los puntos abiertos | — |
@@ -117,6 +117,8 @@ El texto libre necesita las comillas, para no chocar nunca con un subcomando. Si
 Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. Cerrar una sesión pausa su run y libera la reserva; al reabrir esa sesión la recupera y la reanuda sola, salvo que tú la hubieras pausado (`/strategium-pause`, acción `stop`, el stand down). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy. El Capitán no puede editar el repositorio de la run: mientras la run está abierta `edit` y `ast_edit` se ocultan de la sesión principal, `write` está bloqueado dentro del repo de la run y de su carpeta `<repo>-worktrees`, los ejecutores de tests y builds por bash y las escrituras de ficheros por bash están bloqueados (solo pasan las redirecciones a `$TEMP` y `local://`), se rechazan los agentes fuera del plantel de Strategium y se rechazan los battle-brothers hasta que se declaren los squads del plan (`strategium` `slices`; los squads en paralelo no pueden compartir un fichero). Cuando el plan se aprueba en el modo plan de omp, "Approve and execute" abre una sesión nueva y la run se va con ella; un `/new` normal deja la run en su propia sesión.
 
 Pausa por inactividad: cuando ningún agente trabaja y nada espera para ejecutarse, el reloj de la run se pausa tras `STRATEGIUM_IDLE_MIN` minutos de inactividad (3 por defecto), suena el sonido `idle` (con las notificaciones activas) y el pie la muestra pausada. El siguiente turno la reanuda sola; el Capitán no llama a `start`. Una run que pausaste a mano (`/strategium-pause`, acción `stop`, el stand down) nunca se reanuda sola. Una pregunta o una revisión de plan que te espera cuenta como actividad: el reloj sigue corriendo y la alarma `attention` te avisa (con las notificaciones activas). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy.
+
+Pie: la estación se muestra como `<estación> › <tarea>`, donde `<tarea>` es la tarea activa del todo sin su etiqueta de agente, cortada a 32 caracteres con `…`. Un sello mantiene `⏳ seal <nombre>`; un retorno muestra `↩ <estación> › <tarea>`. Durante los pasos 0-2 de Muster aún no existe una run, así que no hay pie; desde `begin` muestra p. ej. `Muster › Begin run and theatre status`.
 
 ### Ticketing (opcional)
 

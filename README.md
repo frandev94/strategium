@@ -24,9 +24,9 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 
 1. **Muster** — the objective, the seals and, with ticketing, the booking.
 2. **Auspex** — scouts map the code the objective touches.
-3. **Scriptorium** — the librarian writes a spec, 1–5 squads and a Merge bar.
+3. **Scriptorium** — one librarian writes a spec, 1–5 squads and a Merge bar; when the objective splits into areas, one librarian per area, then a lead merges the parts.
 4. **Deployment** — one branch for the run, the squads declared with their files; each isolated agent works in its own omp checkout.
-5. **Skirmish** — a `battle-brother` implements each squad test-first; an `apothecary` tries to break the new tests.
+5. **Skirmish** — a `battle-brother` implements each squad test-first; an `apothecary` tries to break the new tests, only on squads with new logic and within a fixed budget.
 6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar; a `sonic` runs the repo's checks.
 7. **Extraction** — the commit and the merge request, after your seal.
 
@@ -62,7 +62,7 @@ A run goes back instead of forward, and every return has a trigger, a target and
 | Return | Trigger | Target | Budget |
 |---|---|---|---|
 | **Recon** | the map of the code is wrong | one more `scout` with that exact gap | 1 per run |
-| **Redraft** | the plan is wrong, or a squad's acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work | 1 per run |
+| **Redraft** | the plan is wrong, or a squad's acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work (with areas, only the affected area, then the lead merges again) | 1 per run |
 | **Rally** | the code is wrong: check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with every open finding ID in one brief, never the previous report | 2 rounds per squad, then one `veteran` run |
 | **Retrial** | the fixed code needs a new look | the `inquisitor` again on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item |
 | **Stand down** | the budget is spent, or the failure is not in the code | you, with the open items | — |
@@ -117,6 +117,8 @@ Free text needs the quotes, so it never clashes with a subcommand. Without a tic
 Every session owns one run, claimed atomically, so several omp sessions can work on different objectives at the same time. Closing a session pauses its run and releases the claim; reopening that session takes it back and resumes it on its own, unless you had paused it (`/strategium-pause`, action `stop`, the stand down). A timed run on a new day stays paused until today's booking is given. The Captain cannot edit the run's repository: while the run is open `edit` and `ast_edit` are hidden from the main session, `write` is blocked inside the run's repo and its `<repo>-worktrees` folder, bash test and build runners and bash file writes are blocked (only redirects into `$TEMP` and `local://` pass), agents outside the Strategium roster are refused, and battle-brothers are refused until the plan's squads are declared (`strategium` `slices`; parallel squads must not share a file). When the plan is approved in omp's plan mode, "Approve and execute" opens a fresh session and the run moves with it; a plain `/new` leaves the run with its own session.
 
 Idle pause: when no agent works and nothing waits to run, the run's clock pauses after `STRATEGIUM_IDLE_MIN` idle minutes (default 3), the `idle` sound plays (with notifications on) and the footer shows it paused. The next turn resumes it on its own; the Captain does not call `start`. A run you paused by hand (`/strategium-pause`, action `stop`, the stand down) never resumes by itself. A question or a plan review waiting for you counts as busy: the clock keeps running and the `attention` alarm calls you (with notifications on). A timed run on a new day stays paused until today's booking is given.
+
+Footer: the station shows as `<station> › <task>`, where `<task>` is the active todo task without its agent tag, cut to 32 characters with `…`. A seal keeps `⏳ seal <name>`; a return shows `↩ <station> › <task>`. During Muster steps 0-2 no run exists yet, so there is no footer; from `begin` on it shows e.g. `Muster › Begin run and theatre status`.
 
 ### Ticketing (optional)
 
