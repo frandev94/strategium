@@ -644,14 +644,14 @@ describe("the Captain's limits", () => {
 			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
 			end(s, "S1gDeviceSite");
 			await s.call({ action: "slices", slices: [a, b] });
-			// The rally would share attachments.ts with S2b, still running.
+			// The penance would share attachments.ts with S2b, still running.
 			expect(launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite-2"])?.reason).toBe(
 				"Strategium: squad S1g-device-site changes src/cards/attachments.ts, which squad S2b-grid-device-site is changing right now. " +
 					"Two agents working on the same file at the same time overwrite each other's changes. Wait until that agent has finished, then launch this one.",
 			);
 			end(s, "Grid");
 			expect(launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite-2"])).toBeUndefined();
-			// The first run's completion, still in the history, does not stop the rally.
+			// The first run's completion, still in the history, does not stop the penance.
 			end(s, "S1gDeviceSite");
 			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN squad S2b-grid-device-site is no longer active");
 			end(s, "S1gDeviceSite-2");
@@ -1360,7 +1360,7 @@ describe("tools, begin and end", () => {
 });
 
 describe("the Captain's hooks never throw and keep their wording", () => {
-	const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "security-reviewer", "sonic", "task"];
+	const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "confessor", "security-reviewer", "sonic", "task"];
 	type Verdict = { block?: true; reason?: string } | undefined;
 	const disjoint = [
 		{ id: "S1", parallel: true, files: ["a.ts"] },
