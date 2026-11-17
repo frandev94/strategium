@@ -11,7 +11,7 @@ The plugin ships three things:
 | Part | What it is |
 |---|---|
 | **Extension** | the `strategium` tool and the `/strategium` command: per-session claims, edit guard, optional booking timer |
-| **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, `archmagos`, plus the bundled `scout` and `sonic` |
+| **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, `confessor`, `archmagos`, plus the bundled `scout` and `sonic` |
 | **Skills** | `strategium`, `strategium-alarm`, `strategium-release`, `strategium-setup`, `strategium-study`, `strategium-ui` |
 
 ## How a run works
@@ -27,7 +27,7 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 3. **Scriptorium** — one librarian writes a spec, 1–5 squads and a Merge bar; when the objective splits into areas, one librarian per area, then a lead merges the parts (with the Archmagos Dominus marked in Muster, an `archmagos` integrates the parts instead of the lead).
 4. **Deployment** — one branch for the run, the squads declared with their files; each isolated agent works in its own omp checkout.
 5. **Skirmish** — a `battle-brother` implements each squad test-first; an `apothecary` tries to break the new tests, only on squads with new logic and within a fixed budget.
-6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar; a `sonic` runs the repo's checks.
+6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar, and a `confessor` of another model family (when available) joins when the plan flags the diff as large or risky; a `sonic` runs the repo's checks.
 7. **Extraction** — the commit and the merge request, after your seal.
 
 ```mermaid
@@ -35,18 +35,70 @@ flowchart TB
   U["You · Chapter Master<br/>you grant the seals"] -->|"/strategium objective"| C
   subgraph run["Main session · the Captain"]
     C["Captain<br/>strategium tool + /strategium<br/>never edits code"]
-    C --> M["Muster<br/>objective · seals · booking?"]
-    M --> A["Auspex<br/>scout"]
-    A --> B["Scriptorium<br/>librarian → plan"]
-    B --> S1{{"seal Plan"}}
-    S1 --> D["Deployment<br/>one branch + squads declared"]
-    D --> E["Skirmish<br/>battle-brother → veteran<br/>apothecary breaks the tests"]
-    E --> I["Inquisition<br/>inquisitor · sonic<br/>security-reviewer when it touches auth"]
-    I --> S2{{"seal UI"}}
-    S2 --> X["Extraction<br/>commit + MR"]
-    X --> S3{{"seal MR"}}
-    S3 --> F["Debrief<br/>day report"]
+    subgraph muster["1 · Muster"]
+      M["Captain<br/>objective · booking?<br/>Archmagos Dominus?"]
+      S0{{"seal Seals<br/>Plan · UI · MR<br/>Commit optional"}}
+    end
+    subgraph auspex["2 · Auspex"]
+      A1["scout ×1-3<br/>map the code"]
+      A2["sonic<br/>baseline on origin/main"]
+    end
+    subgraph scriptorium["3 · Scriptorium"]
+      L1["librarian<br/>spec · 1-5 squads · Merge bar<br/>Review: confessor if large or risky"]
+      L2["one librarian per area<br/>+ lead merges, or the archmagos"]
+      L3["archmagos<br/>integrates the parts"]
+      S1{{"seal Plan"}}
+    end
+    subgraph deployment["4 · Deployment"]
+      D["Captain<br/>one branch per run<br/>squads declared with files"]
+    end
+    subgraph skirmish["5 · Skirmish"]
+      B1["battle-brother<br/>one per squad · tests first"]
+      B2["veteran<br/>after 2 failed penances"]
+      B3["apothecary<br/>mutation on new logic<br/>fuzz if input: untrusted"]
+      SC{{"seal Commit<br/>optional · before each commit"}}
+    end
+    subgraph inquisition["6 · Inquisition"]
+      Q1["inquisitor<br/>diff vs Merge bar"]
+      Q2["confessor<br/>other model family<br/>(when available)<br/>if plan says Review: confessor"]
+      Q3["security-reviewer<br/>if auth · secrets · network"]
+      Q4["sonic<br/>full checks"]
+      Q5["task<br/>study notes · read-only"]
+      S2{{"seal UI<br/>only if the UI changes"}}
+    end
+    subgraph extraction["7 · Extraction"]
+      X["Captain<br/>commit + merge request"]
+      S3{{"seal MR"}}
+    end
+    subgraph debrief["8 · Debrief"]
+      F["Captain<br/>day report"]
+    end
   end
+  C --> M --> S0 --> A1 --> A2 --> L1
+  L1 -->|"areas"| L2
+  L2 -->|"marked in Muster"| L3
+  L1 --> S1
+  L2 --> S1
+  L3 --> S1
+  S1 --> D --> B1
+  B1 --> B3
+  B1 -->|"2 penances failed"| B2
+  B2 --> SC
+  B3 --> SC
+  SC --> Q1
+  SC --> Q2
+  SC --> Q3
+  Q1 --> Q4
+  Q2 --> Q4
+  Q3 --> Q4
+  Q4 --> Q5 --> S2 --> X --> S3 --> F
+  L1 -.->|"Recon · 1/run"| A1
+  B1 -.->|"Redraft · 1/run"| L1
+  Q1 -.->|"Penance · 2 rounds/squad → veteran<br/>NOT REPRODUCED dropped"| B1
+  Q2 -.->|"Penance"| B1
+  B3 -.->|"Penance · survivors"| B1
+  B1 -.->|"Retrial · 2 rounds/item"| Q1
+  Q4 -.->|"Stand down · budget spent → you"| U
   T["Booking timer · ticketing only<br/>50% · 80% · 100%"] -.->|warns| C
   T --> V["vox-caster<br/>sound + notification"]
   G["Edit guard<br/>edit · write · ast_edit"] -.->|blocks| C
@@ -63,11 +115,11 @@ A run goes back instead of forward, and every return has a trigger, a target and
 |---|---|---|---|
 | **Recon** | the map of the code is wrong | one more `scout` with that exact gap | 1 per run |
 | **Redraft** | the plan is wrong, or a squad's acceptance check cannot be satisfied as written | the same `librarian` redrafts the remaining work (with areas, only the affected area, then the lead merges again; on a run marked for the Archmagos Dominus, one new `archmagos` re-integrates only that area) | 1 per run |
-| **Rally** | the code is wrong: check red, apothecary survivors, BLOCKING findings | a `battle-brother` fix run with every open finding ID in one brief, never the previous report | 2 rounds per squad, then one `veteran` run |
-| **Retrial** | the fixed code needs a new look | the `inquisitor` again on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item |
+| **Penance** | the code is wrong: check red, apothecary survivors or fuzz crashes, BLOCKING findings | a `battle-brother` fix run with every open finding ID in one brief, never the previous report; it first reproduces each finding, and one it cannot reproduce comes back NOT REPRODUCED | 2 rounds per squad, then one `veteran` run |
+| **Retrial** | the fixed code needs a new look | the `inquisitor` again (the `confessor` re-checks its own IDs) on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item |
 | **Stand down** | the budget is spent, or the failure is not in the code | you, with the open items | — |
 
-If the code can satisfy the squad's check as written, it is a rally; if it cannot, the squad was cut wrong and it is a redraft. A return past a granted seal breaks the seal, and it is asked for again. What already passed stays passed.
+If the code can satisfy the squad's check as written, it is a penance; if it cannot, the squad was cut wrong and it is a redraft. A return past a granted seal breaks the seal, and it is asked for again. What already passed stays passed.
 
 ## Install
 
