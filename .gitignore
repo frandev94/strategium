@@ -6,8 +6,9 @@ node_modules/
 .env.*
 !.env.example
 
-# omp local state (project-scoped plugin installs, locks)
-.omp/
+# omp local state (project-scoped plugin installs, locks); only the dev skills are tracked
+.omp/*
+!.omp/skills/
 
 # lockfile written by the `skills` CLI when installing from this repo
 skills-lock.json
