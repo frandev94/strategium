@@ -22,6 +22,7 @@ export const AGENTS: Record<string, string> = {
 	captain: "\u{f18bc}", // md-shield_crown
 	scout: "\u{f0437}", // md-radar
 	librarian: "\u{f05da}", // md-book_open_page_variant
+	archmagos: "\u{f133c}", // md-head_cog: the Archmagos Dominus
 	"battle-brother": "\u{f18be}", // md-shield_sword
 	veteran: "\u{f0787}", // md-sword_cross
 	apothecary: "\u{f06ef}", // md-medical_bag

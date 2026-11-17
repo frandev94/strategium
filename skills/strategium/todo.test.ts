@@ -80,6 +80,19 @@ describe("the todo of a run", () => {
 			{ op: "append", phase: "Scriptorium", items: ["[librarian] Redraft squad 2"] },
 		]));
 
+	test("archmagos is a known agent: md-head_cog glyph tag, plain tag without glyphs", () => {
+		const text = "Scriptorium\n  archmagos: Integrate the plan";
+		const [plain] = buildTodo(text);
+		const [glyph] = buildTodo(text, { glyphs: true });
+		expect(plain.op === "init" && plain.list[0].items).toEqual(["[archmagos] Integrate the plan"]);
+		expect(glyph.op === "init" && glyph.list[0].items).toEqual(["\u{f133c} archmagos · Integrate the plan"]);
+		for (const call of [plain, glyph]) {
+			const list = call.op === "init" ? call.list : [];
+			const phases = list.map(p => ({ name: p.phase, tasks: p.items.map(content => ({ content, status: "in_progress" })) }));
+			expect(whereFrom(phases)).toEqual({ station: "Scriptorium", task: "Integrate the plan" });
+		}
+	});
+
 	test("mistakes are refused with their line, before the todo tool sees them", () => {
 		expect(() => buildTodo("Muster\n  captian: Muster")).toThrow('line 2: unknown agent "captian"');
 		expect(() => buildTodo("  captain: Muster")).toThrow("line 1: a task needs a station above it");
