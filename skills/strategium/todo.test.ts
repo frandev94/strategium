@@ -93,6 +93,19 @@ describe("the todo of a run", () => {
 		}
 	});
 
+	test("confessor is a known agent: md-book_cross glyph tag, plain tag without glyphs", () => {
+		const text = "Inquisition\n  confessor: Review";
+		const [plain] = buildTodo(text);
+		const [glyph] = buildTodo(text, { glyphs: true });
+		expect(plain.op === "init" && plain.list[0].items).toEqual(["[confessor] Review"]);
+		expect(glyph.op === "init" && glyph.list[0].items).toEqual(["\u{f00a2} confessor · Review"]);
+		for (const call of [plain, glyph]) {
+			const list = call.op === "init" ? call.list : [];
+			const phases = list.map(p => ({ name: p.phase, tasks: p.items.map(content => ({ content, status: "in_progress" })) }));
+			expect(whereFrom(phases)).toEqual({ station: "Inquisition", task: "Review" });
+		}
+	});
+
 	test("mistakes are refused with their line, before the todo tool sees them", () => {
 		expect(() => buildTodo("Muster\n  captian: Muster")).toThrow('line 2: unknown agent "captian"');
 		expect(() => buildTodo("  captain: Muster")).toThrow("line 1: a task needs a station above it");

@@ -386,7 +386,7 @@ function signal(level: string, msg: string): string | undefined {
 }
 
 // The agents the Captain may spawn during a run.
-const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "security-reviewer", "sonic", "task"];
+const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "confessor", "security-reviewer", "sonic", "task"];
 const agentName = (a: string) => a.toLowerCase().split(/[:/]/).pop()!;
 const SLICES_REASON = "Strategium: declare the plan's squads first: strategium action slices, with each squad's id, parallel flag and files.";
 const ARCHMAGOS_OFF =
