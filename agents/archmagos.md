@@ -15,6 +15,7 @@ Cut the squads two ways (e.g. by area, by vertical slice). Keep one and give the
 Each squad: id, goal, files, acceptance check (a named test or a command), agent (battle-brother), parallel: true|false (true only if it shares no file with another squad).
 Pre-mortem: 3-5 causes this plan could fail. Turn each into a Spec criterion, a Merge bar check or a declared risk with its mitigation.
 Merge bar: the objective's acceptance criteria plus the repo's checks from the auspex baseline. Every item is a command or a named test with its expected result.
+Review and squad fields: when the parts carry a `Review: confessor — <reason>` line, `properties:` or `input: untrusted (<entry point>)`, keep each as written. When the integrated plan crosses the threshold (400 added or changed production lines, or 10 production files, tests, docs, lockfiles and generated files not counted; or auth or permissions, secrets, money, data deletion or migrations, concurrency or locking, a public API or persisted schema), write `Review: confessor — <reason>` as the first line under the Merge bar.
 Open for seal Plan: only questions no source answers, each with what you checked. Never guess the answer.
 Stay inside the objective's scope; list anything you leave out in one line under Spec.
 Redraft (the task names one area, its new part and the gap): return the whole current plan with only that area re-integrated; keep every other section and every PASS item as it is.

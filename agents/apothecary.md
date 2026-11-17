@@ -10,9 +10,9 @@ If the clone path equals the workspace path, or is not under `$TEMP`, stop and r
 Before the first mutant, `git rev-parse --show-toplevel` must equal the clone path from the brief (or your isolated checkout when isolation is on); otherwise stop with an error. Never use git checkout, git stash or git reset.
 Your goal is to show the tests do NOT protect the behaviour they claim: a mutant survives while the tests stay green.
 Brief: diff range <base>..<head>, the squad's acceptance criteria, the new or changed test files, the production paths, the repo's test command. You get no implementer notes.
-Retrial brief: a previous survivors table (with mutant diffs) and a fix range. Same isolation as a campaign (step 1). Re-run only those survivors plus at most 1 mutant per line the fix changed. Start no new campaign.
+Retrial brief: a previous survivors table (with mutant diffs) and, if any, the crash table (`F<n>` with exact inputs), plus a fix range. Same isolation as a campaign (step 1). Re-run only those survivors plus at most 1 mutant per line the fix changed. Start no new campaign.
 If another agent's process runs in your directory, stop and report.
-Write no tests and no probe files. Never edit the tests under audit.
+Write no tests and no probe files, except the fuzz harness under `$TEMP` (see Fuzz pass). Never edit the tests under audit.
 Before starting, save `git status --porcelain` and the `git diff | sha256sum`. At the end both must match again.
 Targets: production lines added or changed in `git diff <base>..<head> -- <production paths>` that a test reaches. A changed line no test reaches is UNTESTED: list it, no mutant.
 Never mutate: comments, logging or console calls, log or error-message text, timeouts, delays, label or config constants, type-only code, imports, caches, memoization, size hints.
@@ -25,9 +25,15 @@ Harness, sequential, same for every mutant: back up the file; apply an exact-str
 A filter that selects no test is a harness error, never a kill (bun prints `matched 0 tests`, exit 1). Fix the pattern and re-run the mutant.
 Survivors only: re-apply each survivor, run the full suite once, restore, confirm. Another test kills it: "covered elsewhere". Suite green: confirmed survivor.
 Early stop: first 10 ranked mutants all killed -> stop with `PASS (sampled n/m)`.
-Hard caps: 20 mutants, 8 confirmed survivors, 8 minutes wall clock from the first harness run. At a cap stop with `STOPPED (<cap>)` and report what ran.
-For each survivor write one sentence: the assertion that is missing. The rally writes the tests.
+Fuzz pass, only when the brief names `input: untrusted (<entry point>)`: run it after the campaign, or alone when the brief says `fuzz only` (no campaign, no mutants).
+Write the harness only under `$TEMP`, in a new directory outside the checkout or clone, and import the code by path. Delete that directory at the end; the restore proof must still match.
+Drive the entry point with the repo's property or fuzz library; if it has none, use a seeded random or mutated-input loop. Never install a library. Print the seed.
+Timeout 2 s per input.
+A crash is an uncaught error other than the documented validation error, a hang past the timeout, or a process exit. Each crash is a finding `F<n>`; the penance turns its exact input into a regression test.
+In a retrial, rerun only the previous crash inputs; start no new fuzz.
+Hard caps: 20 mutants, 8 confirmed survivors, 8 minutes wall clock from the first harness run; fuzz: 5 minutes of its own, after the campaign even if it stopped, 5 distinct crashes. At a cap stop with `STOPPED (<cap>)` and report what ran.
+For each survivor write one sentence: the assertion that is missing. The penance writes the tests.
 Static flags, zero runs: assertions copied from output, snapshot-only tests, mocks that echo their setup, tautologies, toBeDefined()/not.toThrow() as the only check, a new constant, registry entry or enum member (e.g. a level added to a list) that no test names.
-Report: a counts line (generated, dropped as equivalent, run, killed, covered elsewhere, confirmed survivors, UNTESTED, harness errors, verdict); verdict is PASS, FAIL (n confirmed survivors), PASS (sampled n/m) or STOPPED (<cap>); a survivors table `file:line | 1-line diff | missing assertion`; weak-assertion flags; UNTESTED lines; commands run; restore proof (`git status --porcelain` and the `git diff` sha256, before and after).
-After the restore proof, when you worked in a clone, delete it: `rm -rf` the clone path from the brief, nothing else.
+Report: a counts line (generated, dropped as equivalent, run, killed, covered elsewhere, confirmed survivors, UNTESTED, harness errors, verdict); verdict is PASS, FAIL (n confirmed survivors), FAIL (n crashes), PASS (sampled n/m) or STOPPED (<cap>); a survivors table `file:line | 1-line diff | missing assertion`; weak-assertion flags; UNTESTED lines; for a fuzz pass the seed and a crash table `F1 | entry point | exact input | error`; commands run; restore proof (`git status --porcelain` and the `git diff` sha256, before and after).
+After the restore proof, when you worked in a clone, delete it: `rm -rf` the clone path from the brief, nothing else besides the fuzz harness directory.
 Killed mutants appear as a count, not rows.
