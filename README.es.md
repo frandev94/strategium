@@ -71,6 +71,29 @@ Si el código puede cumplir el check del squad tal como está escrito, es un ral
 
 ## Instalación
 
+Strategium funciona dentro de [omp](https://omp.sh/), nuestro agente de código: instala omp primero.
+
+**Que lo haga un agente:** pega este prompt en cualquier agente de código con acceso a la shell. Instala omp si falta y después el plugin.
+
+```text
+Set up omp (https://omp.sh/) with the Strategium plugin on this machine.
+
+1. Run `omp --version`. If omp is not found, install it:
+   - macOS / Linux: curl -fsSL https://omp.sh/install | sh
+   - Windows (PowerShell): irm https://omp.sh/install.ps1 | iex
+   If `omp` is still not on PATH, open a new shell and try again. Stop and report if it still fails.
+2. Run `git --version` and `bun --version`. If one is missing, tell me with its official install command; do not install it without asking.
+3. Install the plugins (if one is already there, keep it and move on):
+   omp plugin marketplace add addyosmani/agent-skills
+   omp plugin install agent-skills@addy-agent-skills
+   omp plugin marketplace add frandev94/strategium
+   omp plugin install strategium@strategium
+4. Verify with `omp plugin list` and `omp plugin doctor`.
+5. Report a table: step, result, and the error output of any failure. Then tell me to open a fresh omp session and run /skill:strategium-setup.
+
+Change no other omp settings, and do not remove or upgrade anything already installed.
+```
+
 **Como plugin de marketplace:**
 
 ```
