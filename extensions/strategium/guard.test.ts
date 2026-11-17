@@ -129,14 +129,14 @@ describe("bash writes, every pattern", () => {
 		"git --no-pager reset --hard", "git -p clean -fd",
 		"git checkout .", "git checkout -- .",
 		"git --git-dir=x reset --hard",
-		'echo x > "src/a.ts"', "echo x >> 'src/a.ts'",
+		'echo x > "src/a.ts"', "echo x >> 'src/a.ts'", "cp agent://x local://K-plan.md",
 	];
 	test.each(writes)("blocks %s", cmd => expect(bashBlock(cmd)).toContain(WRITE_MSG));
 
 	const allowed = [
 		"git add -A", "git switch main", "git merge --no-ff b", "git branch -D b", "git reset --soft origin/main", "git reset -q", "git reset",
 		"git checkout main", "git checkout -b x", "git -C ../r log", "git -c k=v status", "git commit -m 'x'",
-		'echo x > "${TEMP}/x"', "echo x > $TMP/x", "echo x > $TMPDIR/x", "echo x > /tmp/x", "echo x > %TEMP%/x", "echo x > out://x", "echo x > local://x",
+		'echo x > "${TEMP}/x"', "echo x > $TMP/x", "echo x > $TMPDIR/x", "echo x > /tmp/x", "echo x > %TEMP%/x", "echo x > out://x", "echo x > local://x", "cat agent://x > local://K-plan.md",
 		"echo x >> /dev/null", "ls 2>&1", "ls 2>&1 >/dev/null", "ls 2>&-",
 		"cat <<-EOF\n\tbun test > a\n\tEOF",
 		"cat <<EOF\nrm -rf x > y\nEOF",

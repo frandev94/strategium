@@ -13,3 +13,4 @@ Each slice: id, goal, files, acceptance check (a command or an observable result
 Merge bar: a checklist built from the objective's acceptance criteria plus the repo's checks (tests, lint, i18n, screenshots for UI). Every item must be checkable from the diff or a command output.
 When the objective has no acceptance criteria (free text, or a file without them), propose them at the top of the Spec, each one checkable; the user confirms them at seal Plan.
 Stay inside the objective's scope; list anything you leave out in one line under Spec.
+Without the write tool (omp plan mode) return the whole plan as your final answer instead of writing it.

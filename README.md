@@ -114,7 +114,7 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 
 Free text needs the quotes, so it never clashes with a subcommand. Without a ticket, the librarian proposes the acceptance criteria and you confirm them at seal Plan, which cannot be skipped.
 
-Every session owns one run, claimed atomically, so several omp sessions can work on different objectives at the same time. Closing a session pauses its run and releases the claim; reopening that session takes it back and resumes it on its own, unless you had paused it (`/strategium-pause`, action `stop`, the stand down). A timed run on a new day stays paused until today's booking is given. The Captain cannot edit the run's repository: while the run is open `edit` and `ast_edit` are hidden from the main session, `write` is blocked inside the run's repo and its `<repo>-worktrees` folder, bash test and build runners and bash file writes are blocked (only redirects into `$TEMP` pass), agents outside the Strategium roster are refused, and battle-brothers are refused until the plan's slices are declared (`strategium` `slices`; parallel slices must not share a file).
+Every session owns one run, claimed atomically, so several omp sessions can work on different objectives at the same time. Closing a session pauses its run and releases the claim; reopening that session takes it back and resumes it on its own, unless you had paused it (`/strategium-pause`, action `stop`, the stand down). A timed run on a new day stays paused until today's booking is given. The Captain cannot edit the run's repository: while the run is open `edit` and `ast_edit` are hidden from the main session, `write` is blocked inside the run's repo and its `<repo>-worktrees` folder, bash test and build runners and bash file writes are blocked (only redirects into `$TEMP` and `local://` pass), agents outside the Strategium roster are refused, and battle-brothers are refused until the plan's slices are declared (`strategium` `slices`; parallel slices must not share a file). When the plan is approved in omp's plan mode, "Approve and execute" opens a fresh session and the run moves with it; a plain `/new` leaves the run with its own session.
 
 ### Ticketing (optional)
 
@@ -151,6 +151,7 @@ A theatre is a `strategium-<name>` skill that binds the run to your organisation
 ## Development
 
 ```
+bun run check                     # strict TypeScript over the extension
 bun test                          # timer, claims across processes, the extension through a fake host, alarm WAVs
 ```
 

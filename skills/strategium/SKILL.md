@@ -49,7 +49,7 @@ With no theatre, skip all external writes: the delivery is the branch with its c
 - Never edit product code or tests, and never run builds or test suites. Repo work goes to agents (`task` tool with `agent:` set). While the run is open the plugin:
   - hides `edit` and `ast_edit` from the main session;
   - blocks `write` on the run's repo and its `-worktrees` folder;
-  - blocks bash test and build runners and bash file writes (only redirects into `$TEMP` pass);
+  - blocks bash test and build runners and bash file writes (only redirects into `$TEMP` and `local://` pass);
   - refuses agents outside the table below;
   - refuses battle-brothers until the slices are declared.
 
@@ -165,6 +165,7 @@ A run goes back instead of forward. Every return has a trigger, a target and a b
 ### 2. Scriptorium [librarian] → seal Plan
 - One `librarian` agent with the objective (a ticket's text with its acceptance criteria verbatim, the file, or the free text) and `local://<KEY>-auspex.md`; it writes `local://<KEY>-plan.md` (Spec, Slices, Merge bar). Without ticketing, the Spec proposes the acceptance criteria. An adopted plan that already has Slices and a Merge bar is checked against the auspex map and written in that shape, not planned again.
 - Challenge gaps: scope beyond the objective, slices without a check. Fixes go back to the same librarian (`write agent://<id>`).
+- In omp plan mode agents can only read and search (no write, no spawns, no messages). The Captain launches the scouts as usual. The librarian's brief asks for the whole plan (Spec; Slices with id, parallel, files, acceptance check; Merge bar) as its final answer. The Captain saves it byte-for-byte with `cat agent://<id> > local://<KEY>-plan.md` (never `cp`, which the plugin blocks, and never retyped). Gap fixes go to a new librarian run given `local://<KEY>-plan.md` and the gaps, saved the same way. The Captain proposes the plan with `xd://propose` (body `<KEY>`); omp's plan approval is `[seal] Plan`, with no separate `ask`. After "Approve and execute" omp opens a fresh session; the run and its `local://` files go with it, and the empty todo is rebuilt with `todo.ts` (stations up to Scriptorium completed).
 - `[seal] Plan`: show the slices and the Merge bar. Nothing is built before the OK.
 - The plan can be redrafted once (see Returns). The Merge bar items that were already PASS stay PASS.
 
