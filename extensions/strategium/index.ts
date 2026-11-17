@@ -927,6 +927,12 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.on("session_start", onSession);
 	pi.on("session_switch", onSession);
+	// One line at startup, like other plugins print, so the user sees the plugin is on and how it is set.
+	pi.on("session_start", (_e: unknown, ctx: SessionCtx) => {
+		if (ctx.agent?.kind === "sub") return;
+		const theatre = process.env.STRATEGIUM_THEATRE?.trim().replace(/^strategium-/, "") || "none";
+		ctx.ui.notify(`Strategium loaded: theatre ${theatre}, notifications ${notifyOn(sidOf(ctx)) ? "on" : "off"}`, "info");
+	});
 
 	// Closing the session pauses its ticket and releases the claim; the run file stays so a resumed session
 	// (or another session's `begin`, which adopts its repo) picks it up.
