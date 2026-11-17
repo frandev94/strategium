@@ -65,6 +65,12 @@ const fakeCtx = (sid: string, cwd: string, notes: string[] = [], footer: string[
 	agent: { kind: "main" },
 });
 
+// omp switches sessions by mutating one SessionManager (setSessionFile): the id changes under the same object.
+const shared = (sid: string, dir: string, footer: string[], notes: string[] = []) => {
+	const sm = { sid, getSessionId: () => sm.sid };
+	return { sm, ctx: { ...fakeCtx(sid, dir, notes, footer), sessionManager: sm } };
+};
+
 // omp loads ~/.omp/agent/.env into the process; a default theatre there must not change what the tests expect.
 delete process.env.STRATEGIUM_THEATRE;
 
@@ -441,6 +447,17 @@ describe("the Captain's limits", () => {
 		expect(s.activeTools()).toContain("edit");
 	});
 
+	test("the edit guard blocks a repo edit even when edit is active again", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		s.setActive([...s.activeTools(), "edit"]);
+		expect(toolCall(s, "edit", { path: join(s.dir, "a.ts") })).toEqual({
+			block: true,
+			reason: "Strategium: the Captain does not edit repository files. Delegate this change to a battle-brother agent.",
+		});
+	});
+
 	test("an agent outside the roster is refused during a run, allowed without one", async () => {
 		const s = setup();
 		expect(spawn(s, "code-reviewer")).toBeUndefined();
@@ -663,12 +680,6 @@ describe("footer after a switch", () => {
 		expect(timers).toBe(1);
 	});
 
-	// omp switches by mutating one SessionManager (setSessionFile): the id changes under the same object.
-	const shared = (sid: string, dir: string, footer: string[]) => {
-		const sm = { sid, getSessionId: () => sm.sid };
-		return { sm, ctx: { ...fakeCtx(sid, dir, [], footer), sessionManager: sm } };
-	};
-
 	test("switching to a session with no run gives the editing tools back", async () => {
 		const s = setup("sess-A");
 		await s.call({ action: "begin", key: "omp-native" });
@@ -691,6 +702,86 @@ describe("footer after a switch", () => {
 		expect(s.shown()).toContain("omp-native");
 		await s.call({ action: "status" });
 		expect(s.shown()).toContain("omp-native");
+	});
+});
+
+describe("the run follows an approved plan", () => {
+	const emit = (s: { handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]> }, event: string, e: object, ctx: unknown) =>
+		s.handlers[event][0]({ ...e }, ctx);
+	// A session that owns a run, on a session manager shared across switches, as omp does.
+	async function owner() {
+		const s = setup("sess-A");
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		const notes: string[] = [];
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer, notes);
+		await s.handlers.session_start[0]({}, ctx);
+		await s.commands["strategium-config"].handler("notify off", ctx);
+		return { s, sm, ctx, notes };
+	}
+	const files = (dir: string, sid: string) => ({ run: existsSync(join(dir, "runs", `${sid}.json`)), beat: existsSync(join(dir, "runs", `${sid}.beat`)) });
+
+	test("approve and execute moves the run to the new session", async () => {
+		const { s, sm, ctx, notes } = await owner();
+		const before = JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.json"), "utf8"));
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new", previousSessionFile: "a.jsonl" }, ctx);
+		// omp gives the tools back with the plan-mode tool set, then reports the review as closed.
+		s.setActive([...s.activeTools(), "edit"]);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-B", choice: "execute" }, ctx);
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-B");
+		expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.json"), "utf8"))).toEqual({ ...before, sid: "sess-B" });
+		expect(files(s.dir, "sess-A")).toEqual({ run: false, beat: false });
+		expect(files(s.dir, "sess-B")).toEqual({ run: true, beat: true });
+		expect(s.activeTools()).not.toContain("edit");
+		expect(openKeys(load(join(s.dir, "2026-11-16.jsonl")))).toEqual(["K-1"]);
+		await s.commands["strategium-status"].handler("", ctx);
+		expect(notes.at(-1)).toContain("K-1");
+		await s.commands["strategium-config"].handler("", ctx);
+		expect(notes.at(-1)).toContain("notify: off (this session)");
+	});
+
+	test("a plain /new leaves the run with its session", async () => {
+		const { s, sm, ctx } = await owner();
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new" }, ctx);
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-A");
+		expect(files(s.dir, "sess-A").run).toBe(true);
+		expect(files(s.dir, "sess-B").run).toBe(false);
+		expect(s.activeTools()).toContain("edit");
+	});
+
+	test("a review closed in place does not move a later /new", async () => {
+		const { s, sm, ctx } = await owner();
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "keep" }, ctx);
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new" }, ctx);
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-A");
+		expect(files(s.dir, "sess-B").run).toBe(false);
+	});
+
+	test("a review in a session without a run moves nothing", async () => {
+		const s = setup("sess-A");
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer);
+		await s.handlers.session_start[0]({}, ctx);
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new" }, ctx);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-B", choice: "execute" }, ctx);
+		expect(files(s.dir, "sess-B").run).toBe(false);
+		expect(existsSync(lockPath(s.dir, "K-1"))).toBe(false);
+	});
+
+	test("closing a plan review hides edit again", async () => {
+		const { s, ctx } = await owner();
+		s.setActive([...s.activeTools(), "edit", "ast_edit"]);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "keep" }, ctx);
+		expect(s.activeTools()).not.toContain("edit");
+		expect(s.activeTools()).not.toContain("ast_edit");
+		expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.json"), "utf8")).hidden).toEqual(expect.arrayContaining(["edit", "ast_edit"]));
 	});
 });
 

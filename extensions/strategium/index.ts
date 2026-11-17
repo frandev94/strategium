@@ -596,6 +596,8 @@ export default function (pi: ExtensionAPI) {
 	let live: SessionCtx | undefined;
 	// omp switches sessions by mutating one SessionManager, so the previous id has to be kept as a string.
 	let liveSid: string | undefined;
+	// The session that asked for the open plan review, while it is open.
+	let reviewSid: string | undefined;
 	let timerSet = false;
 	// /strategium-config notify on|off per session id; it wins over STRATEGIUM_NOTIFY (1, true, on, yes), which is off when unset.
 	const notifyBySession = new Map<string, boolean>();
@@ -878,13 +880,26 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setStatus("strategium", undefined);
 	});
 
-	const onSession = async (_e: unknown, ctx: SessionCtx) => {
+	const onSession = async (e: { type: string; reason?: string }, ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
 		// omp emits session_switch, not session_start, for a session opened in the same process: follow the latest one.
 		const prevSid = liveSid;
 		live = ctx;
 		const sid = sidOf(ctx);
 		liveSid = sid;
+		// The fresh session of an approved plan takes over the run of the session that asked for the review.
+		if (e.reason === "new" && prevSid && prevSid === reviewSid && prevSid !== sid && !readRun(sid)) {
+			const moved = ownRun(prevSid);
+			if (moved) {
+				claim(stateDir(), moved.key, sid, prevSid);
+				writeRun({ ...moved, sid });
+				rmSync(runFile(prevSid), { force: true });
+				rmSync(beatFile(prevSid), { force: true });
+				beat(sid);
+				const n = notifyBySession.get(prevSid);
+				if (n !== undefined) notifyBySession.set(sid, n);
+			}
+		}
 		// A session without a run does not inherit the previous session's hidden tools.
 		if (prevSid && prevSid !== sid && !readRun(sid)) await restoreTools(readRun(prevSid)?.hidden);
 		// A resumed session takes its ticket back, unless another session claimed it meanwhile.
@@ -931,6 +946,21 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.on("session_start", onSession);
 	pi.on("session_switch", onSession);
+
+	// An approved plan opens a fresh session (reason "new", no shutdown of the old one); the run follows it only then.
+	pi.on("plan_review_requested", (e, ctx) => {
+		if (ctx?.agent?.kind === "sub") return;
+		reviewSid = ownRun(e.sessionId) ? e.sessionId : undefined;
+	});
+	// omp has restored the plan-mode tool set by now: hide the editing tools again.
+	pi.on("plan_review_resolved", async (_e, ctx) => {
+		if (ctx?.agent?.kind === "sub") return;
+		reviewSid = undefined;
+		const run = ownRun(sidOf(ctx));
+		if (!run) return;
+		const hid = await hideCaptainTools();
+		writeRun({ ...run, hidden: [...new Set([...(run.hidden ?? []), ...hid])] });
+	});
 	// One line at startup, like other plugins print, so the user sees the plugin is on and how it is set.
 	pi.on("session_start", (_e: unknown, ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
