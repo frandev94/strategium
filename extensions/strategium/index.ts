@@ -26,7 +26,7 @@ import { childEnv } from "./env";
 // Ownership of a ticket is an atomic claim file (see claim() in timer.ts), held while the session lives.
 // `untimed`: the run has no booking. Its time is counted, but there are no alerts, no stand down and no new shift.
 // `where`: the station the run is at, read from the todo (see whereFrom), so the footer shows it after a restart too.
-type Where = { station: string; back?: true; seal?: string };
+type Where = { station: string; back?: true; seal?: string; task?: string };
 type Slice = { id: string; parallel: boolean; files: string[] };
 // `hidden`: the tools hidden from the Captain for this run, put back when it ends. `slices`: the plan's squads as declared.
 // `launched`: the parallel squads went out together in one task call.
@@ -73,7 +73,11 @@ export function whereFrom(phases: Phase[]): Where | undefined {
 	const task = phases[i].tasks.find(t => t.status === "in_progress")!;
 	const seal = task.content.match(/^\s*(?:\[seal\]|\u{f047a}\s*seal\s*·)\s*(\S+)/u)?.[1];
 	const back = phases.slice(i + 1).some(p => p.tasks.some(t => t.status === "completed"));
-	return { station: phases[i].name, ...(back ? { back: true as const } : {}), ...(seal ? { seal } : {}) };
+	// A seal keeps its own form. Other tasks show their text without the agent tag (`[agent] ` or `<glyph> agent · `), cut at 32.
+	const text = seal ? "" : task.content.replace(/^\s*(?:\[[\w-]+\]|[^\w\s[]+\s*[\w-]+\s*·)\s*/u, "").trim();
+	const chars = [...text];
+	const short = chars.length > 32 ? `${chars.slice(0, 31).join("")}…` : text;
+	return { station: phases[i].name, ...(back ? { back: true as const } : {}), ...(seal ? { seal } : {}), ...(short ? { task: short } : {}) };
 }
 
 // Read on every use: the environment can change it, and a test points it somewhere of its own.
@@ -602,7 +606,7 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 		? ""
 		: w.seal
 			? ` · \x1b[33m${nf ? "\u{f051f} " : "⏳"} seal ${w.seal}\x1b[39m`
-			: ` · ${w.back ? (nf ? "\u{f054c}  " : "↩ ") : ""}${w.station}`;
+			: ` · ${w.back ? (nf ? "\u{f054c}  " : "↩ ") : ""}${w.station}${w.task ? ` › ${w.task}` : ""}`;
 	return `${dot}\x1b[39m ${planet} \x1b[38;5;248mstrategium: \x1b[39m${key}${where} · ${value}`;
 }
 

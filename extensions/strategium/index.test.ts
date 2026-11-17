@@ -310,14 +310,37 @@ describe("the station in the footer", () => {
 	];
 	const waitingForPlan = [phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "in_progress"])];
 
-	test("the active phase is the station", () => expect(whereFrom(skirmish)).toEqual({ station: "Skirmish" }));
+	test("the active phase is the station, with its task text", () =>
+		expect(whereFrom(skirmish)).toEqual({ station: "Skirmish", task: "Squad 1" }));
 	test("a station before completed work is a return", () =>
-		expect(whereFrom(backToScriptorium)).toEqual({ station: "Scriptorium", back: true }));
-	test("an active seal task waits for the user, with or without glyph tags", () => {
+		expect(whereFrom(backToScriptorium)).toEqual({ station: "Scriptorium", back: true, task: "Redraft squad 2" }));
+	test("an active seal task waits for the user, with or without glyph tags, and carries no task", () => {
 		expect(whereFrom(waitingForPlan)).toEqual({ station: "Scriptorium", seal: "Plan" });
-		expect(whereFrom([phase("Scriptorium", ["\u{f047a} seal · Plan the squads", "in_progress"])])?.seal).toBe("Plan");
+		expect(whereFrom([phase("Scriptorium", ["\u{f047a} seal · Plan the squads", "in_progress"])])).toEqual({ station: "Scriptorium", seal: "Plan" });
+	});
+	test("the task drops a bracket tag or a glyph tag", () => {
+		expect(whereFrom([phase("Muster", ["[captain] Begin run and theatre status", "in_progress"])])?.task).toBe("Begin run and theatre status");
+		expect(whereFrom([phase("Muster", ["\u{f0a1} captain · Begin run", "in_progress"])])?.task).toBe("Begin run");
+		expect(whereFrom([phase("Muster", ["🧭 captain · Begin run", "in_progress"])])?.task).toBe("Begin run");
+	});
+	test("the task is cut at 32 characters with an ellipsis", () => {
+		const long = "x".repeat(40);
+		expect(whereFrom([phase("Muster", [`[captain] ${long}`, "in_progress"])])?.task).toBe(`${"x".repeat(31)}…`);
+		expect(whereFrom([phase("Muster", [`[captain] ${"y".repeat(32)}`, "in_progress"])])?.task).toBe("y".repeat(32));
+		// An emoji (2 UTF-16 units) at the cut is kept whole, never split.
+		expect(whereFrom([phase("Muster", [`[captain] ${"x".repeat(30)}🧭${"x".repeat(5)}`, "in_progress"])])?.task).toBe(`${"x".repeat(30)}🧭…`);
 	});
 	test("no active task, no station", () => expect(whereFrom([phase("Muster", ["[captain] Muster", "pending"])])).toBeUndefined());
+
+	test("the footer shows station › task, also after a return arrow", async () => {
+		const { call, todo, start, shown } = setup();
+		await call({ action: "begin", key: "dark-mode" });
+		todo([phase("Muster", ["[captain] Begin run and theatre status", "in_progress"])]);
+		start();
+		expect(shown()).toContain("dark-mode · Muster › Begin run and theatre status · ");
+		todo(backToScriptorium);
+		expect(shown()).toContain("dark-mode · ↩ Scriptorium › Redraft squad 2 · ");
+	});
 
 	test("the footer shows the station next to the time", async () => {
 		const { call, todo, start, shown } = setup();
@@ -327,7 +350,7 @@ describe("the station in the footer", () => {
 		// Within the 3-minute heartbeat gap, so the session start does not close the block as a crash.
 		setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
 		start();
-		expect(shown()).toContain("strategium: dark-mode · Skirmish · 2 min");
+		expect(shown()).toContain("strategium: dark-mode · Skirmish › Squad 1 · 2 min");
 	});
 
 	test("a timed run keeps its booking next to the station", async () => {
@@ -337,7 +360,7 @@ describe("the station in the footer", () => {
 		todo(skirmish);
 		setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
 		start();
-		expect(shown()).toContain("PROJ-123 · Skirmish · 🌍 2/120 min (1%)");
+		expect(shown()).toContain("PROJ-123 · Skirmish › Squad 1 · 🌍 2/120 min (1%)");
 	});
 
 	test("a seal waiting for the user and a return are marked, in emoji or in Nerd Font glyphs", async () => {
@@ -347,12 +370,12 @@ describe("the station in the footer", () => {
 		start();
 		expect(shown()).toContain("dark-mode · ⏳ seal Plan · ");
 		todo(backToScriptorium);
-		expect(shown()).toContain("dark-mode · ↩ Scriptorium · ");
+		expect(shown()).toContain("dark-mode · ↩ Scriptorium › Redraft squad 2 · ");
 		process.env.STRATEGIUM_GLYPHS = "1";
 		todo(waitingForPlan);
 		expect(shown()).toContain("dark-mode · \u{f051f}  seal Plan · ");
 		todo(backToScriptorium);
-		expect(shown()).toContain("dark-mode · \u{f054c}  Scriptorium · ");
+		expect(shown()).toContain("dark-mode · \u{f054c}  Scriptorium › Redraft squad 2 · ");
 	});
 
 	test("the station survives a restart of omp", async () => {
@@ -361,7 +384,7 @@ describe("the station in the footer", () => {
 		first.todo(skirmish);
 		const again = setup("sess-0001", first.dir);
 		again.start();
-		expect(again.shown()).toContain("dark-mode · Skirmish · ");
+		expect(again.shown()).toContain("dark-mode · Skirmish › Squad 1 · ");
 	});
 });
 
