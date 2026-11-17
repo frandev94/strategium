@@ -20,7 +20,7 @@ import {
 	type Ev,
 } from "./timer";
 import { childEnv } from "./env";
-import { cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, renderWidget, type Entry, type Note, type View, type ViewInput } from "./cockpit";
+import { activePhase, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
 // Several sessions can run different tickets at the same time; the day file holds them all.
@@ -69,7 +69,6 @@ type SessionCtx = {
 	ui: {
 		notify(message: string, level?: "info" | "warning" | "error"): void;
 		setStatus(key: string, value: string | undefined): void;
-		setWidget?(key: string, content: ((tui: Tui, theme: unknown) => Component) | undefined, options?: { placement?: "aboveEditor" | "belowEditor" }): void;
 		custom?(factory: (tui: Tui, theme: unknown, keybindings: unknown, done: (result?: unknown) => void) => Component, options?: { overlay?: boolean }): unknown;
 	};
 	setInterval(fn: () => void, ms: number): unknown;
@@ -653,12 +652,6 @@ export default function (pi: ExtensionAPI) {
 		archmagosBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_ARCHMAGOS?.trim() ?? "");
 	const archmagosState = (sid: string) =>
 		`${archmagosOn(sid) ? "on" : "off"} (${archmagosBySession.has(sid) ? "this session" : "STRATEGIUM_ARCHMAGOS"})`;
-	// /strategium-config cockpit on|off per session id: the widget above the editor is opt-in. It wins over STRATEGIUM_COCKPIT (1, true, on, yes), which is off when unset.
-	const cockpitBySession = new Map<string, boolean>();
-	const cockpitOn = (sid: string) =>
-		cockpitBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_COCKPIT?.trim() ?? "");
-	const cockpitState = (sid: string) =>
-		`${cockpitOn(sid) ? "on" : "off"} (${cockpitBySession.has(sid) ? "this session" : "STRATEGIUM_COCKPIT"})`;
 	// Minutes of idle before the clock pauses: /strategium-config idle <min> per session wins over STRATEGIUM_IDLE_MIN
 	// (whole minutes; unset or invalid → 3; 0 = off).
 	const idleBySession = new Map<string, number>();
@@ -694,7 +687,7 @@ export default function (pi: ExtensionAPI) {
 	/** The alarm, only when notifications are on for this session. */
 	const alert = (sid: string, level: string, msg: string) => (notifyOn(sid) ? signal(level, msg) : undefined);
 
-	// The cockpit: a widget above the editor while this session has a run, and an overlay on demand. Everything it
+	// The cockpit: an overlay on demand while this session has a run. Everything it
 	// shows beyond the run file (chronicle, squad notes, agent ids) is in memory, keyed by run key, so the plan-approval
 	// move to a new session keeps it and an omp restart loses it.
 	const pal = palette(colorDepth());
@@ -702,11 +695,10 @@ export default function (pi: ExtensionAPI) {
 		key: undefined as string | undefined,
 		chronicle: [] as Entry[],
 		notes: {} as Record<string, Note>,
-		jobs: new Map<string, { who: string; squad?: string }>(),
+		// shortcut: the agent registry is in memory, so an omp restart loses it and only todo tasks and run squads show; upgrade by persisting it in Run if users need it.
+		deployed: new Map<string, Deployed>(),
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
-		shown: false,
-		tui: undefined as Tui | undefined,
 		overlay: undefined as Tui | undefined,
 		close: undefined as (() => void) | undefined,
 	};
@@ -714,39 +706,29 @@ export default function (pi: ExtensionAPI) {
 		cockpit.key = key;
 		cockpit.chronicle = [];
 		cockpit.notes = {};
-		cockpit.jobs.clear();
+		cockpit.deployed.clear();
 		cockpit.clock = undefined;
 	};
 	const log = (key: string, who: string, text: string, tone?: Entry["tone"]) => {
 		if (cockpit.key !== key) resetCockpit(key);
 		cockpit.chronicle = pushEntry(cockpit.chronicle, { at: new Date().toTimeString().slice(0, 5), who, text, ...(tone ? { tone } : {}) });
 	};
-	/** A deployed agent ended: log it once and note its squad as failed or not. */
+	/** A deployed agent ended: log it once, keep it in the registry as done or failed, and note its squad as failed or not. */
 	const endJob = (key: string, id: string, ok: boolean) => {
-		const job = cockpit.jobs.get(id);
-		if (!job) return;
-		cockpit.jobs.delete(id);
+		const job = cockpit.deployed.get(id);
+		if (job?.state !== "active") return;
+		job.state = ok ? "done" : "failed";
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
 		log(key, job.who, ok ? "✓ returned" : "✗ failed", ok ? "ok" : "fail");
 	};
-	const hideWidget = (ctx: SessionCtx) => {
-		if (!cockpit.shown) return;
-		cockpit.shown = false;
-		cockpit.tui = undefined;
-		ctx.ui.setWidget?.("strategium", undefined);
-	};
-	const hideCockpit = (ctx: SessionCtx) => {
-		cockpit.close?.();
-		hideWidget(ctx);
-	};
-	/** Rebuild the view from the run and the in-memory state, then show or repaint the widget. Never ticks the timer. */
-	const drawCockpit = (ctx: SessionCtx, run: Run) => {
+	/** Rebuild the view from the run and the in-memory state, then repaint an open overlay. Never ticks the timer. */
+	const drawCockpit = (run: Run) => {
 		if (cockpit.key !== run.key) resetCockpit(run.key);
 		cockpit.view = cockpitView({
 			key: run.key,
 			untimed: cockpit.clock?.bk ? undefined : run.untimed,
 			glyphs: process.env.STRATEGIUM_GLYPHS === "1",
-			where: run.where,
+			deployed: cockpit.deployed,
 			phases: run.phases,
 			slices: run.slices,
 			stopped: run.stopped,
@@ -756,18 +738,6 @@ export default function (pi: ExtensionAPI) {
 			chronicle: cockpit.chronicle,
 		});
 		cockpit.overlay?.requestRender();
-		if (!ctx.hasUI || typeof ctx.ui.setWidget !== "function") return;
-		if (!cockpitOn(sidOf(ctx))) return hideWidget(ctx);
-		if (cockpit.shown) return cockpit.tui?.requestRender();
-		cockpit.shown = true;
-		ctx.ui.setWidget(
-			"strategium",
-			tui => {
-				cockpit.tui = tui;
-				return { render: width => renderWidget(cockpit.view!, width, pal), dispose() { cockpit.shown = false; cockpit.tui = undefined; } };
-			},
-			{ placement: "aboveEditor" },
-		);
 	};
 	const openCockpit = (ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
@@ -775,7 +745,7 @@ export default function (pi: ExtensionAPI) {
 		if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
 		if (!ctx.hasUI || typeof ctx.ui.custom !== "function") return ctx.ui.notify("Strategium: the cockpit needs the interactive UI", "warning");
 		if (cockpit.close) return;
-		drawCockpit(ctx, run);
+		drawCockpit(run);
 		const closed = () => {
 			cockpit.close = undefined;
 			cockpit.overlay = undefined;
@@ -854,7 +824,7 @@ export default function (pi: ExtensionAPI) {
 			const sid = sidOf(ctx);
 			const found = ownRun(sid);
 			if (!found) {
-				hideCockpit(ctx);
+				cockpit.close?.();
 				return ctx.ui.setStatus("strategium", undefined);
 			}
 			// A gap in our own heartbeats means the machine slept: close the block at the last beat and stay paused.
@@ -904,7 +874,7 @@ export default function (pi: ExtensionAPI) {
 			if (cockpit.key !== key) resetCockpit(key);
 			if (running) maybeAlert(ctx, sid, file, evs, key, now, el, bk);
 			cockpit.clock = { running, el, ...(bk ? { bk } : {}) };
-			drawCockpit(ctx, found);
+			drawCockpit(found);
 		} catch (err) {
 			ctx.ui.notify(`Strategium timer: ${err instanceof Error ? err.message : String(err)}`, "warning");
 		}
@@ -1106,16 +1076,14 @@ export default function (pi: ExtensionAPI) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; cockpit on|off shows or hides the widget above the editor", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus", (arg, ctx, sid) => {
 		if (arg !== undefined) {
 			const m = arg.match(/^notify\s+(on|off)$/);
 			const i = arg.match(/^idle\s+(\d+)$/);
 			const a = arg.match(/^archmagos\s+(on|off)$/);
-			const c = arg.match(/^cockpit\s+(on|off)$/);
-			if (!m && !i && !a && !c) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or cockpit on|off; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			if (!m && !i && !a) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (a) archmagosBySession.set(sid, a[1] === "on");
-			else if (c) cockpitBySession.set(sid, c[1] === "on");
 			else idleBySession.set(sid, Number(i![1]));
 		}
 		const env = (k: string) => process.env[k]?.trim() || "not set";
@@ -1125,7 +1093,6 @@ export default function (pi: ExtensionAPI) {
 				`notify: ${notifyState(sid)}`,
 				`idle: ${idleState(sid)}`,
 				`archmagos: ${archmagosState(sid)}`,
-				`cockpit: ${cockpitState(sid)}`,
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`alarm: ${env("STRATEGIUM_ALARM")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
@@ -1171,8 +1138,6 @@ export default function (pi: ExtensionAPI) {
 					if (idle !== undefined) idleBySession.set(sid, idle);
 					const arch = archmagosBySession.get(prevSid);
 					if (arch !== undefined) archmagosBySession.set(sid, arch);
-					const cp = cockpitBySession.get(prevSid);
-					if (cp !== undefined) cockpitBySession.set(sid, cp);
 				} catch {
 					// Another session took the key meanwhile: the run stays where it is.
 				}
@@ -1477,7 +1442,7 @@ export default function (pi: ExtensionAPI) {
 			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.name} granted`);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 		}
-		drawCockpit(ctx, { ...run, phases });
+		drawCockpit({ ...run, phases });
 	});
 
 	// An agent deployed: the host allocates its id in the task result. An agent spawned by eval agent() has no id and shows only here.
@@ -1490,33 +1455,35 @@ export default function (pi: ExtensionAPI) {
 		for (const p of progress.map(asObj)) {
 			if (typeof p.id !== "string") continue;
 			if (p.status === "pending" || p.status === "running") {
-				if (cockpit.jobs.has(p.id)) continue;
+				if (cockpit.deployed.has(p.id)) continue;
 				const item = typeof p.index === "number" ? items[p.index] : undefined;
 				const agent = agentName(String(item?.agent ?? "task"));
 				const squad = item && builtSlice(item, run)?.id;
+				const station = activePhase(run.phases ?? []);
+				// log first: it resets the cockpit when the run key changed, which would wipe a registry entry set before it.
 				if (!squad) {
-					cockpit.jobs.set(p.id, { who: agent.toUpperCase() });
 					log(run.key, agent.toUpperCase(), "deployed");
+					cockpit.deployed.set(p.id, { who: agent.toUpperCase(), role: agent, station, state: "active" });
 					continue;
 				}
 				const veteran = agent === "veteran";
-				if (veteran) cockpit.notes[squad] = { ...cockpit.notes[squad], veteran: true };
-				cockpit.jobs.set(p.id, { who: `SQUAD ${squad}`, squad });
 				const ic = icons(process.env.STRATEGIUM_GLYPHS === "1");
 				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} escalated to VETERAN` : `${ic.brother} battle-brother deployed`, veteran ? "fail" : undefined);
-			} else if (cockpit.jobs.has(p.id) && ["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
+				if (veteran) cockpit.notes[squad] = { ...cockpit.notes[squad], veteran: true };
+				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active" });
+			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
 		}
-		drawCockpit(ctx, run);
+		drawCockpit(run);
 	});
 
 	// An agent returned or failed: its job ends in a message to the model. An id ends once.
 	pi.on("context", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager) return;
-		const ends = jobEnds(asObj(e).messages).filter(j => cockpit.jobs.has(j.id));
+		const ends = jobEnds(asObj(e).messages).filter(j => cockpit.deployed.get(j.id)?.state === "active");
 		const run = ends.length ? ownRun(sidOf(ctx)) : undefined;
 		if (!run) return;
 		for (const j of ends) endJob(run.key, j.id, j.status === "completed");
-		drawCockpit(ctx, run);
+		drawCockpit(run);
 	});
 
 	pi.on("before_subagent_spawn", (e, ctx) => {
@@ -1525,12 +1492,14 @@ export default function (pi: ExtensionAPI) {
 		const agent = agentName(String(asObj(e).agent ?? "task"));
 		if (!run || !ROSTER.includes(agent)) return;
 		log(run.key, agent.toUpperCase(), "deployed");
-		drawCockpit(ctx, run);
+		// shortcut: eval spawns never report an end (no host id), so they stay ▶ until the run key changes; upgrade when omp gives eval agents an id and an end event.
+		cockpit.deployed.set(`eval-${agent}-${cockpit.deployed.size + 1}`, { who: agent.toUpperCase(), role: agent, station: activePhase(run.phases ?? []), state: "active" });
+		drawCockpit(run);
 	});
 
 	pi.on("session_shutdown", (_e, ctx) => {
 		if (ctx?.agent?.kind === "sub") return;
-		hideCockpit(ctx);
+		cockpit.close?.();
 		resetCockpit();
 	});
 }

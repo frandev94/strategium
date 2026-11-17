@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	activePhase,
 	closes,
 	cockpitView,
 	colorDepth,
@@ -8,12 +9,13 @@ import {
 	palette,
 	pushEntry,
 	renderCockpit,
-	renderWidget,
 	sealsFrom,
+	type Deployed,
 	type Entry,
 	type Phase,
 	type ViewInput,
 } from "./cockpit";
+import { AGENTS } from "../../skills/strategium/todo";
 
 const TRUE = palette("truecolor");
 const GOLD = "\x1b[38;2;201;162;39m";
@@ -23,6 +25,24 @@ const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const phases = (...tasks: [string, string][]): Phase[] => [{ name: "Plan", tasks: tasks.map(([content, status]) => ({ content, status })) }];
 const input = (over: Partial<ViewInput> = {}): ViewInput => ({ key: "K-1", notes: {}, chronicle: [], ...over });
 const text = (over: Partial<ViewInput> = {}, width = 100) => plain(renderCockpit(cockpitView(input(over)), width, 0, TRUE).join("\n"));
+
+// The 8 stations of SKILL.md with the agent tags each one uses, and the boxes each must show.
+const STATIONS: [string, string[], string[]][] = [
+	["Muster", ["captain", "seal"], ["CAPTAIN", "SEAL"]],
+	["Auspex", ["scout"], ["SCOUTS"]],
+	["Scriptorium", ["librarian", "archmagos", "seal"], ["LIBRARIANS", "SEAL"]],
+	["Deployment", ["captain"], ["CAPTAIN"]],
+	["Skirmish", ["battle-brother", "veteran", "apothecary", "seal"], ["BATTLE-BROTHERS", "APOTHECARIES", "SEAL"]],
+	["Inquisition", ["inquisitor", "security-reviewer", "sonic", "task", "seal"], ["INQUISITOR", "SECURITY-REVIEWER", "SONIC", "ADEPTS", "SEAL"]],
+	["Extraction", ["captain", "seal"], ["CAPTAIN", "SEAL"]],
+	["Debrief", ["captain"], ["CAPTAIN"]],
+];
+/** The run at station `at`: earlier phases completed, its first task in_progress. */
+const run = (at: number): Phase[] =>
+	STATIONS.map(([name, tags], i) => ({ name, tasks: tags.map((tag, j) => ({ content: `[${tag}] ${tag} job`, status: i < at ? "completed" : i === at && j === 0 ? "in_progress" : "pending" })) }));
+// Box titles are the `┌─ TITLE ─` / `╔═ …` tops; a plain icon before the name is dropped.
+const titles = (t: string) => [...t.matchAll(/[┌╔]─ (.+?) ─/g)].map(m => m[1].replace(/^\S+ (?=[A-Z-]+$)/, ""));
+const dep = (over: Partial<Deployed>): Deployed => ({ who: "X", role: "scout", station: 0, state: "active", ...over });
 
 describe("seals", () => {
 	test("sealsFrom reads bracket and glyph tags with their three states", () => {
@@ -52,43 +72,172 @@ describe("seals", () => {
 });
 
 describe("view", () => {
-	test("role boxes: active, done and idle", () => {
-		const active = text({ phases: phases(["[librarian] mapping the repo", "in_progress"]) });
-		expect(active).toContain("▶ mapping the repo");
-		const done = text({ phases: phases(["[apothecary] first", "completed"], ["[apothecary] last one", "completed"]) });
-		expect(done).toContain("✓ last one");
-		const idle = text();
-		expect(idle).toContain("○ standing by");
-		expect(idle).toContain("○ awaiting judgement");
+	test("activePhase is the first in_progress phase, by index", () => {
+		const two = (a: string, b: string): Phase[] => [{ name: "Same", tasks: [{ content: "[captain] x", status: a }] }, { name: "Same", tasks: [{ content: "[captain] y", status: b }] }];
+		expect(activePhase(two("completed", "in_progress"))).toBe(1);
+		expect(activePhase(two("in_progress", "in_progress"))).toBe(0);
 	});
 
-	test("role tasks in glyph form are found and lose their tag", () => {
+	test("activePhase falls back to the first pending phase, then the last, then -1", () => {
+		const at = (...s: string[]): Phase[] => s.map((status, i) => ({ name: `P${i}`, tasks: [{ content: "[captain] x", status }] }));
+		expect(activePhase(at("completed", "pending", "pending"))).toBe(1);
+		expect(activePhase(at("completed", "completed"))).toBe(1);
+		expect(activePhase([])).toBe(-1);
+	});
+
+	test.each(STATIONS.map((s, i) => [s[0], s[2], i] as const))("station %s shows %j", (_name, boxes, at) => {
+		expect(titles(text({ phases: run(at) }))).toEqual(boxes);
+	});
+
+	test("the station title is a rule exactly width cells wide, marked ▶", () => {
+		const line = plain(renderCockpit(cockpitView(input({ phases: run(4) })), 100, 0, TRUE).find(l => plain(l).startsWith("╟─ ▶ Skirmish"))!);
+		expect(Bun.stringWidth(line)).toBe(100);
+		expect(line.endsWith("─╢")).toBe(true);
+	});
+
+	test("a long station title is cut and the rule still ends at the border", () => {
+		const phs: Phase[] = [{ name: "S".repeat(200), tasks: [{ content: "[captain] x", status: "in_progress" }] }];
+		const line = renderCockpit(cockpitView(input({ phases: phs })), 72, 0, TRUE).map(plain).find(l => l.startsWith("╟─ ▶ SSS"))!;
+		expect(Bun.stringWidth(line)).toBe(72);
+		expect(line).toContain("…");
+		expect(line).toMatch(/… ─+╢$/);
+	});
+
+	test("a return shows ↶ on the station that was returned to", () => {
+		const phs: Phase[] = [{ name: "Forge", tasks: [{ content: "[captain] redo", status: "in_progress" }] }, { name: "Later", tasks: [{ content: "[captain] x", status: "completed" }] }];
+		expect(text({ phases: phs })).toMatch(/╟─ ↶ Forge /);
+	});
+
+	test("a running task beside a completed sibling is ▶, not a return, while no later phase is completed", () => {
+		const phs: Phase[] = [{ name: "Forge", tasks: [{ content: "[captain] done", status: "completed" }, { content: "[captain] now", status: "in_progress" }] }, { name: "Later", tasks: [{ content: "[captain] x", status: "pending" }] }];
+		const t = text({ phases: phs });
+		expect(t).toMatch(/╟─ ▶ Forge /);
+		expect(t).not.toContain("↶");
+	});
+
+	test("a waiting seal puts its name after the station", () => {
+		expect(text({ phases: phases(["[seal] Plan", "in_progress"]) })).toContain("▶ Plan · ◷ seal Plan awaits you");
+	});
+
+	test("with no task running the first pending phase is the station", () => {
+		const phs: Phase[] = [{ name: "Muster", tasks: [{ content: "[captain] x", status: "completed" }] }, { name: "Auspex", tasks: [{ content: "[scout] map", status: "pending" }] }];
+		const t = text({ phases: phs });
+		expect(t).toMatch(/╟─ ○ Auspex /);
+		expect(titles(t)).toEqual(["SCOUTS"]);
+	});
+
+	test("no phases: awaiting orders and no box", () => {
+		const t = text();
+		expect(t).toMatch(/╟─ ○ awaiting orders /);
+		expect(titles(t)).toEqual([]);
+	});
+
+	test("no phases: an agent registered with station -1 opens no box", () => {
+		expect(titles(text({ deployed: new Map([["a1", dep({ station: -1 })]]) }))).toEqual([]);
+	});
+
+	test("the old fixed boxes are gone", () => {
+		const t = text({ phases: run(4) });
+		for (const w of ["STRATEGOS", "LIBRARIAN", "INQUISITOR", "standing by", "awaiting judgement", "\u25cc"]) expect(t).not.toContain(w);
+	});
+
+	test("each line is a task with its state mark and loses its tag", () => {
+		const t = text({ phases: phases(["[scout] first", "completed"], ["[scout] second", "in_progress"], ["[scout] third", "pending"], ["[scout] fourth", "failed"]) });
+		for (const l of ["✓ first", "▶ second", "○ third", "✗ fourth"]) expect(t).toContain(l);
+		expect(t).not.toContain("[scout]");
+	});
+
+	test("glyph-form tags are found and lose their tag", () => {
+		expect(titles(text({ phases: phases(["\u{f0e0b} inquisitor · judging", "in_progress"]) }))).toEqual(["INQUISITOR"]);
 		expect(text({ phases: phases(["\u{f0e0b} inquisitor · judging", "in_progress"]) })).toContain("▶ judging");
 	});
 
-	test.each([
-		["seal", { station: "Plan", seal: "Plan" }, "◷ seal Plan awaits you"],
-		["return", { station: "Forge", back: true as const, task: "redo" }, "↶ Forge › redo"],
-		["station", { station: "Forge", task: "build" }, "▶ Forge › build"],
-		["none", undefined, "○ awaiting orders"],
-	])("strategos: %s", (_n, where, expected) => {
-		expect(text({ where })).toContain(expected);
+	test("the Archmagos planner shows in LIBRARIANS", () => {
+		const t = text({ phases: phases(["[archmagos] merging the plan", "in_progress"]) });
+		expect(titles(t)).toEqual(["LIBRARIANS"]);
+		expect(t).toContain("▶ merging the plan");
 	});
 
-	test("squad boxes in declared order with their states", () => {
+	test("squad lines follow the tasks, in declared order with their states", () => {
 		const t = text({
+			phases: phases(["[battle-brother] Build squad a", "in_progress"]),
 			slices: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }],
 			stopped: [{ id: "c" }],
 			agents: { x1: { id: "a" } },
 			notes: { b: { failed: true }, d: { veteran: true } },
 		});
-		expect(t).toContain("SQUAD a");
-		expect(t).toContain("▶ forging");
-		expect(t).toContain("✗ failed");
-		expect(t).toContain("✓ returned");
-		expect(t).toContain("◌ awaiting deployment");
-		expect(t).toContain("‡ VETERAN");
-		expect(t.indexOf("SQUAD a")).toBeLessThan(t.indexOf("SQUAD d"));
+		for (const l of ["▶ † squad a forging", "✗ † squad b failed", "✓ † squad c returned", "○ ‡ squad d awaiting deployment"]) expect(t).toContain(l);
+		expect(t.indexOf("squad a")).toBeLessThan(t.indexOf("squad d"));
+		expect(t.indexOf("Build squad a")).toBeLessThan(t.indexOf("squad a forging"));
+	});
+
+	test("squad precedence: an agent beats failed, failed beats stopped", () => {
+		const row = (over: Partial<ViewInput>) => text({ phases: phases(["[battle-brother] x", "pending"]), slices: [{ id: "a" }], ...over });
+		const forging = row({ agents: { x: { id: "a" } }, notes: { a: { failed: true } } });
+		expect(forging).toContain("▶ † squad a forging");
+		expect(forging).not.toContain("✗");
+		const failed = row({ stopped: [{ id: "a" }], notes: { a: { failed: true } } });
+		expect(failed).toContain("✗ † squad a failed");
+		expect(failed).not.toContain("returned");
+	});
+
+	test("squads show only in the BATTLE-BROTHERS box, so not outside Skirmish", () => {
+		expect(text({ phases: phases(["[captain] x", "in_progress"]), slices: [{ id: "a" }] })).not.toContain("squad a");
+	});
+
+	test("a veteran task and a brother task carry † and ‡ in plain mode, and the Nerd glyphs in Nerd mode, never a skull", () => {
+		const phs = phases(["[battle-brother] Build squad alpha", "in_progress"], ["[veteran] Rebuild squad gamma", "in_progress"]);
+		const plainText = text({ phases: phs });
+		expect(plainText).toContain("▶ † Build squad alpha");
+		expect(plainText).toContain("▶ ‡ Rebuild squad gamma");
+		const nerd = text({ phases: phs, glyphs: true });
+		expect(nerd).toContain("▶ \u{f18be}  Build squad alpha");
+		expect(nerd).toContain("▶ \u{f0787}  Rebuild squad gamma");
+		expect(plainText + nerd).not.toContain("\u2620");
+	});
+
+	test("a Nerd box title is its glyph, exactly two spaces, then the name", () => {
+		expect(text({ phases: phases(["[librarian] x", "in_progress"]), glyphs: true })).toContain(`${AGENTS.librarian}  LIBRARIANS`);
+	});
+
+	test("three boxes at width 83 take two columns, not three", () => {
+		const phs = phases(["[captain] a", "in_progress"], ["[scout] b", "in_progress"], ["[apothecary] c", "in_progress"]);
+		const tops = renderCockpit(cockpitView(input({ phases: phs })), 83, 0, TRUE).map(plain).filter(l => l.includes("┌"));
+		expect(tops).toHaveLength(2);
+		expect(tops[0].split("┌")).toHaveLength(3);
+	});
+
+	test("a registry agent seen in this station shows with its id and state", () => {
+		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ station: 1 })], ["a2", dep({ station: 1, state: "done" })], ["a3", dep({ station: 1, state: "failed" })]]) });
+		for (const l of ["▶ a1", "✓ a2", "✗ a3"]) expect(t).toContain(l);
+	});
+
+	test("a registry agent seen in another station does not show", () => {
+		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ role: "battle-brother", station: 0 })]]) });
+		expect(titles(t)).toEqual(["SCOUTS"]);
+		expect(t).not.toContain("a1");
+	});
+
+	test("a registry agent can open its box on its own, and a squad agent shows only through its squad line", () => {
+		const t = text({
+			phases: phases(["[captain] x", "in_progress"]),
+			deployed: new Map([["eval-apothecary-1", dep({ role: "apothecary", station: 0 })], ["b9", dep({ role: "battle-brother", squad: "a", station: 0 })]]),
+			slices: [{ id: "a" }],
+		});
+		expect(titles(t)).toEqual(["CAPTAIN", "BATTLE-BROTHERS", "APOTHECARIES"]);
+		expect(t).toContain("▶ eval-apothecary-1");
+		expect(t).toContain("† squad a awaiting");
+		expect(t).not.toContain("b9");
+	});
+
+	test("box tones: red on a failed line, purple INQUISITOR, gold CAPTAIN and SEAL, iron when all pending", () => {
+		const top = (phs: Phase[], title: string) => renderCockpit(cockpitView(input({ phases: phs })), 100, 0, TRUE).find(l => l.includes(title))!;
+		expect(top(phases(["[apothecary] x", "failed"]), "APOTHECARIES")).toContain(RED);
+		expect(top(phases(["[inquisitor] x", "in_progress"]), "INQUISITOR")).toContain(PURPLE);
+		expect(top(phases(["[captain] x", "in_progress"]), "CAPTAIN")).toContain(GOLD);
+		expect(top(phases(["[seal] Plan", "in_progress"]), "SEAL")).toContain(GOLD);
+		expect(top(phases(["[scout] x", "pending"]), "SCOUTS")).toContain("\x1b[38;2;90;90;90m");
+		expect(top(phases(["[scout] x", "completed"]), "SCOUTS")).toContain("\x1b[38;2;76;255;122m");
 	});
 
 	test("clock: untimed has no bar", () => {
@@ -165,8 +314,10 @@ describe("colour depth", () => {
 const busy = (): ViewInput =>
 	input({
 		clock: { running: true, el: 42, bk: 120 },
-		where: { station: "Forge", task: "build" },
-		phases: phases(["[seal] Plan", "completed"], ["[seal] UI", "pending"], ["[inquisitor] judging", "in_progress"]),
+		phases: [
+			{ name: "Muster", tasks: [{ content: "[seal] Plan", status: "completed" }] },
+			{ name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }, { content: "[apothecary] Test squad b", status: "pending" }, { content: "[seal] UI", status: "pending" }] },
+		],
 		slices: [{ id: "a" }, { id: "b" }],
 		notes: { b: { failed: true } },
 		agents: { x: { id: "a" } },
@@ -174,31 +325,14 @@ const busy = (): ViewInput =>
 	});
 
 describe("rendering", () => {
-	test.each([30, 60, 120])("widget at %i is at most 6 lines, newest 3 entries first, each within the width", width => {
-		const lines = renderWidget(cockpitView(busy()), width, TRUE);
-		expect(lines.length).toBeLessThanOrEqual(6);
-		for (const l of lines) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
-		if (width === 120) {
-			const t = plain(lines.join("\n"));
-			expect(t).toContain("K-1");
-			expect(t.indexOf("event 5")).toBeLessThan(t.indexOf("event 4"));
-			expect(t.indexOf("event 4")).toBeLessThan(t.indexOf("event 3"));
-			expect(t).not.toContain("event 2");
-		}
-	});
-
-	test("widget leaves the squad line out while no squad is declared", () => {
-		expect(renderWidget(cockpitView(input()), 80, TRUE).length).toBe(2);
-	});
-
-	test("overlay at 100 draws every box and the truecolor palette", () => {
+	test("overlay at 100 draws the station boxes and the truecolor palette", () => {
 		const view = cockpitView(busy());
 		const out = renderCockpit(view, 100, 0, TRUE);
 		const t = plain(out.join("\n"));
-		for (const w of ["STRATEGOS", "LIBRARIAN", "APOTHECARY", "INQUISITOR", "SQUAD a", "SQUAD b", "SEALS", "CHRONICLE", "COGITATOR"]) expect(t).toContain(w);
+		for (const w of ["BATTLE-BROTHERS", "APOTHECARIES", "SEAL", "SEALS", "CHRONICLE", "COGITATOR", "▶ Skirmish"]) expect(t).toContain(w);
+		for (const w of ["STRATEGOS", "LIBRARIAN", "INQUISITOR", "VETERAN"]) expect(t).not.toContain(w);
 		expect(out.join("\n")).toContain(GOLD);
-		expect(out.find(l => l.includes("INQUISITOR"))).toContain(PURPLE);
-		expect(out.find(l => l.includes("SQUAD b"))).toContain(RED);
+		expect(out.find(l => l.includes("BATTLE-BROTHERS"))).toContain(RED);
 		expect(out.filter(l => l.includes("event")).length).toBeLessThanOrEqual(8);
 	});
 
@@ -208,10 +342,12 @@ describe("rendering", () => {
 		expect(out).toContain(palette("256").gold);
 	});
 
-	test("width 50 is stacked: one line per box, no frame", () => {
+	test("width 50 is stacked: the station, then a line per box title, no frame", () => {
 		const t = plain(renderCockpit(cockpitView(busy()), 50, 0, TRUE).join("\n"));
 		expect(t).not.toContain("╔");
-		expect(t).toMatch(/^STRATEGOS ▶ Forge › build$/m);
+		expect(t).toMatch(/^▶ Skirmish$/m);
+		expect(t).toMatch(/^† BATTLE-BROTHERS$/m);
+		expect(t).toMatch(/^ {2}▶ † Build squad a$/m);
 	});
 
 	test.each([30, 50, 72, 120])("every overlay line fits in %i", width => {
@@ -243,7 +379,7 @@ const GREEN = "\x1b[38;2;76;255;122m";
 const many = (n: number): Entry[] => Array.from({ length: n }, (_, i) => ({ at: "10:00", who: "SQUAD a", text: `event ${i + 1}` }));
 const eventLines = (lines: string[]) => lines.map(plain).filter(l => /event \d+/.test(l));
 
-describe("overlay close hint, cut box titles, widget station", () => {
+describe("overlay close hint, cut box titles", () => {
 	test("the overlay says how to close it, framed or stacked, and never overflows", () => {
 		expect(text({}, 100)).toContain("esc/q close");
 		expect(text({}, 50)).toContain("esc/q close");
@@ -251,15 +387,14 @@ describe("overlay close hint, cut box titles, widget station", () => {
 			for (const l of renderCockpit(cockpitView(input()), width, 0, TRUE)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
 	});
 
-	test("a cut box title keeps the border coloured to its corner", () => {
-		const slices = ["a", "b", "c"].map(c => ({ id: c.repeat(30) }));
-		const tops = renderCockpit(cockpitView(input({ slices })), 100, 0, TRUE).join("\n").match(/┌[^┐]*┐/g)!;
-		expect(tops.some(t => t.includes("SQUAD aaa") && !t.includes("a".repeat(30)))).toBe(true);
-		for (const t of tops) expect(t).not.toContain("\x1b[39m");
-	});
-
-	test("the widget's strategos with a station and no task is just the station", () => {
-		expect(plain(renderWidget(cockpitView(input({ where: { station: "Forge" } })), 80, TRUE)[1])).toBe("☩ Forge");
+	test("a line longer than its box is cut with … and the box keeps its border", () => {
+		const long = "x".repeat(200);
+		const rows = renderCockpit(cockpitView(input({ phases: phases([`[scout] ${long}`, "in_progress"]) })), 100, 0, TRUE).map(plain);
+		const cut = rows.find(l => l.includes("▶ xxx"))!;
+		expect(cut).toContain("…");
+		expect(cut).not.toContain(long);
+		expect(Bun.stringWidth(cut)).toBe(100);
+		expect(cut.endsWith(" │ ║")).toBe(true);
 	});
 });
 
@@ -267,23 +402,6 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 	test("jobEnds skips task jobs whose label is not a string", () => {
 		const jobs = [{ type: "task", status: "completed" }, { type: "task", label: 7, status: "failed" }, { type: "task", label: "ok", status: "failed" }];
 		expect(jobEnds([{ details: { jobs } }])).toEqual([{ id: "ok", status: "failed" }]);
-	});
-
-	test("strategos with a station and no task shows just the station", () => {
-		const t = text({ where: { station: "Forge" } });
-		expect(t).toContain("▶ Forge");
-		expect(t).not.toContain("undefined");
-		expect(t).not.toContain("Forge ›");
-	});
-
-	test("squad precedence: an agent beats failed, failed beats stopped", () => {
-		const row = (over: Partial<ViewInput>) => text({ slices: [{ id: "a" }], ...over });
-		const forging = row({ agents: { x: { id: "a" } }, notes: { a: { failed: true } } });
-		expect(forging).toContain("▶ forging");
-		expect(forging).not.toContain("✗ failed");
-		const failed = row({ stopped: [{ id: "a" }], notes: { a: { failed: true } } });
-		expect(failed).toContain("✗ failed");
-		expect(failed).not.toContain("✓ returned");
 	});
 
 	test("bar is clamped to 14 cells over 100%", () => {
@@ -299,37 +417,38 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 		expect(bar(80)).toContain(`${GOLD}▰`);
 	});
 
-	test("no seals shows a dash in the overlay and the widget", () => {
-		const view = cockpitView(input());
-		expect(renderWidget(view, 80, TRUE)[0]).toContain(`${IRON}—`);
+	test("no seals shows a dash in the overlay", () => {
 		expect(text()).toMatch(/SEALS —/);
 	});
 
-	test("seal symbols and tones: granted gold ✠, waiting gold ○, pending iron ○, one space apart in the widget", () => {
+	test("seal symbols and tones: granted gold ✠, waiting gold ○, pending iron ○", () => {
 		const p = phases(["[seal] A", "completed"], ["[seal] B", "in_progress"], ["[seal] C", "pending"]);
-		const head = renderWidget(cockpitView(input({ phases: p })), 80, TRUE)[0];
-		expect(head).toContain(`${GOLD}✠\x1b[39m ${GOLD}○\x1b[39m ${IRON}○\x1b[39m`);
+		const out = renderCockpit(cockpitView(input({ phases: p })), 100, 0, TRUE).join("\n");
+		expect(out).toContain(`${GOLD}✠`);
+		expect(out).toContain(`${GOLD}○`);
+		expect(out).toContain(`${IRON}○`);
 		expect(text({ phases: p })).toContain("✠ A  ○ B  ○ C");
 	});
 
 	test("nerd seals: U+F047A granted, U+F051F waiting, pending stays iron ○, nothing touches or overflows", () => {
 		const p = phases(["[seal] A", "completed"], ["[seal] B", "in_progress"], ["[seal] C", "pending"]);
 		const view = cockpitView(input({ phases: p, glyphs: true }));
-		const head = renderWidget(view, 80, TRUE)[0];
-		expect(head).toContain(`${GOLD}\u{f047a} \x1b[39m ${GOLD}\u{f051f} \x1b[39m ${IRON}○\x1b[39m`);
+		const out = renderCockpit(view, 100, 0, TRUE).join("\n");
+		expect(out).toContain(`${GOLD}\u{f047a} \x1b[39m`);
+		expect(out).toContain(`${GOLD}\u{f051f} \x1b[39m`);
+		expect(out).toContain(`${IRON}○\x1b[39m`);
 		expect(text({ phases: p, glyphs: true })).toContain("\u{f047a}  A  \u{f051f}  B  ○ C");
-		for (const w of [40, 60, 71]) for (const l of renderWidget(view, w, TRUE)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(w);
 		for (const w of [72, 100]) for (const l of renderCockpit(view, w, 0, TRUE)) expect(Bun.stringWidth(l)).toBe(w);
 		for (const w of [40, 60]) for (const l of renderCockpit(view, w, 0, TRUE)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(w);
 	});
 
 	test.each([
-		["station", { station: "Forge", task: "build" }, "☩ Forge › build"],
-		["return", { station: "Forge", back: true as const, task: "redo" }, "☩ ↶ Forge › redo"],
-		["seal", { station: "Plan", seal: "Plan" }, "☩ ◷ seal Plan"],
-		["none", undefined, "☩ ○ awaiting orders"],
-	])("widget strategos line: %s", (_n, where, expected) => {
-		expect(plain(renderWidget(cockpitView(input({ where })), 80, TRUE)[1])).toBe(expected);
+		["station", phases(["[captain] build", "in_progress"]), /^▶ Plan$/m],
+		["return", [{ name: "Forge", tasks: [{ content: "[captain] redo", status: "in_progress" }] }, { name: "Later", tasks: [{ content: "[captain] x", status: "completed" }] }], /^↶ Forge$/m],
+		["seal", phases(["[seal] Plan", "in_progress"]), /^▶ Plan · ◷ seal Plan awaits you$/m],
+		["none", undefined, /^○ awaiting orders$/m],
+	])("stacked station line: %s", (_n, phs, expected) => {
+		expect(text({ phases: phs }, 50)).toMatch(expected);
 	});
 
 	test("width 71 is stacked, 72 is framed", () => {
@@ -341,10 +460,10 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 		for (const l of renderCockpit(cockpitView(busy()), width, 0, TRUE)) expect(Bun.stringWidth(l)).toBe(width);
 	});
 
-	test.each([100, 101])("boxes of rows with 1, 2 and 3 squads all end at the same column at width %i", width => {
+	test.each([100, 101])("boxes of rows with 1, 2 and 3 boxes all end at the same column at width %i", width => {
 		for (const n of [1, 2, 3]) {
-			const slices = Array.from({ length: n }, (_, i) => ({ id: String.fromCharCode(97 + i) }));
-			const rows = renderCockpit(cockpitView(input({ slices })), width, 0, TRUE).map(plain).filter(l => /^║ [┌╔│║└╚]/.test(l));
+			const phs = phases(...["inquisitor", "security-reviewer", "sonic"].slice(0, n).map(t => [`[${t}] x`, "pending"] as [string, string]));
+			const rows = renderCockpit(cockpitView(input({ phases: phs })), width, 0, TRUE).map(plain).filter(l => /^║ [┌╔│║└╚]/.test(l));
 			expect(rows.length).toBeGreaterThan(0);
 			for (const l of rows) {
 				// the row's last box starts after the final "border space start" boundary; its own right edge must sit at width - 3
@@ -358,18 +477,10 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 	test.each([
 		[100, [31, 31, 32]],
 		[101, [31, 31, 33]],
-	])("the leftover width goes to the last squad box at width %i", (width, widths) => {
-		const slices = ["a", "b", "c"].map(id => ({ id }));
-		const top = renderCockpit(cockpitView(input({ slices })), width, 0, TRUE).map(plain).find(l => l.includes("SQUAD a"))!;
+	])("the leftover width goes to the last box of a row at width %i", (width, widths) => {
+		const phs = phases(["[inquisitor] x", "pending"], ["[security-reviewer] x", "pending"], ["[sonic] x", "pending"]);
+		const top = renderCockpit(cockpitView(input({ phases: phs })), width, 0, TRUE).map(plain).find(l => l.includes("INQUISITOR"))!;
 		expect(top.match(/┌[^┐]*┐/g)!.map(b => b.length)).toEqual(widths);
-	});
-
-	test("the Archmagos planner shows in the planning box", () => {
-		const lines = text({ phases: phases(["[archmagos] merging the plan", "in_progress"]) }).split("\n");
-		const rowOf = (title: string) => lines.slice(lines.findIndex(l => l.includes(title))).slice(0, 3).join("\n");
-		expect(rowOf("LIBRARIAN")).toContain("▶ merging the plan");
-		expect(rowOf("APOTHECARY")).not.toContain("merging the plan");
-		expect(rowOf("INQUISITOR")).not.toContain("merging the plan");
 	});
 
 	test("stacked chronicle shows exactly the 8 newest, newest first", () => {
@@ -386,12 +497,6 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 		expect(lines[7]).toContain("event 3");
 	});
 
-	test("widget with a full fixture is exactly 6 lines and shows 3 entries", () => {
-		const lines = renderWidget(cockpitView({ ...busy(), chronicle: many(10) }), 120, TRUE);
-		expect(lines).toHaveLength(6);
-		expect(eventLines(lines)).toHaveLength(3);
-	});
-
 	test("active marks: frame 0 is ▶, frame 1 is ▷", () => {
 		const view = cockpitView(busy());
 		const f0 = renderCockpit(view, 100, 0, TRUE).map(plain).join("\n");
@@ -405,10 +510,10 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 
 describe("glyphs", () => {
 	const states: [string, Partial<ViewInput>][] = [
-		["veteran", { slices: [{ id: "a" }], notes: { a: { veteran: true } } }],
-		["failed", { slices: [{ id: "a" }], notes: { a: { failed: true } } }],
-		["seal waiting", { where: { station: "Plan", seal: "Plan" }, phases: phases(["[seal] Plan", "in_progress"]) }],
-		["return", { where: { station: "Forge", back: true, task: "redo" } }],
+		["skirmish with a veteran", { phases: phases(["[battle-brother] Build squad a", "in_progress"], ["[veteran] Rebuild squad b", "in_progress"]), slices: [{ id: "a" }, { id: "b" }], notes: { b: { veteran: true } } }],
+		["failed squad", { phases: phases(["[battle-brother] x", "in_progress"]), slices: [{ id: "a" }], notes: { a: { failed: true } } }],
+		["seal waiting", { phases: phases(["[seal] Plan", "in_progress"]) }],
+		["return", { phases: [{ name: "Forge", tasks: [{ content: "[captain] redo", status: "in_progress" }] }, { name: "Later", tasks: [{ content: "[captain] x", status: "completed" }] }] }],
 		["timed", { clock: { running: true, el: 42, bk: 120 } }],
 		["untimed", { untimed: true, clock: { running: true, el: 42 } }],
 	];
@@ -419,7 +524,7 @@ describe("glyphs", () => {
 		"%s at width %i (nerd %p) has no emoji and fits",
 		(_n, over, width, glyphs) => {
 			const view = cockpitView(input({ ...over, glyphs }));
-			for (const l of [...renderWidget(view, width, TRUE), ...renderCockpit(view, width, 0, TRUE), ...renderCockpit(view, width, 1, TRUE)]) {
+			for (const l of [...renderCockpit(view, width, 0, TRUE), ...renderCockpit(view, width, 1, TRUE)]) {
 				expect(emoji(l)).toEqual([]);
 				expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
 			}
@@ -427,13 +532,16 @@ describe("glyphs", () => {
 	);
 
 	test("plain mode uses † ‡ ◷", () => {
-		expect(text({ slices: [{ id: "a" }, { id: "b" }], notes: { b: { veteran: true } } })).toMatch(/† brother[\s\S]*‡ VETERAN/);
-		expect(plain(renderWidget(cockpitView(input({ where: { station: "Plan", seal: "Plan" } })), 80, TRUE)[1])).toBe("☩ ◷ seal Plan");
+		expect(text({ phases: phases(["[battle-brother] x", "pending"]), slices: [{ id: "a" }, { id: "b" }], notes: { b: { veteran: true } } })).toMatch(/† squad a[\s\S]*‡ squad b/);
+		expect(text({ phases: phases(["[seal] Plan", "in_progress"]) })).toContain("◷ seal Plan awaits you");
 	});
 
-	test("nerd mode uses the todo.ts role glyphs, each followed by an extra space", () => {
-		const t = plain(renderCockpit(cockpitView(input({ glyphs: true, slices: [{ id: "a" }, { id: "b" }], notes: { b: { veteran: true } }, where: { station: "Plan", seal: "Plan" } })), 100, 0, TRUE).join("\n"));
-		for (const g of ["\u{f18bc}", "\u{f18be}", "\u{f0787}", "\u{f05da}", "\u{f06ef}", "\u{f029b}", "\u{f051f}"]) expect(t).toContain(`${g}  `);
+	test("nerd mode uses the todo.ts agent glyphs on every box title, each followed by two spaces", () => {
+		const tags = STATIONS.flatMap(s => s[1]).filter((t, i, a) => a.indexOf(t) === i);
+		const all: Phase[] = [{ name: "All", tasks: tags.map((tag, i) => ({ content: `[${tag}] ${tag} job`, status: i ? "pending" : "in_progress" })) }];
+		const t = plain(renderCockpit(cockpitView(input({ glyphs: true, phases: all })), 120, 0, TRUE).join("\n"));
+		for (const g of ["\u{f18bc}", "\u{f0437}", "\u{f05da}", "\u{f18be}", "\u{f06ef}", "\u{f029b}", "\u{f0d9a}", "\u{f068c}", "\u{f0474}", "\u{f047a}"]) expect(t).toContain(`${g}  `);
+		expect(titles(t)).toHaveLength(10);
 		expect(t).not.toMatch(/[☩†‡◷]/);
 	});
 });

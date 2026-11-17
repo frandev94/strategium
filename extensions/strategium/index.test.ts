@@ -1516,21 +1516,6 @@ describe("the archmagos setting", () => {
 		expect(notes.at(-1)).toContain("archmagos: on (this session)");
 	});
 
-	test("the cockpit setting follows an approved plan to the new session", async () => {
-		const s = setup("sess-A");
-		await s.call({ action: "begin", key: "K-1" });
-		const notes: string[] = [];
-		const { sm, ctx } = shared("sess-A", s.dir, s.footer, notes);
-		await s.handlers.session_start[0]({}, ctx);
-		await s.commands["strategium-config"].handler("cockpit on", ctx);
-		await s.handlers.plan_review_requested[0]({ sessionId: "sess-A" }, ctx);
-		await s.handlers.plan_review_resolved[0]({ sessionId: "sess-A", choice: "execute" }, ctx);
-		sm.sid = "sess-B";
-		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
-		await s.commands["strategium-config"].handler("", ctx);
-		expect(notes.at(-1)).toContain("cockpit: on (this session)");
-	});
-
 	test("begin archmagos: true marks the run, a same-key begin keeps it, archmagos: false clears it", async () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1" });
@@ -2234,9 +2219,8 @@ describe("cockpit", () => {
 	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
 	type Tui = { requestRender(): void };
 	type Comp = { render(w: number): string[]; handleInput?(d: string): void; dispose?(): void };
-	// A UI context: the widget and overlay calls are recorded; `hasUI` false leaves the same functions in place but unused.
+	// A UI context: the overlay calls are recorded; `hasUI` false leaves the same functions in place but unused.
 	function uiCtx(s: ReturnType<typeof setup>, hasUI = true) {
-		const widgets: { key: string; factory?: (tui: Tui, theme: unknown) => Comp; options?: unknown }[] = [];
 		const opened: { options?: unknown; component: Comp }[] = [];
 		const draws = { n: 0, closed: 0 };
 		const tui: Tui = { requestRender: () => void draws.n++ };
@@ -2244,12 +2228,11 @@ describe("cockpit", () => {
 		// The helper's todo reaches handler [0] only; the cockpit's hooks come after it.
 		s.todo = phases => s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases } }, s.ctx));
 		c.hasUI = hasUI;
-		c.ui.setWidget = (key: string, factory?: (t: Tui, th: unknown) => Comp, options?: unknown) => void widgets.push({ key, factory, options });
 		c.ui.custom = (factory: (t: Tui, th: unknown, k: unknown, done: () => void) => Comp, options?: unknown) => {
 			opened.push({ options, component: factory(tui, {}, {}, () => void draws.closed++) });
 			return new Promise(() => {});
 		};
-		return { widgets, opened, draws, tui };
+		return { opened, draws, tui };
 	}
 	const sealTodo = (status: string) => [{ name: "Plan", tasks: [{ content: "[seal] Plan", status }] }];
 	// The alarm command appends "<level>|<message>" to a file; the spawn is asynchronous, so poll.
@@ -2268,11 +2251,10 @@ describe("cockpit", () => {
 		};
 	};
 	afterEach(() => delete process.env.STRATEGIUM_ALARM);
-	// A run with the UI on, started like a session does; the widget is opt-in, so most tests switch it on first.
-	async function running(hasUI = true, widget = true) {
+	// A run with the UI on, started like a session does.
+	async function running(hasUI = true) {
 		const s = setup();
 		const ui = uiCtx(s, hasUI);
-		if (widget) await s.sub("config", "cockpit on");
 		await s.call({ action: "begin", key: "K-1" });
 		await s.start();
 		return { s, ui };
@@ -2287,119 +2269,31 @@ describe("cockpit", () => {
 		comp.handleInput!("q");
 		return text;
 	}
+	// Only the chronicle part of the overlay: the squad and strategos boxes above it repeat words like "returned".
+	const chron = async (s: ReturnType<typeof setup>, ui: ReturnType<typeof uiCtx>) => {
+		const t = await peek(s, ui);
+		return t.slice(t.indexOf("CHRONICLE"));
+	};
 
-	describe("the widget is opt-in", () => {
-		afterEach(() => delete process.env.STRATEGIUM_COCKPIT);
-
-		test("off by default: a run draws no widget, yet the overlay still opens and shows the run", async () => {
-			const { s, ui } = await running(true, false);
-			await s.sub("status");
-			expect(ui.widgets).toEqual([]);
-			expect(await peek(s, ui)).toContain("K-1");
-		});
-
-		test("config cockpit on shows it at once with the run key", async () => {
-			const { s, ui } = await running(true, false);
-			await s.sub("config", "cockpit on");
-			expect(ui.widgets.length).toBe(1);
-			expect(ui.widgets[0].factory!(ui.tui, {}).render(80).join("\n")).toContain("K-1");
-		});
-
-		test("config cockpit off removes it at once", async () => {
-			const { s, ui } = await running(true, true);
-			await s.sub("config", "cockpit off");
-			expect(ui.widgets.at(-1)).toEqual({ key: "strategium", factory: undefined, options: undefined });
-		});
-
-		test("STRATEGIUM_COCKPIT=1 shows it by default and config cockpit off wins", async () => {
-			process.env.STRATEGIUM_COCKPIT = "1";
-			const { s, ui } = await running(true, false);
-			expect(ui.widgets.length).toBe(1);
-			await s.sub("config", "cockpit off");
-			expect(ui.widgets.at(-1)).toEqual({ key: "strategium", factory: undefined, options: undefined });
-		});
-
-		test("config lists the cockpit setting", async () => {
-			const s = setup();
-			await s.sub("config");
-			expect(s.notes.at(-1)).toContain("cockpit: off (STRATEGIUM_COCKPIT)");
-			await s.sub("config", "cockpit on");
-			expect(s.notes.at(-1)).toContain("cockpit: on (this session)");
-		});
-
-		test("the chronicle keeps filling while the widget is off", async () => {
-			const { s, ui } = await running(true, false);
-			s.todo(sealTodo("in_progress"));
-			s.todo(sealTodo("completed"));
-			expect(await peek(s, ui)).toContain("granted");
-		});
+	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
+		const s = setup();
+		await s.sub("config", "cockpit on");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off; the other settings live in ~/.omp/agent/.env");
+		await s.sub("config");
+		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
 
-	describe("the widget", () => {
-		test("the first tick shows it above the editor once and later refreshes only repaint", async () => {
-			const { s, ui } = await running();
-			expect(ui.widgets.length).toBe(1);
-			expect(ui.widgets[0].key).toBe("strategium");
-			expect(ui.widgets[0].options).toEqual({ placement: "aboveEditor" });
-			const widget = ui.widgets[0].factory!(ui.tui, {});
-			expect(widget.render(80).join("\n")).toContain("K-1");
-			await s.sub("status");
-			expect(ui.widgets.length).toBe(1);
-			expect(ui.draws.n).toBeGreaterThan(0);
-		});
-
-		test("the end of the run removes it", async () => {
-			const { s, ui } = await running();
-			await s.sub("end");
-			expect(ui.widgets.at(-1)).toEqual({ key: "strategium", factory: undefined, options: undefined });
-		});
-
+	describe("the cockpit with a run", () => {
 		test("an untimed run shows its clock right after start, not on the next tick", async () => {
-			const { ui } = await running();
-			expect(plain(ui.widgets[0].factory!(ui.tui, {}).render(120)[0])).toContain("⧗ 0 min");
+			const { s, ui } = await running();
+			expect(await peek(s, ui)).toContain("⧗ 0 min");
 		});
 
-		test("a booking added to an untimed run shows its bar in the widget", async () => {
+		test("a booking added to an untimed run shows its bar", async () => {
 			const { s, ui } = await running();
 			await s.sub("pause");
 			await s.sub("resume", "240");
-			expect(plain(ui.widgets[0].factory!(ui.tui, {}).render(120)[0])).toContain("/240 min");
-		});
-
-		test("when the host frees the widget it comes back on the next draw", async () => {
-			const { s, ui } = await running();
-			ui.widgets[0].factory!(ui.tui, {}).dispose!();
-			await s.sub("status");
-			expect(ui.widgets.length).toBe(2);
-			expect(ui.widgets[1].factory).toBeDefined();
-		});
-
-		test("the end of the run closes an open overlay", async () => {
-			const { s, ui } = await running();
-			await s.sub("cockpit");
-			await s.sub("end");
-			expect(ui.draws.closed).toBe(1);
-		});
-
-		test("closing the session removes it", async () => {
-			const { s, ui } = await running();
-			shutdown(s);
-			expect(ui.widgets.at(-1)).toEqual({ key: "strategium", factory: undefined, options: undefined });
-		});
-
-		test("a session with no run never touches it", async () => {
-			const s = setup();
-			const ui = uiCtx(s);
-			await s.start();
-			await s.sub("status");
-			shutdown(s);
-			expect(ui.widgets).toEqual([]);
-		});
-
-		test("without a UI there is no widget", async () => {
-			const { s, ui } = await running(false);
-			await s.sub("status");
-			expect(ui.widgets).toEqual([]);
+			expect(await peek(s, ui)).toContain("/240 min");
 		});
 
 		test("a sub agent draws nothing", async () => {
@@ -2410,7 +2304,6 @@ describe("cockpit", () => {
 			await s.start();
 			s.todo(sealTodo("in_progress"));
 			await s.sub("cockpit");
-			expect(ui.widgets).toEqual([]);
 			expect(ui.opened).toEqual([]);
 		});
 	});
@@ -2437,7 +2330,7 @@ describe("cockpit", () => {
 			expect(ui.opened.length).toBe(1);
 			expect(ui.opened[0].options).toEqual({ overlay: true });
 			const lines = ui.opened[0].component.render(100).join("\n");
-			expect(lines).toContain("STRATEGOS");
+			expect(lines).toContain("awaiting orders");
 			expect(lines).toContain("CHRONICLE");
 			await s.sub("cockpit");
 			expect(ui.opened.length).toBe(1);
@@ -2462,6 +2355,13 @@ describe("cockpit", () => {
 			const { s, ui } = await running();
 			await s.sub("cockpit");
 			shutdown(s);
+			expect(ui.draws.closed).toBe(1);
+		});
+
+		test("the end of the run closes an open overlay", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			await s.sub("end");
 			expect(ui.draws.closed).toBe(1);
 		});
 
@@ -2604,20 +2504,19 @@ describe("cockpit", () => {
 		});
 
 		test("without a UI a granted seal still sounds and nothing is drawn", async () => {
-			const { s, ui } = await running(false);
+			const { s } = await running(false);
 			const lines = recorder(s.dir);
 			s.todo(sealTodo("in_progress"));
 			s.todo(sealTodo("completed"));
 			expect(await lines(1)).toEqual(["done|K-1: seal Plan granted"]);
-			expect(ui.widgets).toEqual([]);
 		});
 
-		test("a granted seal reaches the widget", async () => {
+		test("a granted seal reaches the overlay", async () => {
 			const { s, ui } = await running();
 			recorder(s.dir);
 			s.todo(sealTodo("in_progress"));
 			s.todo(sealTodo("completed"));
-			expect(ui.widgets[0].factory!(ui.tui, {}).render(80).join("\n")).toContain("granted");
+			expect(await peek(s, ui)).toContain("granted");
 		});
 	});
 
@@ -2627,22 +2526,33 @@ describe("cockpit", () => {
 			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A", agent)] }, details: { progress: [{ index: 0, id: "A", status }] }, isError: false }, s.ctx));
 		const jobEnd = (s: ReturnType<typeof setup>, status: string) =>
 			s.handlers.context.forEach(h => h({ type: "context", messages: [{ role: "custom", details: { jobs: [{ jobId: "j", type: "task", status, label: "A" }] } }] }, s.ctx));
-		const widgetText = (ui: ReturnType<typeof uiCtx>) => ui.widgets[0].factory!(ui.tui, {}).render(120).join("\n");
 		async function squad() {
 			const r = await running();
 			await r.s.call({ action: "slices", slices: [{ id: "a", parallel: false, files: ["a.ts"] }] });
+			r.s.todo([{ name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
 			return r;
 		}
+
+		test("a task agent deployed in Auspex shows in SCOUTS, running then returned", async () => {
+			const { s, ui } = await running();
+			s.todo([{ name: "Muster", tasks: [{ content: "[captain] Plan", status: "completed" }] }, { name: "Auspex", tasks: [{ content: "[scout] Map the code", status: "in_progress" }] }]);
+			result(s, "scout", "running");
+			const overlay = await peek(s, ui);
+			expect(overlay).toContain("SCOUTS");
+			expect(overlay).toMatch(/│ ▶ A +│/);
+			jobEnd(s, "completed");
+			expect(await peek(s, ui)).toMatch(/│ ✓ A +│/);
+		});
 
 		test("a deployed builder is logged, and its failure too, newest first", async () => {
 			const { s, ui } = await squad();
 			result(s, "battle-brother", "running");
 			jobEnd(s, "failed");
-			const entries = plain(widgetText(ui)).split("\n").filter(l => l.includes("SQUAD a"));
+			const entries = (await chron(s, ui)).split("\n").filter(l => l.includes("SQUAD a"));
 			expect(entries).toHaveLength(2);
 			expect(entries[0]).toContain("✗ failed");
 			expect(entries[1]).toContain("† battle-brother deployed");
-			expect(plain(widgetText(ui))).toContain("a † ✗");
+			expect(await peek(s, ui)).toMatch(/✗ † squad a failed/);
 		});
 
 		test("a builder that returns is logged once", async () => {
@@ -2650,61 +2560,60 @@ describe("cockpit", () => {
 			result(s, "battle-brother", "running");
 			jobEnd(s, "completed");
 			jobEnd(s, "completed");
-			expect(widgetText(ui).match(/returned/g)?.length).toBe(1);
+			expect((await chron(s, ui)).match(/returned/g)?.length).toBe(1);
 		});
 
 		test("the same running agent seen twice is deployed once", async () => {
 			const { s, ui } = await squad();
 			result(s, "battle-brother", "running");
 			result(s, "battle-brother", "running");
-			expect(widgetText(ui).match(/deployed/g)?.length).toBe(1);
+			expect((await chron(s, ui)).match(/deployed/g)?.length).toBe(1);
 		});
 
 		test("a pending agent is deployed", async () => {
 			const { s, ui } = await squad();
 			result(s, "battle-brother", "pending");
-			expect(widgetText(ui)).toContain("deployed");
+			expect(await chron(s, ui)).toContain("deployed");
 		});
 
 		test("a completed task result logs the return and an unknown id logs nothing", async () => {
 			const { s, ui } = await squad();
 			result(s, "battle-brother", "completed");
-			expect(plain(widgetText(ui))).not.toContain("returned");
+			expect(await chron(s, ui)).not.toContain("returned");
 			result(s, "battle-brother", "running");
 			result(s, "battle-brother", "completed");
-			const entries = plain(widgetText(ui)).split("\n").filter(l => l.includes("SQUAD a"));
+			const entries = (await chron(s, ui)).split("\n").filter(l => l.includes("SQUAD a"));
 			expect(entries).toHaveLength(2);
 			expect(entries[0]).toContain("✓ returned");
 			result(s, "battle-brother", "completed");
-			expect(plain(widgetText(ui)).match(/returned/g)?.length).toBe(1);
-			expect(await peek(s, ui)).not.toMatch(/│ ✗ failed/);
+			expect((await chron(s, ui)).match(/returned/g)?.length).toBe(1);
+			expect(await peek(s, ui)).not.toMatch(/✗ † squad a failed/);
 		});
 
-		test.each(["failed", "aborted"])("a %s task result logs the failure and, once the agent is gone, marks the squad in the widget and the overlay", async status => {
+		test.each(["failed", "aborted"])("a %s task result logs the failure and, once the agent is gone, marks the squad in the overlay", async status => {
 			const { s, ui } = await squad();
 			result(s, "battle-brother", "running");
 			result(s, "battle-brother", status);
-			const entries = plain(widgetText(ui)).split("\n").filter(l => l.includes("SQUAD a"));
+			const entries = (await chron(s, ui)).split("\n").filter(l => l.includes("SQUAD a"));
 			expect(entries).toHaveLength(2);
 			expect(entries[0]).toContain("✗ failed");
 			// The host's job end removes the agent from the run; the next redraw shows the note.
 			jobEnd(s, status);
 			await s.call({ action: "status" });
-			expect(plain(widgetText(ui))).toContain("a † ✗");
-			expect(await peek(s, ui)).toMatch(/│ ✗ failed +│/);
+			expect(await peek(s, ui)).toMatch(/✗ † squad a failed/);
 		});
 
 		test("a veteran for a squad is an escalation and the overlay box says so", async () => {
 			const { s, ui } = await squad();
 			result(s, "veteran", "running");
-			expect(widgetText(ui)).toContain("escalated to VETERAN");
-			expect(await peek(s, ui)).toContain("‡ VETERAN");
+			expect(await chron(s, ui)).toContain("escalated to VETERAN");
+			expect(await peek(s, ui)).toContain("‡ squad a");
 		});
 
 		test("a station change and a seal waiting are logged, the seal after the station", async () => {
 			const { s, ui } = await running();
 			s.todo([{ name: "Plan", tasks: [{ content: "[seal] Plan", status: "in_progress" }] }]);
-			const text = widgetText(ui);
+			const text = await chron(s, ui);
 			expect(text).toContain("station Plan");
 			expect(text).toContain("seal Plan awaits the Chapter Master");
 			expect(text.indexOf("awaits the Chapter Master")).toBeLessThan(text.indexOf("station Plan"));
@@ -2714,7 +2623,7 @@ describe("cockpit", () => {
 			const { s, ui } = await running();
 			s.todo(sealTodo("in_progress"));
 			s.todo(sealTodo("in_progress"));
-			const text = widgetText(ui);
+			const text = await chron(s, ui);
 			expect(text.match(/awaits the Chapter Master/g)?.length).toBe(1);
 			expect(text.match(/station Plan/g)?.length).toBe(1);
 		});
@@ -2722,10 +2631,10 @@ describe("cockpit", () => {
 		test("closing the session forgets the chronicle", async () => {
 			const { s, ui } = await running();
 			s.todo(sealTodo("in_progress"));
-			expect(widgetText(ui)).toContain("station Plan");
+			expect(await chron(s, ui)).toContain("station Plan");
 			shutdown(s);
 			await s.start();
-			const text = plain(widgetText(ui));
+			const text = await peek(s, ui);
 			expect(text).toContain("K-1");
 			expect(text).not.toContain("station Plan");
 		});
@@ -2733,11 +2642,11 @@ describe("cockpit", () => {
 		test("a run with a new key starts a clean chronicle", async () => {
 			const { s, ui } = await running();
 			s.todo(sealTodo("in_progress"));
-			expect(widgetText(ui)).toContain("station Plan");
+			expect(await chron(s, ui)).toContain("station Plan");
 			await s.sub("end");
 			await s.call({ action: "begin", key: "K-2" });
 			await s.sub("status");
-			const text = plain(widgetText(ui));
+			const text = await peek(s, ui);
 			expect(text).toContain("K-2");
 			expect(text).not.toContain("station Plan");
 		});
@@ -2748,7 +2657,6 @@ describe("cockpit", () => {
 		async function timed() {
 			const s = setup();
 			const ui = uiCtx(s);
-			await s.sub("config", "cockpit on");
 			setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 			await s.call({ action: "begin", key: "K-1", booked: 3 });
 			setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
@@ -2756,9 +2664,8 @@ describe("cockpit", () => {
 			return { s, ui };
 		}
 
-		test("a timed run shows elapsed over booked, the bar and the percentage in the widget and the overlay", async () => {
+		test("a timed run shows elapsed over booked, the bar and the percentage in the overlay", async () => {
 			const { s, ui } = await timed();
-			expect(plain(ui.widgets[0].factory!(ui.tui, {}).render(120).join("\n"))).toContain("⧗ 2/3 min 67%");
 			const overlay = await peek(s, ui);
 			expect(overlay).toContain("⧗ 2/3 min");
 			expect(overlay).toContain("▰");
@@ -2768,41 +2675,50 @@ describe("cockpit", () => {
 
 		test("a booking alert is written to the chronicle, once per threshold", async () => {
 			const { s, ui } = await timed();
-			const entries = () => plain(ui.widgets[0].factory!(ui.tui, {}).render(120).join("\n")).split("\n").filter(l => l.includes("of the booking"));
-			expect(entries()).toHaveLength(1);
-			expect(entries()[0]).toContain("TIMER");
-			expect(entries()[0]).toContain("⧗ 50% of the booking");
+			const entries = async () => (await chron(s, ui)).split("\n").filter(l => l.includes("of the booking"));
+			expect(await entries()).toHaveLength(1);
+			expect((await entries())[0]).toContain("TIMER");
+			expect((await entries())[0]).toContain("⧗ 50% of the booking");
 			await s.call({ action: "status" });
-			expect(entries()).toHaveLength(1);
+			expect(await entries()).toHaveLength(1);
 			setSystemTime(new Date(2026, 10, 16, 9, 3, 0));
 			await s.call({ action: "status" });
-			expect(entries()).toHaveLength(2);
-			expect(entries()[0]).toContain("⧗ 100% of the booking");
+			expect(await entries()).toHaveLength(2);
+			expect((await entries())[0]).toContain("⧗ 100% of the booking");
 		});
 	});
 
 	describe("agents spawned by eval", () => {
 		const spawn = (s: ReturnType<typeof setup>, e: unknown) => s.handlers.before_subagent_spawn.forEach(h => h(e, s.ctx));
-		const deployed = (ui: ReturnType<typeof uiCtx>) => plain(ui.widgets[0].factory!(ui.tui, {}).render(120).join("\n")).split("\n").filter(l => l.includes("deployed"));
+		const deployed = async (s: ReturnType<typeof setup>, ui: ReturnType<typeof uiCtx>) => (await chron(s, ui)).split("\n").filter(l => l.includes("deployed"));
 
 		test("an eval spawn of a roster agent logs its role", async () => {
 			const { s, ui } = await running();
 			spawn(s, { invocationKind: "eval", agent: "scout" });
-			expect(deployed(ui)).toHaveLength(1);
-			expect(deployed(ui)[0]).toContain("SCOUT");
+			expect(await deployed(s, ui)).toHaveLength(1);
+			expect((await deployed(s, ui))[0]).toContain("SCOUT");
 		});
 
 		test("a spawn that is not from eval logs nothing", async () => {
 			const { s, ui } = await running();
 			spawn(s, { invocationKind: "task", agent: "scout" });
 			spawn(s, { agent: "scout" });
-			expect(deployed(ui)).toEqual([]);
+			expect(await deployed(s, ui)).toEqual([]);
 		});
 
 		test("an agent outside the roster logs nothing", async () => {
 			const { s, ui } = await running();
 			spawn(s, { invocationKind: "eval", agent: "stranger" });
-			expect(deployed(ui)).toEqual([]);
+			expect(await deployed(s, ui)).toEqual([]);
+		});
+
+		test("an eval-spawned apothecary in Skirmish shows as a running line in APOTHECARIES", async () => {
+			const { s, ui } = await running();
+			s.todo([{ name: "Muster", tasks: [{ content: "[captain] Plan", status: "completed" }] }, { name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
+			spawn(s, { invocationKind: "eval", agent: "apothecary" });
+			const overlay = await peek(s, ui);
+			expect(overlay).toContain("APOTHECARIES");
+			expect(overlay).toMatch(/│ ▶ eval-apothecary-1 +│/);
 		});
 	});
 });

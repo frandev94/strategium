@@ -5,12 +5,14 @@ export type Phase = { name: string; tasks: { content: string; status: string }[]
 export type Seal = { id: string; name: string; state: "granted" | "waiting" | "pending" };
 export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" };
 export type Note = { veteran?: true; failed?: true };
+// shortcut: agents are tied to the phase index at spawn; a todo rebuilt in another order misplaces them; upgrade with a stable station id in the todo.
+export type Deployed = { who: string; role: string; squad?: string; station: number; state: "active" | "done" | "failed" };
 export type Depth = "truecolor" | "256";
 export type Palette = Record<"gold" | "parchment" | "green" | "red" | "purple" | "iron", string>;
 export type ViewInput = {
 	key: string;
 	untimed?: true;
-	where?: { station: string; back?: true; seal?: string; task?: string };
+	deployed?: Map<string, Deployed>; // agent id (or eval-<role>-<n>) → what the host deployed, kept by index.ts
 	phases?: Phase[];
 	slices?: { id: string }[];
 	stopped?: { id: string }[];
@@ -22,7 +24,7 @@ export type ViewInput = {
 };
 export type View = ReturnType<typeof cockpitView>;
 
-type Kind = "active" | "done" | "failed" | "idle" | "seal";
+type Kind = "active" | "done" | "failed" | "idle";
 type Tone = keyof Palette;
 
 const HEX: Palette = { gold: "#C9A227", parchment: "#E6D8B5", green: "#4CFF7A", red: "#A4161A", purple: "#7B2CBF", iron: "#5A5A5A" };
@@ -75,54 +77,108 @@ export function jobEnds(messages: unknown): { id: string; status: string }[] {
 	return out;
 }
 
-const ROLES = [
-	["librarian", "LIBRARIAN", "standing by"],
-	["apothecary", "APOTHECARY", "standing by"],
-	["inquisitor", "INQUISITOR", "awaiting judgement"],
-] as const;
+/** The phase the run is at, by index: the first with a task running, else the first with a task waiting, else the last. -1 with no phases. */
+export function activePhase(phases: Phase[]): number {
+	const first = (status: string) => phases.findIndex(p => p.tasks.some(t => t.status === status));
+	const doing = first("in_progress");
+	if (doing >= 0) return doing;
+	const waiting = first("pending");
+	return waiting >= 0 ? waiting : phases.length - 1;
+}
 
-/** Role icons. A Nerd glyph carries the footer's extra space (fonts that draw it two cells wide overflow into it). */
+type BoxDef = { title: string; tags: string[]; icon: keyof ReturnType<typeof icons>; tone?: Tone };
+// One box per agent type, in this order; `tags` are the todo tags and agent names it takes (the Archmagos plans with the librarians).
+const BOXES: BoxDef[] = [
+	{ title: "CAPTAIN", tags: ["captain"], icon: "captain", tone: "gold" },
+	{ title: "SCOUTS", tags: ["scout"], icon: "scout" },
+	{ title: "LIBRARIANS", tags: ["librarian", "archmagos"], icon: "librarian" },
+	{ title: "BATTLE-BROTHERS", tags: ["battle-brother", "veteran"], icon: "brother" },
+	{ title: "APOTHECARIES", tags: ["apothecary"], icon: "apothecary" },
+	{ title: "INQUISITOR", tags: ["inquisitor"], icon: "inquisitor", tone: "purple" },
+	{ title: "SECURITY-REVIEWER", tags: ["security-reviewer"], icon: "securityReviewer" },
+	{ title: "SONIC", tags: ["sonic"], icon: "sonic" },
+	{ title: "ADEPTS", tags: ["task"], icon: "task" },
+	{ title: "SEAL", tags: ["seal"], icon: "sealOn", tone: "gold" },
+];
+
+/** Agent icons. A Nerd glyph carries one trailing space; `label` adds the gap, so fonts that draw it two cells wide overflow into it. */
 export const icons = (nf: boolean) =>
 	nf
-		? { captain: `${AGENTS.captain} `, librarian: `${AGENTS.librarian}  `, apothecary: `${AGENTS.apothecary}  `, inquisitor: `${AGENTS.inquisitor}  `, brother: `${AGENTS["battle-brother"]} `, veteran: `${AGENTS.veteran} `, seal: "\u{f051f} ", back: "\u{f054c} ", sealOn: `${AGENTS.seal} `, sealWait: "\u{f051f} " }
-		: { captain: "☩", librarian: "", apothecary: "", inquisitor: "", brother: "†", veteran: "‡", seal: "◷", back: "↶", sealOn: "✠", sealWait: "○" };
+		? {
+				captain: `${AGENTS.captain} `,
+				scout: `${AGENTS.scout} `,
+				librarian: `${AGENTS.librarian} `,
+				brother: `${AGENTS["battle-brother"]} `,
+				veteran: `${AGENTS.veteran} `,
+				apothecary: `${AGENTS.apothecary} `,
+				inquisitor: `${AGENTS.inquisitor} `,
+				securityReviewer: `${AGENTS["security-reviewer"]} `,
+				sonic: `${AGENTS.sonic} `,
+				task: `${AGENTS.task} `,
+				seal: "\u{f051f} ",
+				back: "\u{f054c} ",
+				sealOn: `${AGENTS.seal} `,
+				sealWait: "\u{f051f} ",
+			}
+		: { captain: "☩", scout: "", librarian: "", brother: "†", veteran: "‡", apothecary: "", inquisitor: "", securityReviewer: "", sonic: "", task: "", seal: "◷", back: "↶", sealOn: "✠", sealWait: "○" };
+
+/** `icon` then `text`, one gap between them. No icon: just the text. */
+const label = (icon: string, text: string) => (icon ? `${icon} ${text}` : text);
+
+const ROLE_LINE: Record<string, Kind> = { in_progress: "active", completed: "done", pending: "idle" };
+const MARK: Record<Kind, string> = { active: "▶", done: "✓", failed: "✗", idle: "○" };
 
 export function cockpitView(input: ViewInput) {
 	const ic = icons(!!input.glyphs);
-	const tasks = (input.phases ?? []).flatMap(p => p.tasks).map(t => ({ ...t, m: t.content.match(ROLE_TAG) }));
-	const roles = ROLES.map(([role, title, idle]) => {
-		// The Archmagos plans in the librarians' box.
-		const mine = tasks.filter(t => ((t.m?.[1] ?? t.m?.[2])?.toLowerCase().replace("archmagos", "librarian")) === role);
-		const doing = mine.find(t => t.status === "in_progress");
-		const done = mine.filter(t => t.status === "completed").at(-1);
-		const [kind, mark, body]: [Kind, string, string] = doing
-			? ["active", "▶", doing.m![3]]
-			: done
-				? ["done", "✓", done.m![3]]
-				: ["idle", "○", idle];
-		return { title, icon: ic[role], kind, mark, text: body };
-	});
+	const phases = input.phases ?? [];
+	const at = activePhase(phases);
+	const phase = phases.at(at); // at is -1 with no phases: undefined
 
-	const w = input.where;
-	const strat: { kind: Kind; mark: string; text: string; short: string } = w
-		? w.seal
-			? { kind: "seal", mark: ic.seal, text: `seal ${w.seal} awaits you`, short: `seal ${w.seal}` }
-			: { kind: "active", mark: w.back ? ic.back : "▶", text: w.task ? `${w.station} › ${w.task}` : w.station, short: w.task ? `${w.station} › ${w.task}` : w.station }
-		: { kind: "idle", mark: "○", text: "awaiting orders", short: "awaiting orders" };
+	const doing = phase?.tasks.find(t => t.status === "in_progress");
+	const sealName = doing && sealsFrom([{ name: phase!.name, tasks: [doing] }])[0]?.name;
+	const back = !!doing && phases.slice(at + 1).some(p => p.tasks.some(t => t.status === "completed"));
+	const station: { kind: Kind; mark: string; name: string; note?: string } = !phase
+		? { kind: "idle", mark: "○", name: "awaiting orders" }
+		: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: phase.name, ...(sealName ? { note: label(ic.seal, `seal ${sealName} awaits you`) } : {}) };
 
 	const ids = [...new Set([...(input.slices ?? []), ...(input.stopped ?? [])].map(s => s.id))];
 	const building = new Set(Object.values(input.agents ?? {}).map(s => s.id));
 	const returned = new Set((input.stopped ?? []).map(s => s.id));
+	// shortcut: a squad's veteran mark comes from in-memory notes, lost on restart; [veteran] todo tasks still show ‡.
 	const squads = ids.map(id => {
 		const note = input.notes[id] ?? {};
-		const [kind, mark, text]: [Kind, string, string] = building.has(id)
-			? ["active", "▶", "forging"]
+		const [kind, state]: [Kind, string] = building.has(id)
+			? ["active", "forging"]
 			: note.failed
-				? ["failed", "✗", "failed"]
+				? ["failed", "failed"]
 				: returned.has(id)
-					? ["done", "✓", "returned"]
-					: ["idle", "◌", "awaiting deployment"];
-		return { id, kind, mark, text, veteran: !!note.veteran };
+					? ["done", "returned"]
+					: ["idle", "awaiting deployment"];
+		return { kind, mark: MARK[kind], text: label(note.veteran ? ic.veteran : ic.brother, `squad ${id} ${state}`) };
+	});
+
+	const tasks = (phase?.tasks ?? []).flatMap(t => {
+		const m = t.content.match(ROLE_TAG);
+		return m ? [{ status: t.status, role: (m[1] ?? m[2]).toLowerCase(), text: m[3] }] : [];
+	});
+	const seen = phase ? [...(input.deployed ?? [])].filter(([, d]) => d.station === at) : []; // no phases: no station, so no boxes
+	const boxes = BOXES.flatMap(def => {
+		const mine = tasks.filter(t => def.tags.includes(t.role));
+		const agents = seen.filter(([, d]) => def.tags.includes(d.role));
+		if (!mine.length && !agents.length) return [];
+		const brothers = def.tags.includes("battle-brother");
+		// In the brothers' box every line carries the icon of its own rank.
+		const who = (role: string, text: string) => (brothers ? label(role === "veteran" ? ic.veteran : ic.brother, text) : text);
+		const lines = [
+			...mine.map(t => {
+				const kind = ROLE_LINE[t.status] ?? "failed";
+				return { kind, mark: MARK[kind], text: who(t.role, t.text) };
+			}),
+			...(brothers ? squads : []),
+			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ kind: d.state, mark: MARK[d.state], text: who(d.role, id) })),
+		];
+		const tone = def.tone ?? (lines.some(l => l.kind === "failed") ? "red" : lines.some(l => l.kind !== "idle") ? "green" : "iron");
+		return [{ title: label(ic[def.icon], def.title), tone, lines }];
 	});
 
 	const c = input.clock;
@@ -141,7 +197,7 @@ export function cockpitView(input: ViewInput) {
 		}
 	}
 
-	return { key: input.key, ic, clock, seals: sealsFrom(input.phases ?? []), strat, roles, squads, chronicle: [...input.chronicle].reverse() };
+	return { key: input.key, ic, clock, seals: sealsFrom(phases), station, boxes, chronicle: [...input.chronicle].reverse() };
 }
 
 const paint = (c: string, s: string) => c + s + RESET;
@@ -161,20 +217,20 @@ function fit(line: string, width: number): string {
 	return `${out}…${RESET}`;
 }
 
-const kindTone: Record<Kind, Tone> = { active: "green", done: "green", failed: "red", idle: "iron", seal: "gold" };
+const kindTone: Record<Kind, Tone> = { active: "green", done: "green", failed: "red", idle: "iron" };
 // Marks and text of a box: green/red/iron marks, parchment text unless the state itself speaks.
 const mark = (k: Kind, m: string, frame: number) => (k === "active" && m === "▶" && frame % 2 ? "▷" : m);
 const markText = (k: Kind, m: string, text: string, pal: Palette, frame = 0) =>
 	`${paint(pal[kindTone[k]], mark(k, m, frame))} ${paint(pal[k === "active" || k === "done" ? "parchment" : kindTone[k]], text)}`;
 
-function sealsText(seals: Seal[], pal: Palette, names: boolean, ic: View["ic"]): string {
+function sealsText(seals: Seal[], pal: Palette, ic: View["ic"]): string {
 	if (!seals.length) return paint(pal.iron, "—");
 	return seals
 		.map(s => {
 			const sym = s.state === "pending" ? paint(pal.iron, "○") : paint(pal.gold, s.state === "granted" ? ic.sealOn : ic.sealWait);
-			return names ? `${sym} ${paint(pal.parchment, s.name)}` : sym;
+			return `${sym} ${paint(pal.parchment, s.name)}`;
 		})
-		.join(names ? "  " : " ");
+		.join("  ");
 }
 
 function clockText(clock: View["clock"], pal: Palette, bar: boolean): string {
@@ -187,26 +243,15 @@ function clockText(clock: View["clock"], pal: Palette, bar: boolean): string {
 	return parts.join(" ");
 }
 
-const entryLine = (e: Entry, pal: Palette, who = 11) => {
+const entryLine = (e: Entry, pal: Palette) => {
 	const tone: Tone = e.tone === "ok" ? "green" : e.tone === "fail" ? "red" : e.tone === "seal" ? "gold" : "parchment";
-	return `${paint(pal.iron, e.at)}  ${paint(pal.parchment, pad(e.who, who))} ${paint(pal[tone], e.text)}`;
+	return `${paint(pal.iron, e.at)}  ${paint(pal.parchment, pad(e.who, 11))} ${paint(pal[tone], e.text)}`;
 };
 
-export function renderWidget(view: View, width: number, pal: Palette): string[] {
-	const lines = [
-		`${paint(pal.gold, "✠ STRATEGIUM")} · ${paint(pal.parchment, view.key)} · ${clockText(view.clock, pal, false)} · ${paint(pal.gold, "SEALS")} ${sealsText(view.seals, pal, false, view.ic)}`,
-		`${view.ic.captain} ${view.strat.kind === "active" && view.strat.mark === "▶" ? "" : `${view.strat.mark} `}${view.strat.short}`,
-	];
-	if (view.squads.length)
-		lines.push(view.squads.map(s => `${s.id} ${s.veteran ? view.ic.veteran : view.ic.brother} ${paint(pal[kindTone[s.kind]], s.mark)}`).join(" │ "));
-	for (const e of view.chronicle.slice(0, 3)) lines.push(entryLine(e, pal, 8));
-	return lines.map(l => fit(l, width));
-}
-
-type Box = { title: string; lines: string[]; tone: Tone; double?: boolean };
+type Box = { title: string; lines: string[]; tone: Tone };
 
 function drawBox(b: Box, w: number, pal: Palette): string[] {
-	const [tl, h, tr, v, bl, br] = b.double ? "╔═╗║╚╝" : "┌─┐│└┘";
+	const [tl, h, tr, v, bl, br] = "┌─┐│└┘";
 	const c = (s: string) => paint(pal[b.tone], s);
 	const title = fit(b.title, w - 5).replace(`…${RESET}`, "");
 	return [
@@ -231,30 +276,18 @@ function grid(boxes: Box[], cols: number, inner: number, pal: Palette): string[]
 }
 
 export function renderCockpit(view: View, width: number, frame: number, pal: Palette): string[] {
-	const roleBox = (r: View["roles"][number]): Box => ({
-		title: r.icon + r.title,
-		lines: [markText(r.kind, r.mark, r.text, pal, frame)],
-		tone: r.title === "INQUISITOR" ? "purple" : kindTone[r.kind],
-	});
-	const [librarian, apothecary, inquisitor] = view.roles.map(roleBox);
-	const s = view.strat;
-	const strategos: Box = { title: `${view.ic.captain} STRATEGOS`, lines: [markText(s.kind, s.mark, s.text, pal, frame)], tone: "gold", double: true };
-	const squads: Box[] = view.squads.map(q => ({
-		title: `SQUAD ${q.id}`,
-		lines: [q.veteran ? paint(pal.red, `${view.ic.veteran} VETERAN`) : paint(pal.parchment, `${view.ic.brother} brother`), markText(q.kind, q.mark, q.text, pal, frame)],
-		tone: kindTone[q.kind],
-	}));
+	const s = view.station;
+	const station = markText(s.kind, s.mark, s.name, pal, frame) + (s.note ? ` · ${paint(pal.gold, s.note)}` : "");
+	// shortcut: no line cap per box; a station with many tasks pushes the chronicle down; cap lines when a real run hits it.
+	const boxes: Box[] = view.boxes.map(b => ({ title: b.title, lines: b.lines.map(l => markText(l.kind, l.mark, l.text, pal, frame)), tone: b.tone }));
 
 	if (width < 72) {
-		const one = (title: string, k: Kind, m: string, text: string) => `${paint(pal.gold, title)} ${markText(k, m, text, pal, frame)}`;
 		const lines = [
 			`${paint(pal.gold, "✠ STRATEGIUM")} · ${paint(pal.parchment, view.key)}`,
 			clockText(view.clock, pal, false),
-			`${paint(pal.gold, "SEALS")} ${sealsText(view.seals, pal, true, view.ic)}`,
-			one("STRATEGOS", s.kind, s.mark, s.text),
-			...view.roles.slice(0, 1).map(r => one(r.icon + r.title, r.kind, r.mark, r.text)),
-			...view.squads.map(q => one(`SQUAD ${q.id}`, q.kind, q.mark, q.veteran ? `${q.text} ${view.ic.veteran}` : q.text)),
-			...view.roles.slice(1).map(r => one(r.icon + r.title, r.kind, r.mark, r.text)),
+			`${paint(pal.gold, "SEALS")} ${sealsText(view.seals, pal, view.ic)}`,
+			station,
+			...boxes.flatMap(b => [paint(pal.gold, b.title), ...b.lines.map(l => `  ${l}`)]),
 			paint(pal.gold, "CHRONICLE"),
 			...view.chronicle.slice(0, 8).map(e => entryLine(e, pal)),
 			paint(pal.iron, "esc/q close"),
@@ -266,21 +299,20 @@ export function renderCockpit(view: View, width: number, frame: number, pal: Pal
 	const g = (t: string) => paint(pal.gold, t);
 	const row = (content: string) => `${g("║")}${pad(fit(content, inner), inner)}${g("║")}`;
 	const left = " " + clockText(view.clock, pal, true);
-	const right = `${g("SEALS")} ${sealsText(view.seals, pal, true, view.ic)} `;
+	const right = `${g("SEALS")} ${sealsText(view.seals, pal, view.ic)} `;
 	const head = Bun.stringWidth(left) + Bun.stringWidth(right) < inner ? [row(left + " ".repeat(inner - Bun.stringWidth(left) - Bun.stringWidth(right)) + right)] : [row(left), row(` ${right}`)];
 
 	const lead = "╔═ ✠ STRATEGIUM ── COGITATOR ";
 	const key = fit(view.key, Math.max(1, width - Bun.stringWidth(lead) - 5));
 	const top = `${lead}${"═".repeat(Math.max(0, width - Bun.stringWidth(lead) - Bun.stringWidth(key) - 4))} ${key} ═╗`;
-	const cols = Math.max(1, Math.min(squads.length, Math.floor((inner - 1) / 27)));
+	const title = fit(station, inner - 4); // keeps at least one cell of rule
+	const cols = Math.max(1, Math.min(boxes.length, Math.floor((inner - 1) / 27)));
 
 	return [
 		g(fit(top, width)),
 		...head,
-		g(`╟${"─".repeat(inner)}╢`),
-		...grid([strategos, librarian], 2, inner, pal).map(row),
-		...grid(squads, cols, inner, pal).map(row),
-		...grid([apothecary, inquisitor], 2, inner, pal).map(row),
+		`${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`,
+		...grid(boxes, cols, inner, pal).map(row),
 		g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`),
 		...view.chronicle.slice(0, 8).map(e => row(` ${entryLine(e, pal)}`)),
 		g(`╚═ esc/q close ${"═".repeat(inner - 14)}╝`),
