@@ -33,6 +33,7 @@ type Slice = { id: string; parallel: boolean; files: string[] };
 // `agents`: the running battle-brothers and veterans, by the agent id the host allocated → the squad each builds.
 // `stopped`: squads whose agents have all ended (finished, failed or cancelled) and that no agent builds again yet.
 // `closedBy`: the session closed with the run going, so the next session resumes it.
+// `idle`: the clock was stopped by the idle pause; the next turn of the session resumes it.
 type Run = {
 	key: string;
 	theatre: string;
@@ -46,6 +47,7 @@ type Run = {
 	agents?: Record<string, Slice>;
 	stopped?: Slice[];
 	closedBy?: "shutdown";
+	idle?: true;
 };
 // What the extension reads from the host's session context: the real one has more.
 type SessionCtx = {
@@ -53,6 +55,10 @@ type SessionCtx = {
 	ui: { notify(message: string, level?: "info" | "warning" | "error"): void; setStatus(key: string, value: string | undefined): void };
 	setInterval(fn: () => void, ms: number): unknown;
 	agent?: { kind?: string };
+	isIdle(): boolean;
+	hasPendingMessages(): boolean;
+	getAsyncJobSnapshot(): { running: unknown[] } | null | undefined;
+	getPendingPlanReview(): unknown;
 };
 type Phase = { name: string; tasks: { content: string; status: string }[] };
 
@@ -179,13 +185,15 @@ function startKey(key: string, booked?: number, prior?: number, untimed = false)
 	append(file, { ts: nowIso(), event: "start", key, ...(bk === undefined ? {} : { booked: bk }), ...(prior ? { prior } : {}) });
 }
 
-// `reason`: "shutdown" marks the stop of a closing session, so the reopened session knows to resume; a stop the user asked for has none.
-type StopEv = Ev & { reason?: "shutdown" };
+// `reason`: "shutdown" marks the stop of a closing session, so the reopened session knows to resume; "idle" marks the idle pause;
+// a stop the user asked for has none.
+type StopEv = Ev & { reason?: "shutdown" | "idle" };
 
-function stopKey(key: string, reason?: "shutdown"): boolean {
+// `at`: the idle pause stamps the stop at the start of the idle minutes, not at the tick that noticed them.
+function stopKey(key: string, reason?: "shutdown" | "idle", at = nowIso()): boolean {
 	const file = openFile(key);
 	if (!file) return false;
-	const stop: StopEv = { ts: nowIso(), event: "stop", key, ...(reason ? { reason } : {}) };
+	const stop: StopEv = { ts: at, event: "stop", key, ...(reason ? { reason } : {}) };
 	append(file, stop);
 	return true;
 }
@@ -343,7 +351,8 @@ function alarmCmd(cmd: string): string[] {
 
 /**
  * Run STRATEGIUM_ALARM with the level in STRATEGIUM_P and a desktop-notification text in STRATEGIUM_MSG.
- * Levels: 50 | 80 | 100 for the booking timer, "attention" when the user is needed, "theme" when the session's run ends.
+ * Levels: 50 | 80 | 100 for the booking timer, "attention" when the user is needed, "theme" when the session's run ends,
+ * "idle" when the clock pauses after idle minutes.
  * Unset → silent.
  * Returns the reason when the alarm could not be started, so it is not a silent no-sound.
  */
@@ -615,6 +624,38 @@ export default function (pi: ExtensionAPI) {
 		notifyBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_NOTIFY?.trim() ?? "");
 	const notifyState = (sid: string) =>
 		`${notifyOn(sid) ? "on" : "off"} (${notifyBySession.has(sid) ? "this session" : "STRATEGIUM_NOTIFY"})`;
+	// Minutes of idle before the clock pauses: /strategium-config idle <min> per session wins over STRATEGIUM_IDLE_MIN
+	// (whole minutes; unset or invalid → 3; 0 = off).
+	const idleBySession = new Map<string, number>();
+	const idleMin = (sid: string) => {
+		const env = process.env.STRATEGIUM_IDLE_MIN?.trim() ?? "";
+		return idleBySession.get(sid) ?? (/^\d+$/.test(env) ? Number(env) : 3);
+	};
+	const idleState = (sid: string) => {
+		const n = idleMin(sid);
+		return `${n > 0 ? `${n} min` : "off"} (${idleBySession.has(sid) ? "this session" : "STRATEGIUM_IDLE_MIN"})`;
+	};
+	// When the main session last went idle (ms); tick counts from here. In memory only: a restart starts the count again.
+	let idleSince: number | undefined;
+	// A stop or start by hand spends the idle mark, so a later turn never resumes a run the user stopped. The idle count
+	// restarts too: a stale agent_end time must not pause a run the user has just resumed.
+	const spendIdle = (run: Run) => {
+		idleSince = undefined;
+		if (run.idle) writeRun({ ...run, idle: undefined });
+	};
+	/** Continue a paused run. The heartbeat is renewed so tick does not read the time since the last beat as a freeze. A timed run on a new day needs today's booking first and stays paused. */
+	const resumeOrWarn = (run: Run, sid: string, ctx: SessionCtx): string | undefined => {
+		try {
+			const resumed = shift(run);
+			beat(sid);
+			return resumed;
+		} catch (err) {
+			ctx.ui.notify(
+				err instanceof NewShift ? `Strategium: ${run.key} needs today's booking; /strategium-resume <min>` : `Strategium: ${err instanceof Error ? err.message : String(err)}`,
+				"warning",
+			);
+		}
+	};
 	/** The alarm, only when notifications are on for this session. */
 	const alert = (sid: string, level: string, msg: string) => (notifyOn(sid) ? signal(level, msg) : undefined);
 
@@ -663,20 +704,44 @@ export default function (pi: ExtensionAPI) {
 			const found = ownRun(sid);
 			if (!found) return ctx.ui.setStatus("strategium", undefined);
 			// A gap in our own heartbeats means the machine slept: close the block at the last beat and stay paused.
+			// A session that was idle-counting is marked like the idle pause, so its next turn resumes the run.
+			const counting = idleSince !== undefined;
 			const gap = closeGap(found);
 			if (gap) {
+				if (counting) writeRun({ ...found, idle: true });
 				const at = gap.slice(11, 16);
 				ctx.ui.notify(
-					`Strategium: ${found.key} paused at ${at}; this session was silent since then (sleep or freeze). /strategium-resume to continue.`,
+					`Strategium: ${found.key} paused at ${at}; this session was silent since then (sleep or freeze). ${counting ? "Your next prompt resumes it." : "/strategium-resume to continue."}`,
 					"warning",
 				);
 				alert(sid, "attention", `${found.key}: paused at ${at} after a silent gap; resume when you are back`);
 			}
 			beat(sid);
+			// Busy: the model is streaming (an `ask` waits for the user inside a stream), messages are queued, a background
+			// job runs (agent_end can fire while one still does) or a plan review is open.
+			// ponytail: an `ask` or review the user forgot keeps the clock counting; it sounds `attention` once, no timeout.
+			// A background job that never ends (e.g. a bash watcher with timeout 0) keeps the session busy too, so the idle pause never fires.
+			const busy = !ctx.isIdle() || ctx.hasPendingMessages() || (ctx.getAsyncJobSnapshot()?.running.length ?? 0) > 0 || !!ctx.getPendingPlanReview();
+			let running = isOpen(found.key);
+			const nowMs = Date.now();
+			if (!running || busy) idleSince = undefined;
+			else idleSince ??= nowMs;
+			const limitMin = idleMin(sid);
+			const limit = limitMin * 60_000;
+			// ponytail: detection granularity is this tick (60 s); the stop is stamped at the exact idle threshold.
+			if (running && limit > 0 && idleSince !== undefined && nowMs - idleSince >= limit) {
+				stopKey(found.key, "idle", nowIso(new Date(idleSince + limit)));
+				writeRun({ ...found, idle: true });
+				idleSince = undefined;
+				running = false;
+				// No message into the session: a triggered turn would resume the clock at once.
+				ctx.ui.notify(`Strategium: ${found.key} paused after ${limitMin} min idle; your next prompt resumes it`, "info");
+				const err = alert(sid, "idle", `${found.key}: paused, idle ${limitMin} min`);
+				if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+			}
 			const file = today();
 			const evs = load(file);
 			const key = found.key;
-			const running = isOpen(key);
 			const now = new Date();
 			const el = Math.floor(elapsedMin(evs, key, now));
 			const bk = bookedMin(evs, key) ?? 0;
@@ -720,6 +785,8 @@ export default function (pi: ExtensionAPI) {
 					case "begin": {
 						if (!params.key) throw new Error("begin needs key");
 						begin(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover);
+						// A block start always restarts the idle count.
+						idleSince = undefined;
 						const run = ownRun(sid)!;
 						const hid = await hideCaptainTools();
 						writeRun({ ...run, hidden: [...new Set([...(run.hidden ?? []), ...hid])] });
@@ -737,10 +804,12 @@ export default function (pi: ExtensionAPI) {
 					case "start": {
 						const run = ownRun(sid);
 						if (!run) throw new Error("no active run in this session; use begin");
+						spendIdle(run);
 						return text(`${shift(run, params.booked)}\n${statusLines()}`);
 					}
 					case "stop": {
 						const run = ownRun(sid);
+						if (run) spendIdle(run);
 						if (!run || !stopKey(run.key)) return text("IDLE");
 						return text(`STOPPED ${run.key} ${Math.floor(elapsedMin(load(today()), run.key, new Date()))} min`);
 					}
@@ -834,12 +903,14 @@ export default function (pi: ExtensionAPI) {
 
 	subcommand("pause", "Stop this session's Strategium clock", (_arg, ctx, sid) => {
 		const run = ownRun(sid);
+		if (run) spendIdle(run);
 		ctx.ui.notify(`Strategium: paused (${run && stopKey(run.key) ? run.key : "idle"})`, "info");
 	});
 
 	subcommand("resume", "Continue this session's Strategium run; on a new day pass today's booked minutes", (arg, ctx, sid) => {
 		const run = ownRun(sid);
 		if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
+		spendIdle(run);
 		const bk = arg === undefined ? undefined : Number(arg);
 		if (bk !== undefined && !(Number.isInteger(bk) && bk > 0))
 			throw new Error("resume takes the booked minutes as a whole number, e.g. /strategium-resume 240");
@@ -864,17 +935,20 @@ export default function (pi: ExtensionAPI) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; idle <min> sets the idle pause", (arg, ctx, sid) => {
 		if (arg !== undefined) {
 			const m = arg.match(/^notify\s+(on|off)$/);
-			if (!m) throw new Error("config takes notify on|off; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
-			notifyBySession.set(sid, m[1] === "on");
+			const i = arg.match(/^idle\s+(\d+)$/);
+			if (!m && !i) throw new Error("config takes notify on|off or idle <min>; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			if (m) notifyBySession.set(sid, m[1] === "on");
+			else idleBySession.set(sid, Number(i![1]));
 		}
 		const env = (k: string) => process.env[k]?.trim() || "not set";
 		ctx.ui.notify(
 			[
 				"Strategium config",
 				`notify: ${notifyState(sid)}`,
+				`idle: ${idleState(sid)}`,
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`alarm: ${env("STRATEGIUM_ALARM")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
@@ -913,6 +987,8 @@ export default function (pi: ExtensionAPI) {
 					beat(sid);
 					const n = notifyBySession.get(prevSid);
 					if (n !== undefined) notifyBySession.set(sid, n);
+					const idle = idleBySession.get(prevSid);
+					if (idle !== undefined) idleBySession.set(sid, idle);
 				} catch {
 					// Another session took the key meanwhile: the run stays where it is.
 				}
@@ -939,17 +1015,7 @@ export default function (pi: ExtensionAPI) {
 			if (held) {
 				const resume = died || own.closedBy === "shutdown";
 				if (own.closedBy) writeRun({ ...own, closedBy: undefined });
-				if (resume) {
-					try {
-						shift(own);
-						beat(sid);
-					} catch (err) {
-						ctx.ui.notify(
-							err instanceof NewShift ? `Strategium: ${own.key} needs today's booking; /strategium-resume <min>` : `Strategium: ${err instanceof Error ? err.message : String(err)}`,
-							"warning",
-						);
-					}
-				}
+				if (resume) resumeOrWarn(own, sid, ctx);
 			}
 		}
 		refreshFooter = tick;
@@ -957,6 +1023,7 @@ export default function (pi: ExtensionAPI) {
 			timerSet = true;
 			ctx.setInterval(tick, 60_000);
 		}
+		idleSince = undefined;
 		tick();
 		// A run that is still ours keeps the editing tools hidden after a restart.
 		// ponytail: a session whose run is taken over keeps the tools hidden until it restarts.
@@ -968,7 +1035,32 @@ export default function (pi: ExtensionAPI) {
 	// An approved plan opens a fresh session (reason "new", no shutdown of the old one); the run follows it only then.
 	pi.on("plan_review_requested", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub") return;
-		reviewSid = ownRun(e.sessionId) ? e.sessionId : undefined;
+		const run = ownRun(e.sessionId);
+		reviewSid = run ? e.sessionId : undefined;
+		// The user is called now: the review keeps the clock counting (it is busy), so the attention alarm replaces the idle one.
+		if (!run) return;
+		const err = alert(e.sessionId, "attention", `${run.key}: your plan review is waiting`);
+		if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+	});
+	// Every turn, whoever started it (before_agent_start fires only for typed prompts): the idle count restarts and an
+	// idle-paused run continues. A run paused by hand carries no mark and stays paused.
+	pi.on("agent_start", (_e, ctx) => {
+		if (ctx?.agent?.kind === "sub") return;
+		idleSince = undefined;
+		const run = ownRun(sidOf(ctx));
+		if (run?.idle) {
+			writeRun({ ...run, idle: undefined });
+			if (!isOpen(run.key)) {
+				const resumed = resumeOrWarn(run, sidOf(ctx), ctx);
+				if (resumed) ctx.ui.notify(`Strategium: ${resumed}`, "info");
+			}
+		}
+		refreshFooter?.();
+	});
+	// The turn ended: the idle minutes count from here (tick restarts the count if something is still busy).
+	pi.on("agent_end", (_e, ctx) => {
+		if (ctx?.agent?.kind === "sub") return;
+		idleSince = Date.now();
 	});
 	// "Approve and execute" closes the review before the new session exists, so its mark stays until the switch
 	// (onSession spends it); omp restores the plan-mode tool set only after that, see before_agent_start. Any other

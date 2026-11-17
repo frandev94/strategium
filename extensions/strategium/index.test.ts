@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { whereFrom } from "./index";
-import { claim, load, lockPath, openKeys } from "./timer";
+import { claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
 
 // The extension registers itself on a host. A fake one is enough: it hands back the tool it
 // registered and does nothing else.
@@ -57,13 +57,22 @@ function fakePi() {
 	};
 }
 
-const fakeCtx = (sid: string, cwd: string, notes: string[] = [], footer: string[] = []) => ({
-	sessionManager: { getSessionId: () => sid },
-	ui: { notify: (m: string) => void notes.push(m), setStatus: (_k: string, v?: string) => footer.push(v ?? "") },
-	cwd,
-	setInterval: (_fn: () => void, _ms: number) => 0,
-	agent: { kind: "main" },
-});
+// The host's view of the session, mutable per test. It starts busy (streaming), so no test but the idle ones can pause by idleness.
+const fakeCtx = (sid: string, cwd: string, notes: string[] = [], footer: string[] = []) => {
+	const host = { idle: false, pending: false, jobs: undefined as { running: unknown[] } | undefined, review: undefined as unknown };
+	return {
+		sessionManager: { getSessionId: () => sid },
+		ui: { notify: (m: string) => void notes.push(m), setStatus: (_k: string, v?: string) => footer.push(v ?? "") },
+		cwd,
+		setInterval: (_fn: () => void, _ms: number) => 0,
+		agent: { kind: "main" },
+		host,
+		isIdle: () => host.idle,
+		hasPendingMessages: () => host.pending,
+		getAsyncJobSnapshot: () => host.jobs,
+		getPendingPlanReview: () => host.review,
+	};
+};
 
 // omp switches sessions by mutating one SessionManager (setSessionFile): the id changes under the same object.
 const shared = (sid: string, dir: string, footer: string[], notes: string[] = []) => {
@@ -80,6 +89,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_STATE_DIR;
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
+	delete process.env.STRATEGIUM_IDLE_MIN;
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1549,5 +1559,435 @@ describe("reload, shutdown and the footer, pinned", () => {
 		await s.call({ action: "status" });
 		expect(s.footer.length).toBe(drawn + 1);
 		expect(s.shown()).toContain("omp-native");
+	});
+});
+
+describe("the idle pause", () => {
+	const T = (h: number, m: number, s = 0, day = 16) => new Date(2026, 10, day, h, m, s);
+	const dayEvents = (dir: string, day = 16) => load(join(dir, `2026-11-${day}.jsonl`));
+	const starts = (dir: string, day = 16) => dayEvents(dir, day).filter(e => e.event === "start").length;
+	const stops = (dir: string) => dayEvents(dir).filter(e => e.event === "stop") as (Ev & { reason?: string })[];
+	const runMark = (dir: string) => JSON.parse(readFileSync(join(dir, "runs", "sess-0001.json"), "utf8")).idle;
+	// A running run on an idle session, started at 9:00 on the fake clock.
+	async function idler(booked?: number) {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		await s.call({ action: "begin", key: "K-1", ...(booked ? { booked } : {}) });
+		s.ctx.host.idle = true;
+		await s.start();
+		return s;
+	}
+	// The timer ticks at a time of the fake clock: a footer refresh runs the same tick as the interval does.
+	const at = async (s: Awaited<ReturnType<typeof idler>>, h: number, m: number, sec = 0) => {
+		setSystemTime(T(h, m, sec));
+		await s.sub("status");
+	};
+	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
+	const ran = (notes: string[]) => notes.some(n => n.includes("the alarm failed"));
+	// The alarm command appends "<level>|<message>" to a file; the spawn is asynchronous, so poll.
+	const recorder = (dir: string) => {
+		const out = join(dir, "alarm.log");
+		const script = join(dir, "rec.ts");
+		writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_MSG}\\n`);\n');
+		process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
+		return async (want: number) => {
+			for (let i = 0; i < 100; i++) {
+				const lines = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
+				if (lines.length >= want) return lines;
+				await Bun.sleep(50);
+			}
+			return existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
+		};
+	};
+	afterEach(() => delete process.env.STRATEGIUM_ALARM);
+
+	test("idle for the threshold pauses the clock with reason idle and marks the run", async () => {
+		const s = await idler();
+		await at(s, 9, 1);
+		await at(s, 9, 2);
+		expect(stops(s.dir)).toEqual([]);
+		// The tick that notices comes late (9:04); the stop is stamped at 9:00 + 3 min.
+		await at(s, 9, 4);
+		expect(stops(s.dir)).toEqual([{ ts: nowIso(T(9, 3)), event: "stop", key: "K-1", reason: "idle" }]);
+		expect(runMark(s.dir)).toBe(true);
+		expect(s.shown()).toContain("paused");
+		await at(s, 9, 5);
+		expect(stops(s.dir).length).toBe(1);
+	});
+
+	test("a busy session never pauses: streaming, pending messages, a running job, an open plan review", async () => {
+		const signals: [string, (h: ReturnType<typeof fakeCtx>["host"]) => void][] = [
+			["streaming", h => (h.idle = false)],
+			["pending messages", h => (h.pending = true)],
+			["a running job", h => (h.jobs = { running: [{}] })],
+			["an open plan review", h => (h.review = {})],
+		];
+		for (const [name, busy] of signals) {
+			const s = await idler();
+			busy(s.ctx.host);
+			for (const m of [2, 4, 6, 8, 10]) await at(s, 9, m);
+			expect(stops(s.dir), name).toEqual([]);
+			// Once the signal clears the count starts there, not at 9:00.
+			Object.assign(s.ctx.host, { idle: true, pending: false, jobs: undefined, review: undefined });
+			await at(s, 9, 11);
+			await at(s, 9, 13);
+			expect(stops(s.dir), name).toEqual([]);
+			await at(s, 9, 14);
+			expect(stops(s.dir).length, name).toBe(1);
+		}
+	});
+
+	test("a turn between two ticks restarts the idle count", async () => {
+		const s = await idler();
+		await at(s, 9, 2);
+		// A short turn: it ends at 9:02:40, so the idle minutes count from there.
+		setSystemTime(T(9, 2, 30));
+		s.ctx.host.idle = false;
+		await s.handlers.agent_start[0]({}, s.ctx);
+		setSystemTime(T(9, 2, 40));
+		await s.handlers.agent_end[0]({}, s.ctx);
+		s.ctx.host.idle = true;
+		await at(s, 9, 4);
+		await at(s, 9, 5);
+		expect(stops(s.dir)).toEqual([]);
+		await at(s, 9, 6);
+		expect(stops(s.dir)).toEqual([{ ts: nowIso(T(9, 5, 40)), event: "stop", key: "K-1", reason: "idle" }]);
+	});
+
+	test("the idle pause notifies and sounds the idle alarm only with notifications on", async () => {
+		const on = await idler();
+		const lines = recorder(on.dir);
+		await at(on, 9, 2);
+		await at(on, 9, 3);
+		expect(on.notes.filter(n => n.includes("paused after 3 min idle")).length).toBe(1);
+		expect(on.notes.find(n => n.includes("paused after"))).toContain("K-1");
+		expect(await lines(1)).toEqual(["idle|K-1: paused, idle 3 min"]);
+		// Nothing is posted into the session: a triggered turn would resume the clock at once.
+		expect(on.calls).toEqual([]);
+		expect(on.sent).toEqual([]);
+
+		const off = await idler();
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		await off.sub("config", "notify off");
+		await at(off, 9, 2);
+		await at(off, 9, 3);
+		expect(off.notes.some(n => n.includes("paused after 3 min idle"))).toBe(true);
+		// A failing alarm command reports itself at once, so no note proves nothing was spawned.
+		expect(ran(off.notes)).toBe(false);
+	});
+
+	test("the idle notification and alarm name the configured minutes", async () => {
+		const s = await idler();
+		const lines = recorder(s.dir);
+		await s.sub("config", "idle 5");
+		await at(s, 9, 2);
+		await at(s, 9, 4);
+		await at(s, 9, 5);
+		expect(s.notes.some(n => n.includes("paused after 5 min idle"))).toBe(true);
+		expect(await lines(1)).toEqual(["idle|K-1: paused, idle 5 min"]);
+	});
+
+	test("a failing idle alarm is reported", async () => {
+		const s = await idler();
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		await at(s, 9, 2);
+		await at(s, 9, 3);
+		expect(ran(s.notes)).toBe(true);
+	});
+
+	test("the next agent_start resumes an idle-paused run once", async () => {
+		const s = await idler();
+		await at(s, 9, 2);
+		await at(s, 9, 3);
+		expect(starts(s.dir)).toBe(1);
+		setSystemTime(T(9, 30));
+		s.ctx.host.idle = false;
+		await s.handlers.agent_start[0]({}, s.ctx);
+		expect(starts(s.dir)).toBe(2);
+		expect(s.notes.at(-1)).toContain("resumed K-1");
+		expect(runMark(s.dir)).toBeUndefined();
+		await s.handlers.agent_start[0]({}, s.ctx);
+		expect(starts(s.dir)).toBe(2);
+	});
+
+	test("a sleep while idle-counting marks the run, so the next agent_start resumes it", async () => {
+		const s = await idler();
+		await at(s, 9, 1);
+		// The machine sleeps from 9:01 to 9:10: the block closes at the last beat, not at the threshold.
+		await at(s, 9, 10);
+		expect(stops(s.dir)).toEqual([{ ts: nowIso(T(9, 1)), event: "stop", key: "K-1" }]);
+		expect(runMark(s.dir)).toBe(true);
+		s.ctx.host.idle = false;
+		await s.handlers.agent_start[0]({}, s.ctx);
+		expect(starts(s.dir)).toBe(2);
+		expect(runMark(s.dir)).toBeUndefined();
+	});
+
+	test("a sleep while busy leaves the run paused: agent_start does not resume it", async () => {
+		const s = await idler();
+		s.ctx.host.idle = false;
+		await at(s, 9, 1);
+		await at(s, 9, 10);
+		expect(stops(s.dir)).toEqual([{ ts: nowIso(T(9, 1)), event: "stop", key: "K-1" }]);
+		expect(runMark(s.dir)).toBeUndefined();
+		await s.handlers.agent_start[0]({}, s.ctx);
+		expect(starts(s.dir)).toBe(1);
+	});
+
+	test("pause, stop, resume and start spend the idle mark", async () => {
+		const actions: [string, (s: Awaited<ReturnType<typeof idler>>) => unknown, boolean][] = [
+			["/strategium-pause", s => s.sub("pause"), false],
+			["the stop action", s => s.call({ action: "stop" }), false],
+			["/strategium-resume", s => s.sub("resume"), true],
+			["the start action", s => s.call({ action: "start" }), true],
+		];
+		// Untimed and timed runs both spend the mark.
+		for (const booked of [undefined, 120]) for (const [name, act, resumes] of actions) {
+			const s = await idler(booked);
+			await at(s, 9, 2);
+			await at(s, 9, 3);
+			expect(runMark(s.dir), name).toBe(true);
+			await act(s);
+			expect(runMark(s.dir), name).toBeUndefined();
+			const before = starts(s.dir);
+			expect(before, name).toBe(resumes ? 2 : 1);
+			// A turn after a stop by hand adds no start: the run stays paused.
+			s.ctx.host.idle = false;
+			await s.handlers.agent_start[0]({}, s.ctx);
+			expect(starts(s.dir), name).toBe(before);
+		}
+	});
+
+	test("a hand resume on a running clock restarts the idle count", async () => {
+		for (const [name, act] of [
+			["/strategium-resume", (s: Awaited<ReturnType<typeof idler>>) => s.sub("resume")],
+			["the start action", (s: Awaited<ReturnType<typeof idler>>) => s.call({ action: "start" })],
+		] as const) {
+			const s = await idler();
+			await at(s, 9, 2);
+			await act(s);
+			// Counted from 9:02 (the command), not from 9:00: 9:04 is only 2 min.
+			await at(s, 9, 4);
+			expect(stops(s.dir), name).toEqual([]);
+			await at(s, 9, 5);
+			expect(stops(s.dir), name).toEqual([{ ts: nowIso(T(9, 5)), event: "stop", key: "K-1", reason: "idle" }]);
+		}
+	});
+
+	test("a reload with a stale idle count does not pause at once", async () => {
+		const s = await idler();
+		await at(s, 9, 1);
+		await s.handlers.session_shutdown[0]({}, s.ctx);
+		setSystemTime(T(9, 10));
+		await s.start();
+		expect(stops(s.dir).filter(e => e.reason === "idle")).toEqual([]);
+		expect(starts(s.dir)).toBe(2);
+	});
+
+	test("a sub-agent's turn neither resumes the run nor restarts the idle count", async () => {
+		const sub = (s: { ctx: object }) => ({ ...s.ctx, agent: { kind: "sub" } }) as never;
+		// agent_start: an idle-paused run stays paused and marked.
+		const paused = await idler();
+		await at(paused, 9, 2);
+		await at(paused, 9, 3);
+		setSystemTime(T(9, 30));
+		await paused.handlers.agent_start[0]({}, sub(paused));
+		expect(starts(paused.dir)).toBe(1);
+		expect(runMark(paused.dir)).toBe(true);
+		// agent_start on a running clock does not move the count.
+		const started = await idler();
+		await at(started, 9, 2);
+		setSystemTime(T(9, 2, 30));
+		await started.handlers.agent_start[0]({}, sub(started));
+		await at(started, 9, 3);
+		expect(stops(started.dir).length).toBe(1);
+		// agent_end does not move it either: the stop stays stamped 9:00 + 3 min.
+		const ended = await idler();
+		await at(ended, 9, 2);
+		setSystemTime(T(9, 2, 30));
+		await ended.handlers.agent_end[0]({}, sub(ended));
+		await at(ended, 9, 3);
+		expect(stops(ended.dir)).toEqual([{ ts: nowIso(T(9, 3)), event: "stop", key: "K-1", reason: "idle" }]);
+	});
+
+	test("the footer drops paused as soon as the resuming agent_start runs", async () => {
+		const s = await idler();
+		await at(s, 9, 2);
+		await at(s, 9, 3);
+		expect(s.shown()).toContain("paused");
+		setSystemTime(T(9, 30));
+		s.ctx.host.idle = false;
+		await s.handlers.agent_start[0]({}, s.ctx);
+		expect(s.shown()).not.toContain("paused");
+	});
+
+	test("an idle-paused timed run on a new day waits for its booking; an untimed one resumes", async () => {
+		const timed = await idler(120);
+		await at(timed, 9, 2);
+		await at(timed, 9, 3);
+		setSystemTime(T(9, 0, 0, 17));
+		timed.ctx.host.idle = false;
+		await timed.handlers.agent_start[0]({}, timed.ctx);
+		expect(starts(timed.dir, 17)).toBe(0);
+		expect(timed.notes.at(-1)).toContain("needs today's booking; /strategium-resume <min>");
+		expect(runMark(timed.dir)).toBeUndefined();
+
+		const untimed = await idler();
+		await at(untimed, 9, 2);
+		await at(untimed, 9, 3);
+		setSystemTime(T(9, 0, 0, 17));
+		untimed.ctx.host.idle = false;
+		await untimed.handlers.agent_start[0]({}, untimed.ctx);
+		expect(starts(untimed.dir, 17)).toBe(1);
+	});
+
+	test("the idle threshold follows STRATEGIUM_IDLE_MIN and /strategium-config idle, 0 turns it off", async () => {
+		// 0 = off: nothing pauses however long the session is idle.
+		process.env.STRATEGIUM_IDLE_MIN = "0";
+		const off = await idler();
+		for (const m of [2, 4, 6, 8, 10]) await at(off, 9, m);
+		expect(stops(off.dir)).toEqual([]);
+		await off.sub("config");
+		expect(off.notes.at(-1)).toContain("idle: off (STRATEGIUM_IDLE_MIN)");
+
+		// The env value moves the threshold: 5 min, not 3.
+		process.env.STRATEGIUM_IDLE_MIN = "5";
+		const five = await idler();
+		for (const m of [2, 4]) await at(five, 9, m);
+		expect(stops(five.dir)).toEqual([]);
+		await at(five, 9, 5);
+		expect(stops(five.dir)).toEqual([{ ts: nowIso(T(9, 5)), event: "stop", key: "K-1", reason: "idle" }]);
+		await five.sub("config");
+		expect(five.notes.at(-1)).toContain("idle: 5 min (STRATEGIUM_IDLE_MIN)");
+
+		// The session setting wins over the env, and 0 there turns it off too.
+		const own = await idler();
+		await own.sub("config", "idle 2");
+		expect(own.notes.at(-1)).toContain("idle: 2 min (this session)");
+		await at(own, 9, 2);
+		expect(stops(own.dir).length).toBe(1);
+		const none = await idler();
+		await none.sub("config", "idle 0");
+		expect(none.notes.at(-1)).toContain("idle: off (this session)");
+		for (const m of [2, 4, 6, 8, 10]) await at(none, 9, m);
+		expect(stops(none.dir)).toEqual([]);
+
+		// An invalid value is refused and invalid env falls back to 3.
+		await none.sub("config", "idle x");
+		expect(none.notes.at(-1)).toContain("config takes notify on|off or idle <min>");
+		process.env.STRATEGIUM_IDLE_MIN = "soon";
+		const dflt = await idler();
+		await dflt.sub("config");
+		expect(dflt.notes.at(-1)).toContain("idle: 3 min (STRATEGIUM_IDLE_MIN)");
+
+		// Two digits are accepted, trailing junk is refused with the warning.
+		await dflt.sub("config", "idle 10");
+		expect(dflt.notes.at(-1)).toContain("idle: 10 min (this session)");
+		await dflt.sub("config", "idle 5x");
+		expect(dflt.notes.at(-1)).toContain("config takes notify on|off or idle <min>");
+
+		// Spaces around the env value are trimmed; a negative one falls back to 3.
+		process.env.STRATEGIUM_IDLE_MIN = " 5 ";
+		const spaced = setup();
+		await spaced.sub("config");
+		expect(spaced.notes.at(-1)).toContain("idle: 5 min (STRATEGIUM_IDLE_MIN)");
+		process.env.STRATEGIUM_IDLE_MIN = "-5";
+		const negative = setup();
+		await negative.sub("config");
+		expect(negative.notes.at(-1)).toContain("idle: 3 min (STRATEGIUM_IDLE_MIN)");
+	});
+
+	test("the idle setting follows an approved plan to the new session", async () => {
+		const s = setup("sess-A");
+		await s.call({ action: "begin", key: "K-1" });
+		const notes: string[] = [];
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer, notes);
+		await s.handlers.session_start[0]({}, ctx);
+		await s.commands["strategium-config"].handler("idle 7", ctx);
+		await s.handlers.plan_review_requested[0]({ sessionId: "sess-A" }, ctx);
+		await s.handlers.plan_review_resolved[0]({ sessionId: "sess-A", choice: "execute" }, ctx);
+		sm.sid = "sess-B";
+		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
+		await s.commands["strategium-config"].handler("", ctx);
+		expect(notes.at(-1)).toContain("idle: 7 min (this session)");
+	});
+
+	test("idle 0 survives the plan-approval move as off", async () => {
+		const s = setup("sess-A");
+		await s.call({ action: "begin", key: "K-1" });
+		const notes: string[] = [];
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer, notes);
+		await s.handlers.session_start[0]({}, ctx);
+		await s.commands["strategium-config"].handler("idle 0", ctx);
+		await s.handlers.plan_review_requested[0]({ sessionId: "sess-A" }, ctx);
+		await s.handlers.plan_review_resolved[0]({ sessionId: "sess-A", choice: "execute" }, ctx);
+		sm.sid = "sess-B";
+		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
+		await s.commands["strategium-config"].handler("", ctx);
+		expect(notes.at(-1)).toContain("idle: off (this session)");
+	});
+
+	test("no idle pause without a running clock; a session closed while idle-paused resumes on its first turn", async () => {
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		// No run at all.
+		const bare = setup();
+		setSystemTime(T(9, 0));
+		bare.ctx.host.idle = true;
+		await bare.start();
+		await at(bare, 9, 2);
+		await at(bare, 9, 4);
+		expect(bare.notes.some(n => n.includes("idle"))).toBe(false);
+		expect(ran(bare.notes)).toBe(false);
+		// A clock the user stopped.
+		const paused = await idler();
+		await paused.sub("pause");
+		await at(paused, 9, 2);
+		await at(paused, 9, 4);
+		expect(runMark(paused.dir)).toBeUndefined();
+		expect(stops(paused.dir).every(e => e.reason === undefined)).toBe(true);
+		// A failing alarm command reports itself at once, so no note proves nothing was spawned.
+		expect(ran(paused.notes)).toBe(false);
+
+		// Closed while idle-paused: no shutdown mark, so the reopened session stays paused until its first turn.
+		const s = await idler();
+		await at(s, 9, 2);
+		await at(s, 9, 3);
+		await s.handlers.session_shutdown[0]({}, s.ctx);
+		expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")).closedBy).toBeUndefined();
+		await s.start();
+		expect(starts(s.dir)).toBe(1);
+		s.ctx.host.idle = false;
+		await s.handlers.agent_start[0]({}, s.ctx);
+		expect(starts(s.dir)).toBe(2);
+	});
+
+	test("an open plan review calls the user once with the attention alarm, only with notifications on", async () => {
+		const on = setup();
+		const lines = recorder(on.dir);
+		await on.call({ action: "begin", key: "K-1" });
+		await on.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, on.ctx);
+		expect(await lines(1)).toEqual(["attention|K-1: your plan review is waiting"]);
+		await Bun.sleep(300);
+		expect(await lines(0)).toEqual(["attention|K-1: your plan review is waiting"]);
+
+		const off = setup();
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		await off.call({ action: "begin", key: "K-1" });
+		await off.sub("config", "notify off");
+		await off.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, off.ctx);
+		// A session without a run: nothing to call about.
+		const bare = setup();
+		await bare.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, bare.ctx);
+		// A failing alarm command reports itself (the awaited call surfaces it at once), so no note proves no spawn.
+		expect(ran(off.notes)).toBe(false);
+		expect(ran(bare.notes)).toBe(false);
+	});
+
+	test("a failing plan-review alarm is reported", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		await s.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, s.ctx);
+		expect(ran(s.notes)).toBe(true);
 	});
 });

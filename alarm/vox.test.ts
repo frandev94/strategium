@@ -54,3 +54,46 @@ test("theme RMS stays within 1% of the approved mix", () => {
 	for (let i = 0; i < n; i++) s += sample(i) ** 2;
 	expect(Math.abs(Math.sqrt(s / n) / 10694.6 - 1)).toBeLessThan(0.01);
 });
+
+// Content guards for the idle sound (loose bounds: survive small retuning, fail if the shape is lost).
+const idle = synth("idle");
+const idleSample = (i: number) => idle.readInt16LE(44 + i * 2);
+// Zero crossings per second between a and b seconds: a proxy for pitch.
+const idleZc = (a: number, b: number) => {
+	let n = 0;
+	for (let i = Math.floor(a * RATE) + 1; i < b * RATE; i++) if ((idleSample(i - 1) < 0) !== (idleSample(i) < 0)) n++;
+	return n / (b - a);
+};
+const idleRms = (a: number, b: number) => {
+	let t = 0, n = 0;
+	for (let i = Math.floor(a * RATE); i < b * RATE; i++) {
+		t += idleSample(i) ** 2;
+		n++;
+	}
+	return Math.sqrt(t / n);
+};
+
+test("idle is a registered level", () => {
+	expect(LEVELS).toContain("idle");
+});
+
+test("idle is not the done sound", () => {
+	expect(idle.equals(synth("done"))).toBe(false);
+});
+
+test("idle glides downward in pitch", () => {
+	expect(idleZc(0.1, 0.3)).toBeGreaterThan(900);
+	expect(idleZc(0.9, 1.1)).toBeLessThan(700);
+	expect(idleZc(0.1, 0.3)).toBeGreaterThan(idleZc(0.5, 0.7));
+	expect(idleZc(0.5, 0.7)).toBeGreaterThan(idleZc(0.9, 1.1));
+});
+
+test("idle closing bell still rings after the glide", () => {
+	expect(idleRms(1.3, 2.0)).toBeGreaterThan(700);
+	expect(idleRms(1.3, 2.0)).toBeLessThan(1800);
+});
+
+test("idle glide sits at a moderate level", () => {
+	expect(idleRms(0, 1)).toBeGreaterThan(3000);
+	expect(idleRms(0, 1)).toBeLessThan(4800);
+});

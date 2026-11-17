@@ -1,5 +1,5 @@
 // Strategium vox-caster: synthesizes every sound from scratch (no samples) and plays it.
-// Usage: bun vox.ts [50|80|100|done|attention|theme]  (level: argv[2], else env STRATEGIUM_P, else done; theme is 15 s, when a run ends, or by hand)
+// Usage: bun vox.ts [50|80|100|done|attention|idle|theme]  (level: argv[2], else env STRATEGIUM_P, else done; theme is 15 s, when a run ends, or by hand)
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { childEnv } from "../extensions/strategium/env";
 
 export const RATE = 22050;
-export const LEVELS = ["50", "80", "100", "done", "attention", "theme"] as const;
+export const LEVELS = ["50", "80", "100", "done", "attention", "idle", "theme"] as const;
 export type Level = (typeof LEVELS)[number];
 
 type Buf = Float64Array;
@@ -279,13 +279,15 @@ const DESIGN: Record<Level, (b: Buf) => void> = {
 	"done": b => { [330, 392, 494, 659].forEach((hz, i) => bell(b, i * 0.28, hz, 0.55, 1.2)); bell(b, 1.2, 165, 0.8, 2); cant(b, 1.3, 2, 0.08, 0.2, 2); },
 	// attention: a dark call to war, horn section in C minor (C - Eb - low G) over war drums
 	"attention": warCall,
+	// idle: stand-by, a power-down glide (660 -> 165 Hz in 1.2 s) closed by one soft low bell; the run's clock paused
+	"idle": b => { voice(b, 0, 1.2, 0.35, 0.7, t => Math.sin(TAU * (660 * t - 206.25 * t * t))); bell(b, 1.1, 165, 0.45, 1.4); },
 	// theme: the 15 s Strategium theme (a drop, a dead stop, a chromatic fall, one last hit); when a run ends, or by hand
 	"theme": theme,
 };
 
 /** Pure synthesis: 16-bit mono PCM WAV (soft-limited by tanh, peak <= 0.85 * int16 max; theme: own master, peak 0.9). */
 export function synth(level: Level): Buffer {
-	const secs = { "50": 2, "80": 3, "100": 3.4, "done": 3, "attention": 3.9, "theme": 15 }[level];
+	const secs = { "50": 2, "80": 3, "100": 3.4, "done": 3, "attention": 3.9, "idle": 2.5, "theme": 15 }[level];
 	const b = new Float64Array(Math.floor(secs * RATE));
 	DESIGN[level](b);
 	const pcm = Buffer.alloc(b.length * 2);
