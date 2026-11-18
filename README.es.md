@@ -263,6 +263,8 @@ skills/                           las skills
 
 La extensión es TypeScript puro y sin dependencias en tiempo de ejecución; `bun` solo hace falta para ejecutarla y para correr los tests.
 
+Las versiones son automáticas: un merge a `main` que cambie `extensions/`, `skills/`, `agents/`, `alarm/` o `.omp-plugin/` (sin contar los ficheros de test) ejecuta `.github/workflows/release.yml`. Los commits convencionales fijan la versión (mientras sea 0.x, un cambio incompatible, marcado con `!`, sube la minor y todo lo demás la patch). Los merges que solo tocan docs, tests o herramientas de desarrollo no publican nada; sus commits entran en el changelog de la siguiente versión. Para publicar a mano, usa la skill `strategium-release`.
+
 ## Licencia
 
 MIT
