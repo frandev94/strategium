@@ -94,6 +94,8 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
 	delete process.env.STRATEGIUM_ARCHMAGOS;
+	delete process.env.STRATEGIUM_SOUND;
+	delete process.env.STRATEGIUM_TOAST;
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -456,6 +458,100 @@ describe("notifications", () => {
 		const s = setup();
 		await s.sub("config", "theatre acme");
 		expect(s.notes[0]).toContain("config takes notify on|off");
+	});
+
+	// The alarm command appends "<level>|<STRATEGIUM_SOUND>|<STRATEGIUM_MSG>" to a file; the spawn is asynchronous, so poll.
+	const recorder = (dir: string) => {
+		const out = join(dir, "alarm.log");
+		const script = join(dir, "rec.ts");
+		writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_SOUND}|${process.env.STRATEGIUM_MSG}\\n`);\n');
+		process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
+		return async () => {
+			for (let i = 0; i < 100 && !existsSync(out); i++) await Bun.sleep(50);
+			return existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
+		};
+	};
+
+	test.each([
+		["defaults", [], "attention|1|seal ready"],
+		["toast off", ["toast off"], "attention|1|undefined"],
+		["sound off", ["sound off"], "attention|0|seal ready"],
+	])("the alarm gets STRATEGIUM_SOUND and STRATEGIUM_MSG by channel: %s", async (_n, cmds, want) => {
+		const s = setup();
+		process.env.STRATEGIUM_NOTIFY = "1";
+		const lines = recorder(s.dir);
+		for (const c of cmds) await s.sub("config", c);
+		await s.call({ action: "attention", message: "seal ready" });
+		expect(await lines()).toEqual([want]);
+	});
+
+	test("sound off and toast off run no alarm and attention says silent", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_NOTIFY = "1";
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		await s.sub("config", "sound off");
+		await s.sub("config", "toast off");
+		expect(await s.call({ action: "attention", message: "seal ready" })).toBe(
+			"ATTENTION seal ready (silent: sound and toast are off; /strategium-config sound on or toast on)",
+		);
+		expect(ran(s.notes)).toBe(false);
+	});
+
+	test("notify off runs nothing whatever sound and toast say", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_NOTIFY = "0";
+		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		await s.sub("config", "sound on");
+		await s.sub("config", "toast on");
+		expect(await s.call({ action: "attention", message: "seal ready" })).toBe(
+			"ATTENTION seal ready (silent: notifications are off; /strategium-config notify on)",
+		);
+		expect(ran(s.notes)).toBe(false);
+	});
+
+	test("attention names the channels that fired", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_NOTIFY = "1";
+		process.env.STRATEGIUM_ALARM = `"${process.execPath}" -e ""`;
+		expect(await s.call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready (sound, toast)");
+		await s.sub("config", "toast off");
+		expect(await s.call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready (sound)");
+		await s.sub("config", "toast on");
+		await s.sub("config", "sound off");
+		expect(await s.call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready (toast)");
+	});
+
+	test.each(["sound", "toast"])("config %s takes exactly on or off and leaves the setting unchanged otherwise", async name => {
+		const s = setup();
+		await s.sub("config", `${name} off`);
+		for (const bad of ["onx", "on off", "offx", "maybe"]) {
+			await s.sub("config", `${name} ${bad}`);
+			expect(s.notes.at(-1)).toContain("config takes notify on|off");
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain(`${name}: off (this session)`);
+		}
+	});
+
+	test("/strategium-config sound|toast win over env for this session and show their source", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_TOAST = "off";
+		await s.sub("config", "sound off");
+		expect(s.notes.at(-1)).toContain("sound: off (this session)");
+		expect(s.notes.at(-1)).toContain("toast: off (STRATEGIUM_TOAST)");
+		await s.sub("config", "toast on");
+		expect(s.notes.at(-1)).toContain("toast: on (this session)");
+		const otherNotes: string[] = [];
+		await s.commands["strategium-config"].handler("", fakeCtx("sess-0002", s.dir, otherNotes));
+		expect(otherNotes[0]).toContain("sound: on (STRATEGIUM_SOUND)");
+		expect(otherNotes[0]).toContain("toast: off (STRATEGIUM_TOAST)");
+	});
+
+	test("status shows NOTIFY, SOUND and TOAST", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_NOTIFY = "0";
+		await s.sub("config", "sound off");
+		const out = await s.call({ action: "status" });
+		expect(out).toContain("\nNOTIFY off (STRATEGIUM_NOTIFY)\nSOUND off (this session)\nTOAST on (STRATEGIUM_TOAST)");
 	});
 });
 
@@ -1188,6 +1284,8 @@ describe("the run follows an approved plan", () => {
 		const { sm, ctx } = shared("sess-A", s.dir, s.footer, notes);
 		await s.handlers.session_start[0]({}, ctx);
 		await s.commands["strategium-config"].handler("notify off", ctx);
+		await s.commands["strategium-config"].handler("sound off", ctx);
+		await s.commands["strategium-config"].handler("toast off", ctx);
 		return { s, sm, ctx, notes };
 	}
 	const files = (dir: string, sid: string) => ({ run: existsSync(join(dir, "runs", `${sid}.json`)), beat: existsSync(join(dir, "runs", `${sid}.beat`)) });
@@ -1232,6 +1330,8 @@ describe("the run follows an approved plan", () => {
 		expect(notes.at(-1)).not.toContain("stale");
 		await s.commands["strategium-config"].handler("", ctx);
 		expect(notes.at(-1)).toContain("notify: off (this session)");
+		expect(notes.at(-1)).toContain("sound: off (this session)");
+		expect(notes.at(-1)).toContain("toast: off (this session)");
 	});
 
 	test.each(["resume", "fork"])("a %s with a review open moves nothing", async reason => {
@@ -1364,7 +1464,7 @@ describe("attention without an alarm", () => {
 		const { call } = setup();
 		process.env.STRATEGIUM_ALARM = `"${process.execPath}" -e ""`;
 		try {
-			expect(await call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready");
+			expect(await call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready (sound, toast)");
 		} finally {
 			delete process.env.STRATEGIUM_ALARM;
 		}
@@ -1738,26 +1838,26 @@ describe("the archmagos setting", () => {
 
 	test("off by default; STRATEGIUM_ARCHMAGOS turns it on (1, true, on, yes) and status reports it", async () => {
 		const s = setup();
-		expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)");
+		expect(await s.call({ action: "status" })).toContain("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)\n");
 		await s.call({ action: "begin", key: "K-1" });
-		expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)");
+		expect(await s.call({ action: "status" })).toContain("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)\n");
 		for (const v of ["1", "true", "on", "YES", " 1 "]) {
 			process.env.STRATEGIUM_ARCHMAGOS = v;
-			expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS on (STRATEGIUM_ARCHMAGOS)");
+			expect(await s.call({ action: "status" })).toContain("ARCHMAGOS on (STRATEGIUM_ARCHMAGOS)\n");
 		}
 		process.env.STRATEGIUM_ARCHMAGOS = "0";
-		expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)");
+		expect(await s.call({ action: "status" })).toContain("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)\n");
 		// Also with no run at all.
 		const bare = setup("sess-0002");
 		process.env.STRATEGIUM_ARCHMAGOS = "1";
-		expect(await bare.call({ action: "status" })).toEndWith("ARCHMAGOS on (STRATEGIUM_ARCHMAGOS)");
+		expect(await bare.call({ action: "status" })).toContain("ARCHMAGOS on (STRATEGIUM_ARCHMAGOS)\n");
 	});
 
 	test("STRATEGIUM_ARCHMAGOS only turns on for a whole word, not a part of one", async () => {
 		const s = setup();
 		for (const v of ["xon", "maybe-yes", "10", "1x", "yesno"]) {
 			process.env.STRATEGIUM_ARCHMAGOS = v;
-			expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)");
+			expect(await s.call({ action: "status" })).toContain("ARCHMAGOS off (STRATEGIUM_ARCHMAGOS)\n");
 		}
 	});
 
@@ -1766,7 +1866,7 @@ describe("the archmagos setting", () => {
 		const s = setup();
 		await s.sub("config", "archmagos on");
 		expect(s.notes.at(-1)).toContain("archmagos: on (this session)");
-		expect(await s.call({ action: "status" })).toEndWith("ARCHMAGOS on (this session)");
+		expect(await s.call({ action: "status" })).toContain("ARCHMAGOS on (this session)\n");
 		const other = setup("sess-0002");
 		await other.sub("config");
 		expect(other.notes.at(-1)).toContain("archmagos: off (STRATEGIUM_ARCHMAGOS)");
@@ -2573,7 +2673,7 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});

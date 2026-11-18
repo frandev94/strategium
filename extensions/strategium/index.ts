@@ -400,19 +400,20 @@ function alarmCmd(cmd: string): string[] {
 }
 
 /**
- * Run STRATEGIUM_ALARM with the level in STRATEGIUM_P and a desktop-notification text in STRATEGIUM_MSG.
+ * Run STRATEGIUM_ALARM with the level in STRATEGIUM_P, STRATEGIUM_SOUND=1|0 and, only when toasts are on, a
+ * desktop-notification text in STRATEGIUM_MSG.
  * Levels: 50 | 80 | 100 for the booking timer, "attention" when the user is needed, "theme" when the session's run ends,
  * "idle" when the clock pauses after idle minutes.
  * Unset → silent.
  * Returns the reason when the alarm could not be started, so it is not a silent no-sound.
  */
-function signal(level: string, msg: string): string | undefined {
+function signal(level: string, msg: string | undefined, sound: boolean): string | undefined {
 	const alarm = process.env.STRATEGIUM_ALARM?.trim();
 	if (!alarm) return undefined;
 	try {
 		const child = Bun.spawn({
 			cmd: alarmCmd(alarm),
-			env: childEnv({ STRATEGIUM_P: level, STRATEGIUM_MSG: msg }),
+			env: childEnv({ STRATEGIUM_P: level, STRATEGIUM_SOUND: sound ? "1" : "0", ...(msg ? { STRATEGIUM_MSG: msg } : {}) }),
 			stdout: "ignore",
 			stderr: "ignore",
 		});
@@ -680,6 +681,16 @@ export default function (pi: ExtensionAPI) {
 		notifyBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_NOTIFY?.trim() ?? "");
 	const notifyState = (sid: string) =>
 		`${notifyOn(sid) ? "on" : "off"} (${notifyBySession.has(sid) ? "this session" : "STRATEGIUM_NOTIFY"})`;
+	// /strategium-config sound|toast on|off per session id; they win over STRATEGIUM_SOUND / STRATEGIUM_TOAST, which are on unless 0, false, off or no.
+	const soundBySession = new Map<string, boolean>();
+	const toastBySession = new Map<string, boolean>();
+	const switchOn = (m: Map<string, boolean>, env: string, sid: string) => m.get(sid) ?? !/^(0|false|off|no)$/i.test(process.env[env]?.trim() ?? "");
+	const soundOn = (sid: string) => switchOn(soundBySession, "STRATEGIUM_SOUND", sid);
+	const toastOn = (sid: string) => switchOn(toastBySession, "STRATEGIUM_TOAST", sid);
+	const soundState = (sid: string) => `${soundOn(sid) ? "on" : "off"} (${soundBySession.has(sid) ? "this session" : "STRATEGIUM_SOUND"})`;
+	const toastState = (sid: string) => `${toastOn(sid) ? "on" : "off"} (${toastBySession.has(sid) ? "this session" : "STRATEGIUM_TOAST"})`;
+	/** The channels an alarm uses in this session: none when notify is off. */
+	const channels = (sid: string) => (notifyOn(sid) ? [soundOn(sid) && "sound", toastOn(sid) && "toast"].filter(Boolean) as string[] : []);
 	// /strategium-config archmagos on|off per session id; it wins over STRATEGIUM_ARCHMAGOS (1, true, on, yes), which is off when unset.
 	const archmagosBySession = new Map<string, boolean>();
 	const archmagosOn = (sid: string) =>
@@ -718,8 +729,11 @@ export default function (pi: ExtensionAPI) {
 			);
 		}
 	};
-	/** The alarm, only when notifications are on for this session. */
-	const alert = (sid: string, level: string, msg: string) => (notifyOn(sid) ? signal(level, msg) : undefined);
+	/** The alarm, only when notifications are on and sound or toast is: the message goes only with toasts, the sound flag always. */
+	const alert = (sid: string, level: string, msg: string) => {
+		const ch = channels(sid);
+		return ch.length ? signal(level, ch.includes("toast") ? msg : undefined, ch.includes("sound")) : undefined;
+	};
 
 	// The cockpit: an overlay on demand while this session has a run. Everything it
 	// shows beyond the run file (chronicle, squad notes, agent ids) is in memory, keyed by run key, so the plan-approval
@@ -964,7 +978,7 @@ export default function (pi: ExtensionAPI) {
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. slices (slices: [{id, parallel, files}]: the plan's squads; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos setting. redraft (no params) allows one more archmagos once per run, only after the run's first archmagos and an area's part was redrafted.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files}]: the plan's squads; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, notify, sound and toast settings. redraft (no params) allows one more archmagos once per run, only after the run's first archmagos and an area's part was redrafted.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
@@ -1004,7 +1018,7 @@ export default function (pi: ExtensionAPI) {
 						return text(addMin(run, params.minutes ?? 0));
 					}
 					case "status":
-						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}`);
+						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}`);
 					case "report":
 						return text(report(params.date));
 					case "end":
@@ -1015,9 +1029,12 @@ export default function (pi: ExtensionAPI) {
 						const err = alert(sid, "attention", key ? `${key}: ${msg}` : msg);
 						if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 						// A silent call makes no sound; say so, so the Captain does not count on it.
+						const ch = channels(sid);
 						const silent = !notifyOn(sid)
 							? " (silent: notifications are off; /strategium-config notify on)"
-							: process.env.STRATEGIUM_ALARM?.trim() ? "" : " (silent: STRATEGIUM_ALARM is not set; see /skill:strategium-setup)";
+							: !ch.length
+								? " (silent: sound and toast are off; /strategium-config sound on or toast on)"
+								: process.env.STRATEGIUM_ALARM?.trim() ? ` (${ch.join(", ")})` : " (silent: STRATEGIUM_ALARM is not set; see /skill:strategium-setup)";
 						return text(err ? `ERROR ${err}` : `ATTENTION ${msg}${silent}`);
 					}
 					case "notify": {
@@ -1147,13 +1164,17 @@ export default function (pi: ExtensionAPI) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus", (arg, ctx, sid) => {
 		if (arg !== undefined) {
 			const m = arg.match(/^notify\s+(on|off)$/);
+			const so = arg.match(/^sound\s+(on|off)$/);
+			const to = arg.match(/^toast\s+(on|off)$/);
 			const i = arg.match(/^idle\s+(\d+)$/);
 			const a = arg.match(/^archmagos\s+(on|off)$/);
-			if (!m && !i && !a) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			if (!m && !so && !to && !i && !a) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
+			else if (so) soundBySession.set(sid, so[1] === "on");
+			else if (to) toastBySession.set(sid, to[1] === "on");
 			else if (a) archmagosBySession.set(sid, a[1] === "on");
 			else idleBySession.set(sid, Number(i![1]));
 		}
@@ -1162,6 +1183,8 @@ export default function (pi: ExtensionAPI) {
 			[
 				"Strategium config",
 				`notify: ${notifyState(sid)}`,
+				`sound: ${soundState(sid)}`,
+				`toast: ${toastState(sid)}`,
 				`idle: ${idleState(sid)}`,
 				`archmagos: ${archmagosState(sid)}`,
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
@@ -1205,6 +1228,10 @@ export default function (pi: ExtensionAPI) {
 					beat(sid);
 					const n = notifyBySession.get(prevSid);
 					if (n !== undefined) notifyBySession.set(sid, n);
+					const sound = soundBySession.get(prevSid);
+					if (sound !== undefined) soundBySession.set(sid, sound);
+					const toast = toastBySession.get(prevSid);
+					if (toast !== undefined) toastBySession.set(sid, toast);
 					const idle = idleBySession.get(prevSid);
 					if (idle !== undefined) idleBySession.set(sid, idle);
 					const arch = archmagosBySession.get(prevSid);

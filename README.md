@@ -193,7 +193,7 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 /strategium-resume [booked]         continue (a timed run passes today's booked minutes on a new day)
 /strategium-add <min>               manual correction, negative to subtract
 /strategium-status                  every run and its time
-/strategium-config [notify on|off | idle <min> | archmagos on|off]  show the effective settings; notify on|off, the idle minutes or archmagos on|off for this session
+/strategium-config [notify on|off | sound on|off | toast on|off | idle <min> | archmagos on|off]  show the effective settings; notify, sound or toast on|off, the idle minutes or archmagos on|off for this session
 /strategium-cockpit                 open the cockpit (also Alt+C)
 /strategium-end                     close the run
 ```
@@ -224,17 +224,19 @@ An **untimed** run still counts its time (`status`, `report`), with no alerts, n
 | `STRATEGIUM_ALARM` | command run when the timer fires, e.g. `bun /path/to/strategium/alarm/vox.ts`; quote a path with spaces (`bun "C:/my tools/vox.ts"`) |
 | `STRATEGIUM_STATE_DIR` | where the session state lives (default `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | `1` to use Nerd Font glyphs instead of emoji |
-| `STRATEGIUM_NOTIFY` | `1` turns on sounds and desktop notifications; off by default; `/strategium-config notify on` or `off` overrides it for the session |
+| `STRATEGIUM_NOTIFY` | `1` turns on the alarm (its sound and desktop notifications, each with its own switch); off by default, and off means neither; `/strategium-config notify on` or `off` overrides it for the session |
+| `STRATEGIUM_SOUND` | the alarm's sound; on by default, `0` turns it off (a toast-only alert needs no audio player); `/strategium-config sound on` or `off` overrides it for the session |
+| `STRATEGIUM_TOAST` | the desktop notification (Windows toast, macOS notification, `notify-send`); on by default, `0` turns it off; `/strategium-config toast on` or `off` overrides it for the session |
 | `STRATEGIUM_IDLE_MIN` | whole minutes without work before the run's clock pauses; default `3`, `0` turns it off; `/strategium-config idle <min>` overrides it for the session |
 | `STRATEGIUM_ARCHMAGOS` | `1` lets a run mark the Archmagos Dominus in Muster; off by default; `/strategium-config archmagos on` or `off` overrides it for the session |
 
-`/strategium-config` shows the effective values: the notify setting, the idle minutes and the archmagos setting, each with its source, the theatre, the alarm, the glyphs and the state directory.
+`/strategium-config` shows the effective values: the notify, sound and toast settings, the idle minutes and the archmagos setting, each with its source, the theatre, the alarm, the glyphs and the state directory.
 
 The state (one JSONL per day plus the run claims) stays outside the repository, so no session data is ever committed.
 
 ### The alarm
 
-`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies, all original and under the project's MIT licence. They share one grimdark kit at 100 bpm in C minor (war drums, distorted bass, choir, brass, bell). Levels are `50`, `80`, `100`, `done` (also the sound of a seal granted in the cockpit), `attention`, `idle` (a quieter stand-by sound when the clock pauses after idle) and `theme` (four bars, 9.6 s, that loop without a seam; plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
+`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies, all original and under the project's MIT licence. They share one grimdark kit at 100 bpm in C minor (war drums, distorted bass, choir, brass, bell). Levels are `50`, `80`, `100`, `done` (also the sound of a seal granted in the cockpit), `attention`, `idle` (a quieter stand-by sound when the clock pauses after idle) and `theme` (four bars, 9.6 s, that loop without a seam; plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`); `STRATEGIUM_SOUND=0` skips the sound.
 
 ```
 bun alarm/vox.ts 100 "the booking is over"

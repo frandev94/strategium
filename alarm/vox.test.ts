@@ -1,5 +1,9 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { LEVELS, RATE, type Level, synth } from "./vox";
+import { LEVELS, RATE, type Level, channels, synth } from "./vox";
 
 const samples = (level: Level) => {
 	const w = synth(level);
@@ -39,4 +43,36 @@ test("idle is the quietest sound", () => {
 
 test("done stops dead: silence after 2.25 s", () => {
 	expect(samples("done").slice(Math.ceil(2.25 * RATE)).every(x => x === 0)).toBe(true);
+});
+
+test("channels: no toast without a message", () => {
+	expect(channels({}, undefined).toast).toBe(false);
+	expect(channels({}, "").toast).toBe(false);
+	expect(channels({}, "hi").toast).toBe(true);
+});
+
+test.each(["0", "false", "OFF", "no"])("channels: no sound when STRATEGIUM_SOUND is %s", v => {
+	expect(channels({ STRATEGIUM_SOUND: v }, "hi").sound).toBe(false);
+});
+
+test("channels: sound when STRATEGIUM_SOUND is unset or 1", () => {
+	expect(channels({}, "hi").sound).toBe(true);
+	expect(channels({ STRATEGIUM_SOUND: "1" }, undefined).sound).toBe(true);
+});
+
+test("channels: STRATEGIUM_SOUND is trimmed", () => {
+	expect(channels({ STRATEGIUM_SOUND: " off " }, "hi").sound).toBe(false);
+});
+
+test("running vox with STRATEGIUM_SOUND=0 and no message synthesizes and plays nothing", () => {
+	const tmp = mkdtempSync(join(realpathSync(tmpdir()), "vox-test-"));
+	try {
+		// No message (no toast) and no sound: the run must not even create its WAV cache. An empty PATH keeps a regression from reaching a real player.
+		const env = { SystemRoot: process.env.SystemRoot, STRATEGIUM_SOUND: "0", TMPDIR: tmp, TEMP: tmp, TMP: tmp, PATH: tmp };
+		const r = spawnSync(process.execPath, [join(import.meta.dir, "vox.ts"), "done"], { env: env as Record<string, string>, stdio: "ignore" });
+		expect(r.status).toBe(0);
+		expect(existsSync(join(tmp, "strategium-vox"))).toBe(false);
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
 });
