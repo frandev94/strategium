@@ -31,78 +31,65 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 7. **Extraction** — el commit y la merge request, después de tu sello.
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}}}%%
 flowchart TB
-  U["Tú · Maestro de Capítulo<br/>concedes los sellos"] -->|"/strategium objetivo"| C
-  subgraph run["Sesión principal · el Capitán"]
-    C["Capitán<br/>tool strategium + /strategium<br/>nunca edita código"]
-    subgraph muster["1 · Muster"]
-      M["Capitán<br/>objetivo · reserva?<br/>Archmagos Dominus?"]
-      S0{{"seal Seals<br/>Plan · UI · MR<br/>Commit opcional"}}
-    end
-    subgraph auspex["2 · Auspex"]
-      A1["scout ×1-3<br/>mapean el código"]
-      A2["sonic<br/>línea base en origin/main"]
-    end
-    subgraph scriptorium["3 · Scriptorium"]
-      L1["librarian<br/>spec · 1-5 squads · Merge bar<br/>Review: confessor si grande o arriesgado"]
-      L2["un librarian por área<br/>+ el líder une, o el archmagos"]
-      L3["archmagos<br/>integra las partes"]
-      S1{{"seal Plan"}}
-    end
-    subgraph deployment["4 · Deployment"]
-      D["Capitán<br/>una rama por run<br/>squads declarados con ficheros"]
-    end
-    subgraph skirmish["5 · Skirmish"]
-      B1["battle-brother<br/>uno por squad · tests primero"]
-      B2["veteran<br/>tras 2 penances fallidos"]
-      B3["apothecary<br/>mutación en lógica nueva<br/>fuzz si input: untrusted"]
-      SC{{"seal Commit<br/>opcional · antes de cada commit"}}
-    end
-    subgraph inquisition["6 · Inquisition"]
-      Q1["inquisitor<br/>diff contra la Merge bar"]
-      Q2["confessor<br/>otra familia de modelos<br/>(si está disponible)<br/>si el plan dice Review: confessor"]
-      Q3["security-reviewer<br/>si auth · secretos · red"]
-      Q4["sonic<br/>checks completos"]
-      Q5["task<br/>notas de estudio · solo lectura"]
-      S2{{"seal UI<br/>solo si cambia la UI"}}
-    end
-    subgraph extraction["7 · Extraction"]
-      X["Capitán<br/>commit + merge request"]
-      S3{{"seal MR"}}
-    end
-    subgraph debrief["8 · Debrief"]
-      F["Capitán<br/>informe del día"]
-    end
+  U(["Maestro de Capítulo · tú"]) -->|"/strategium"| muster
+
+  subgraph muster["I · MUSTER"]
+    direction LR
+    M["Capitán<br/>objetivo · reserva"] --> S0{{"seal Seals"}}
   end
-  C --> M --> S0 --> A1 --> A2 --> L1
-  L1 -->|"áreas"| L2
-  L2 -->|"marcado en Muster"| L3
-  L1 --> S1
-  L2 --> S1
-  L3 --> S1
-  S1 --> D --> B1
-  B1 --> B3
-  B1 -->|"2 penances fallidos"| B2
-  B2 --> SC
-  B3 --> SC
-  SC --> Q1
-  SC --> Q2
-  SC --> Q3
-  Q1 --> Q4
-  Q2 --> Q4
-  Q3 --> Q4
-  Q4 --> Q5 --> S2 --> X --> S3 --> F
-  L1 -.->|"Recon · 1/run"| A1
-  B1 -.->|"Redraft · 1/run"| L1
-  Q1 -.->|"Penance · 2 rondas/squad → veteran<br/>NOT REPRODUCED descartado"| B1
-  Q2 -.->|"Penance"| B1
-  B3 -.->|"Penance · supervivientes"| B1
-  B1 -.->|"Retrial · 2 rondas/item"| Q1
-  Q4 -.->|"Stand down · presupuesto agotado → tú"| U
-  T["Temporizador de reserva · solo ticketing<br/>50% · 80% · 100%"] -.->|avisa| C
-  T --> V["vox-caster<br/>sonido + notificación"]
-  G["Guarda de edición<br/>edit · write · ast_edit"] -.->|bloquea| C
-  R["Estado por día<br/>JSONL + reservas por run"] --- C
+  subgraph auspex["II · AUSPEX"]
+    direction LR
+    A1["scout ×1-3<br/>mapean el código"] --> A2["sonic<br/>línea base"]
+  end
+  subgraph scriptorium["III · SCRIPTORIUM"]
+    direction LR
+    L2["librarians por área<br/>líder o archmagos"] --> SP{{"seal Plan"}}
+    L1["librarian<br/>spec · squads · Merge bar"] --> SP
+  end
+  subgraph deployment["IV · DEPLOYMENT"]
+    direction LR
+    D["Capitán<br/>rama · squads declarados"]
+  end
+  subgraph skirmish["V · SKIRMISH"]
+    direction LR
+    B1["battle-brother<br/>uno por squad · tests primero"] --> B3["apothecary<br/>mutantes · fuzz"]
+    B1 -.->|"2 fallidos"| B2["veteran"]
+  end
+  subgraph inquisition["VI · INQUISITION"]
+    direction LR
+    Q3["security-reviewer<br/>si auth · red"] --> Q4["sonic<br/>checks"]
+    Q2["confessor<br/>si se marca"] --> Q4
+    Q1["inquisitor"] --> Q4
+    Q4 --> SU{{"seal UI"}}
+  end
+  subgraph extraction["VII · EXTRACTION"]
+    direction LR
+    X["commit · MR"] --> SM{{"seal MR"}}
+  end
+  subgraph debrief["VIII · DEBRIEF"]
+    direction LR
+    F["informe del día"]
+  end
+
+  muster --> auspex --> scriptorium --> deployment --> skirmish --> inquisition --> extraction --> debrief
+
+  scriptorium -.->|"Recon"| auspex
+  skirmish -.->|"Redraft"| scriptorium
+  inquisition -.->|"Penance → Retrial"| skirmish
+  B3 -.->|"Penance"| B1
+
+  classDef agent fill:#1e1b16,stroke:#b8963e,color:#f3e9cf
+  classDef seal fill:#7a1212,stroke:#e0b84a,stroke-width:2px,color:#fff4d6
+  classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
+  classDef station fill:#2a2620,stroke:#b8963e,color:#e0b84a
+  class M,A1,A2,L1,L2,D,B1,B2,B3,Q1,Q2,Q3,Q4,X,F agent
+  class S0,SP,SU,SM seal
+  class U you
+  class muster,auspex,scriptorium,deployment,skirmish,inquisition,extraction,debrief station
+  linkStyle 0 stroke:#b8963e,color:#f3e9cf
+  linkStyle 6,19,20,21,22 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
 ```
 
 Los nombres de estación, los nombres de agente y las alertas tienen su propia voz; el `archmagos` la usa solo en el chat y el todo, nunca en el fichero del plan. Los tickets, los mensajes de commit y las merge requests se quedan planos y profesionales.
