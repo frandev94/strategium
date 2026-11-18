@@ -42,7 +42,7 @@ const run = (at: number): Phase[] =>
 	STATIONS.map(([name, tags], i) => ({ name, tasks: tags.map((tag, j) => ({ content: `[${tag}] ${tag} job`, status: i < at ? "completed" : i === at && j === 0 ? "in_progress" : "pending" })) }));
 // Box titles are the `┌─ TITLE ─` / `╔═ …` tops; a plain icon before the name is dropped.
 const titles = (t: string) => [...t.matchAll(/[┌╔]─ (.+?) ─/g)].map(m => m[1].replace(/^\S+ (?=[A-Z-]+$)/, ""));
-const dep = (over: Partial<Deployed>): Deployed => ({ who: "X", role: "scout", station: 0, state: "active", ...over });
+const dep = (over: Partial<Deployed>): Deployed => ({ who: "X", role: "scout", station: "Plan", state: "active", ...over });
 
 describe("seals", () => {
 	test("sealsFrom reads bracket and glyph tags with their three states", () => {
@@ -72,6 +72,16 @@ describe("seals", () => {
 });
 
 describe("view", () => {
+	test("an agent deployed in Skirmish still shows in Skirmish after a todo with phases in another order", () => {
+		const deployed = new Map([["a1", dep({ role: "apothecary", station: "Skirmish" })]]);
+		const ph = (name: string, status: string): Phase => ({ name, tasks: [{ content: "[captain] x", status }] });
+		expect(text({ phases: [ph("Muster", "completed"), ph("Skirmish", "in_progress")], deployed })).toContain("▶ a1");
+		const reordered = text({ phases: [ph("Skirmish", "in_progress"), ph("Muster", "completed")], deployed });
+		expect(reordered).toContain("▶ a1");
+		expect(reordered).toContain("APOTHECARIES");
+		expect(text({ phases: [ph("Skirmish", "completed"), ph("Muster", "in_progress")], deployed })).not.toContain("a1");
+	});
+
 	test("activePhase is the first in_progress phase, by index", () => {
 		const two = (a: string, b: string): Phase[] => [{ name: "Same", tasks: [{ content: "[captain] x", status: a }] }, { name: "Same", tasks: [{ content: "[captain] y", status: b }] }];
 		expect(activePhase(two("completed", "in_progress"))).toBe(1);
@@ -132,8 +142,8 @@ describe("view", () => {
 		expect(titles(t)).toEqual([]);
 	});
 
-	test("no phases: an agent registered with station -1 opens no box", () => {
-		expect(titles(text({ deployed: new Map([["a1", dep({ station: -1 })]]) }))).toEqual([]);
+	test("no phases: an agent with no station opens no box", () => {
+		expect(titles(text({ deployed: new Map([["a1", dep({ station: undefined })]]) }))).toEqual([]);
 	});
 
 	test("the old fixed boxes are gone", () => {
@@ -208,12 +218,12 @@ describe("view", () => {
 	});
 
 	test("a registry agent seen in this station shows with its id and state", () => {
-		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ station: 1 })], ["a2", dep({ station: 1, state: "done" })], ["a3", dep({ station: 1, state: "failed" })]]) });
+		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ station: "Auspex" })], ["a2", dep({ station: "Auspex", state: "done" })], ["a3", dep({ station: "Auspex", state: "failed" })]]) });
 		for (const l of ["▶ a1", "✓ a2", "✗ a3"]) expect(t).toContain(l);
 	});
 
 	test("a registry agent seen in another station does not show", () => {
-		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ role: "battle-brother", station: 0 })]]) });
+		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ role: "battle-brother", station: "Muster" })]]) });
 		expect(titles(t)).toEqual(["SCOUTS"]);
 		expect(t).not.toContain("a1");
 	});
@@ -221,7 +231,7 @@ describe("view", () => {
 	test("a registry agent can open its box on its own, and a squad agent shows only through its squad line", () => {
 		const t = text({
 			phases: phases(["[captain] x", "in_progress"]),
-			deployed: new Map([["eval-apothecary-1", dep({ role: "apothecary", station: 0 })], ["b9", dep({ role: "battle-brother", squad: "a", station: 0 })]]),
+			deployed: new Map([["eval-apothecary-1", dep({ role: "apothecary" })], ["b9", dep({ role: "battle-brother", squad: "a" })]]),
 			slices: [{ id: "a" }],
 		});
 		expect(titles(t)).toEqual(["CAPTAIN", "BATTLE-BROTHERS", "APOTHECARIES"]);

@@ -5,8 +5,7 @@ export type Phase = { name: string; tasks: { content: string; status: string }[]
 export type Seal = { id: string; name: string; state: "granted" | "waiting" | "pending" };
 export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" };
 export type Note = { veteran?: true; failed?: true };
-// shortcut: agents are tied to the phase index at spawn; a todo rebuilt in another order misplaces them; upgrade with a stable station id in the todo.
-export type Deployed = { who: string; role: string; squad?: string; station: number; state: "active" | "done" | "failed" };
+export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed" }; // station: its name at spawn; undefined with no phases
 export type Depth = "truecolor" | "256";
 export type Palette = Record<"gold" | "parchment" | "green" | "red" | "purple" | "iron", string>;
 export type ViewInput = {
@@ -94,6 +93,9 @@ export function activePhase(phases: Phase[]): number {
 	return waiting >= 0 ? waiting : phases.length - 1;
 }
 
+/** The name of the station the run is at (see activePhase); undefined with no phases. */
+export const activeStation = (phases: Phase[]): string | undefined => phases[activePhase(phases)]?.name;
+
 type BoxDef = { title: string; tags: string[]; icon: keyof ReturnType<typeof icons>; tone?: Tone };
 // One box per agent type, in this order; `tags` are the todo tags and agent names it takes (the Archmagos plans with the librarians).
 const BOXES: BoxDef[] = [
@@ -169,7 +171,7 @@ export function cockpitView(input: ViewInput) {
 		const m = t.content.match(ROLE_TAG);
 		return m ? [{ status: t.status, role: (m[1] ?? m[2]).toLowerCase(), text: m[3] }] : [];
 	});
-	const seen = phase ? [...(input.deployed ?? [])].filter(([, d]) => d.station === at) : []; // no phases: no station, so no boxes
+	const seen = phase ? [...(input.deployed ?? [])].filter(([, d]) => d.station === phase.name) : []; // no phases: no station, so no boxes
 	const boxes = BOXES.flatMap(def => {
 		const mine = tasks.filter(t => def.tags.includes(t.role));
 		const agents = seen.filter(([, d]) => def.tags.includes(d.role));

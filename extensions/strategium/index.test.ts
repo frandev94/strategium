@@ -3011,6 +3011,18 @@ describe("cockpit", () => {
 			expect(await peek(s, ui)).toMatch(/│ ✓ A +│/);
 		});
 
+		test("an agent stays under its station when the todo is rebuilt in another order", async () => {
+			const { s, ui } = await running();
+			const muster = { name: "Muster", tasks: [{ content: "[captain] Plan", status: "completed" }] };
+			const auspex = (status: string) => ({ name: "Auspex", tasks: [{ content: "[scout] Map the code", status }] });
+			s.todo([muster, auspex("in_progress")]);
+			result(s, "scout", "running");
+			s.todo([auspex("in_progress"), muster]);
+			expect(await peek(s, ui)).toMatch(/│ ▶ A +│/);
+			s.todo([auspex("completed"), { name: "Muster", tasks: [{ content: "[captain] Plan", status: "in_progress" }] }]);
+			expect(await peek(s, ui)).not.toMatch(/│ ▶ A +│/);
+		});
+
 		test("a deployed builder is logged, and its failure too, newest first", async () => {
 			const { s, ui } = await squad();
 			result(s, "battle-brother", "running");
