@@ -9,13 +9,13 @@ description: Use when a long task, build, run or timer finishes or needs the use
 
 | Level | Sound |
 |---|---|
-| `50` | calm: one low bell toll, three servo-skull chirps |
-| `80` | urgent: two bell tolls, static crackle, fast chirp run |
-| `100` | extraction: klaxon wails over a deep bell |
-| `done` | task complete: ascending bell fanfare, final deep toll |
-| `attention` | the user is needed: a dark call to war, a horn section in C minor (C, Eb, then a long low G) over war drums |
-| `idle` | stand-by: a power-down glide and one soft low bell; the run's clock paused after idle minutes |
-| `theme` | the Strategium theme: 15 s, a drop with a dead stop and a chromatic fall; plays when the session's run ends (`strategium` `end`, `/strategium-end`); also by hand |
+| `50` | calm: one boom and a low bell ringing out |
+| `80` | urgent: one bar of war drums and distorted bass, then a hard hit |
+| `100` | time is up: a climbing breath that lands on the final hit (boom, brass, choir) |
+| `done` | task complete: the choir climbs to a bright chord over the drums, then a dead stop |
+| `attention` | the user is needed: a snare roll that speeds up under a riser, into a short hit |
+| `idle` | stand-by, quieter on purpose: a low drone, soft choir swells and one soft bell; the run's clock paused after idle minutes |
+| `theme` | the Strategium theme: four bars of drop (9.6 s) that loop without a seam; plays when the session's run ends (`strategium` `end`, `/strategium-end`); also by hand |
 
 ## Booking alarm and attention
 
