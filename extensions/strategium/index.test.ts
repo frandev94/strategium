@@ -357,6 +357,83 @@ describe("the station in the footer", () => {
 		expect(shown()).toContain("strategium: dark-mode · Skirmish › Squad 1 · 2 min");
 	});
 
+	// The hint is right-aligned with no-break spaces: omp collapses runs of plain spaces in a status line.
+	describe("the cockpit hint on the footer line", () => {
+		const HINT = "ALT + C to enter cockpit";
+		const cols = (n: number | undefined) => Object.defineProperty(process.stdout, "columns", { value: n, configurable: true, writable: true });
+		afterEach(() => void delete (process.stdout as { columns?: number }).columns);
+		const begun = async () => {
+			const r = setup();
+			setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+			await r.call({ action: "begin", key: "dark-mode" });
+			r.todo(skirmish);
+			setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+			return r;
+		};
+
+		test("a wide terminal ends the line with the hint at the last column", async () => {
+			const { start, shown } = await begun();
+			cols(140);
+			start();
+			const line = shown();
+			expect(line.endsWith(HINT)).toBe(true);
+			expect(line).toContain("strategium: dark-mode · Skirmish › Squad 1 · 2 min");
+			expect(Bun.stringWidth(line)).toBe(140);
+		});
+
+		test("a terminal that is too narrow gets the footer as it is", async () => {
+			const { start, shown } = await begun();
+			cols(undefined);
+			start();
+			const plain = shown();
+			cols(Bun.stringWidth(plain) + 2 + HINT.length - 1);
+			start();
+			expect(shown()).toBe(plain);
+			cols(Bun.stringWidth(plain) + 2 + HINT.length);
+			start();
+			expect(shown()).toBe(`${plain}\u00a0\u00a0${HINT}`);
+		});
+
+		test("an unknown width gets no hint", async () => {
+			const { start, shown } = await begun();
+			cols(undefined);
+			start();
+			expect(shown()).not.toContain(HINT);
+		});
+
+		// omp's sanitizeHookStatusText collapses runs of spaces before drawing, so that is the width that must reach the last column.
+		const drawn = (s: string) => Bun.stringWidth(s.replace(/ +/g, " "));
+
+		test("the hint stays plain text with glyphs on", async () => {
+			const { start, shown } = await begun();
+			process.env.STRATEGIUM_GLYPHS = "1";
+			cols(140);
+			start();
+			expect(shown().endsWith(HINT)).toBe(true);
+			expect(drawn(shown())).toBe(140);
+		});
+
+		test("the hint reaches the last column on a return, whose glyph is followed by two spaces", async () => {
+			const { start, shown, todo } = await begun();
+			process.env.STRATEGIUM_GLYPHS = "1";
+			todo(backToScriptorium);
+			cols(140);
+			start();
+			expect(shown()).toContain("\u{f054c}  Scriptorium");
+			expect(shown().endsWith(HINT)).toBe(true);
+			expect(drawn(shown())).toBe(140);
+		});
+
+		test("a sub agent draws no footer and so no hint", async () => {
+			const { start, footer, ctx } = await begun();
+			cols(140);
+			ctx.agent = { kind: "sub" };
+			footer.length = 0;
+			start();
+			expect(footer).toEqual([]);
+		});
+	});
+
 	test("a timed run keeps its booking next to the station", async () => {
 		const { call, todo, start, shown } = setup();
 		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
@@ -2217,13 +2294,13 @@ describe("the idle pause", () => {
 
 describe("cockpit", () => {
 	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
-	type Tui = { requestRender(): void };
+	type Tui = { requestRender(): void; terminal: { rows: number } };
 	type Comp = { render(w: number): string[]; handleInput?(d: string): void; dispose?(): void };
 	// A UI context: the overlay calls are recorded; `hasUI` false leaves the same functions in place but unused.
 	function uiCtx(s: ReturnType<typeof setup>, hasUI = true) {
 		const opened: { options?: unknown; component: Comp }[] = [];
 		const draws = { n: 0, closed: 0 };
-		const tui: Tui = { requestRender: () => void draws.n++ };
+		const tui: Tui = { requestRender: () => void draws.n++, terminal: { rows: 40 } };
 		const c = s.ctx as unknown as Record<string, unknown> & { ui: Record<string, unknown> };
 		// The helper's todo reaches handler [0] only; the cockpit's hooks come after it.
 		s.todo = phases => s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases } }, s.ctx));
@@ -2328,7 +2405,10 @@ describe("cockpit", () => {
 			const { s, ui } = await running();
 			await s.sub("cockpit");
 			expect(ui.opened.length).toBe(1);
-			expect(ui.opened[0].options).toEqual({ overlay: true });
+			expect(ui.opened[0].options).toEqual({
+				overlay: true,
+				overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true, mouseTracking: false },
+			});
 			const lines = ui.opened[0].component.render(100).join("\n");
 			expect(lines).toContain("awaiting orders");
 			expect(lines).toContain("CHRONICLE");
@@ -2341,6 +2421,15 @@ describe("cockpit", () => {
 			await s.sub("cockpit");
 			expect(ui.opened.length).toBe(2);
 			ui.opened[1].component.handleInput!("q");
+		});
+
+		test("it is as tall as the terminal and follows a resize", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			expect(ui.opened[0].component.render(100)).toHaveLength(40);
+			ui.tui.terminal.rows = 20;
+			expect(ui.opened[0].component.render(100)).toHaveLength(20);
+			ui.opened[0].component.handleInput!("q");
 		});
 
 		test("alt+c is registered and opens it", async () => {
@@ -2363,6 +2452,166 @@ describe("cockpit", () => {
 			await s.sub("cockpit");
 			await s.sub("end");
 			expect(ui.draws.closed).toBe(1);
+		});
+
+		describe("a decision closes the cockpit before its dialog opens", () => {
+			const call = (s: ReturnType<typeof setup>, event: string, e: object, ctx: unknown = s.ctx) => s.handlers[event].forEach(h => h(e, ctx));
+			const open = async () => {
+				process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+				const r = await running();
+				await r.s.sub("cockpit");
+				expect(r.ui.opened.length).toBe(1);
+				return r;
+			};
+
+			// The host owns the interval, so the test takes its place and counts what it clears.
+			test.each(["ask", "_ask"])("a main-session %s call closes it and it opens again", async name => {
+				const cleared: unknown[] = [];
+				const real = { set: globalThis.setInterval, clear: globalThis.clearInterval };
+				globalThis.setInterval = (() => 7) as never;
+				globalThis.clearInterval = ((id: unknown) => void cleared.push(id)) as never;
+				try {
+					const { s, ui } = await open();
+					const before = ui.draws.n;
+					call(s, "tool_call", { toolName: name, input: {} });
+					expect(ui.draws.closed).toBe(1);
+					expect(cleared).toEqual([7]);
+					expect(ui.draws.n).toBe(before);
+					await s.sub("cockpit");
+					expect(ui.opened.length).toBe(2);
+					ui.opened[1].component.handleInput!("q");
+				} finally {
+					globalThis.setInterval = real.set;
+					globalThis.clearInterval = real.clear;
+				}
+			});
+
+			test("the ask call still raises the attention alarm", async () => {
+				const { s, ui } = await running();
+				const lines = recorder(s.dir);
+				await s.sub("cockpit");
+				call(s, "tool_call", { toolName: "ask", input: {} });
+				expect(ui.draws.closed).toBe(1);
+				expect((await lines(1))[0]).toContain("attention|");
+			});
+
+			test.each(["tool_approval_requested", "plan_review_requested"])("%s closes it", async event => {
+				const { s, ui } = await open();
+				call(s, event, { sessionId: "sess-0001" });
+				expect(ui.draws.closed).toBe(1);
+				await s.sub("cockpit");
+				expect(ui.opened.length).toBe(2);
+				ui.opened[1].component.handleInput!("q");
+			});
+
+			test("another tool call leaves it open", async () => {
+				const { s, ui } = await open();
+				call(s, "tool_call", { toolName: "read", input: {} });
+				expect(ui.draws.closed).toBe(0);
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test.each(["tool_call", "tool_approval_requested", "plan_review_requested"])("a sub agent's %s leaves it open", async event => {
+				const { s, ui } = await open();
+				call(s, event, { toolName: "ask", input: {}, sessionId: "sess-0001" }, { ...(s.ctx as object), agent: { kind: "sub" } });
+				expect(ui.draws.closed).toBe(0);
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test("with no cockpit open the three events change nothing and do not throw", async () => {
+				process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+				const { s, ui } = await running();
+				expect(() => {
+					call(s, "tool_call", { toolName: "ask", input: {} });
+					call(s, "tool_approval_requested", {});
+					call(s, "plan_review_requested", { sessionId: "sess-0001" });
+				}).not.toThrow();
+				expect(ui.draws.closed).toBe(0);
+			});
+		});
+
+		describe("the header says what the agent is doing", () => {
+			const host = (s: ReturnType<typeof setup>) => (s.ctx as unknown as { host: { idle: boolean; pending: boolean } }).host;
+			const view = (ui: ReturnType<typeof uiCtx>) => plain(ui.opened.at(-1)!.component.render(100).join("\n"));
+			const emit = (s: ReturnType<typeof setup>, event: string, ctx: unknown = s.ctx) => s.handlers[event].forEach(h => h({}, ctx));
+
+			test("opened while the session is idle it awaits orders; opened mid-turn the agent is at work", async () => {
+				const { s, ui } = await running();
+				host(s).idle = true;
+				expect(await peek(s, ui)).toContain("○ AWAITING YOUR ORDERS");
+				host(s).idle = false;
+				expect(await peek(s, ui)).toContain("AGENT AT WORK");
+			});
+
+			test("a queued message keeps the agent at work although the session is idle", async () => {
+				const { s, ui } = await running();
+				Object.assign(host(s), { idle: true, pending: true });
+				expect(await peek(s, ui)).toContain("AGENT AT WORK");
+			});
+
+			test("agent_start and agent_end change an open cockpit and repaint it without ticking", async () => {
+				const { s, ui } = await running();
+				host(s).idle = true;
+				await s.sub("cockpit");
+				expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+				let n = ui.draws.n;
+				host(s).idle = false;
+				emit(s, "agent_start");
+				expect(view(ui)).toContain("AGENT AT WORK");
+				expect(ui.draws.n).toBeGreaterThan(n); // agent_start also refreshes the footer, which redraws the overlay
+				n = ui.draws.n;
+				Object.assign(host(s), { idle: true });
+				emit(s, "agent_end");
+				expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+				expect(ui.draws.n).toBe(n + 1);
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test("an agent_end with messages queued keeps it at work", async () => {
+				const { s, ui } = await running();
+				await s.sub("cockpit");
+				Object.assign(host(s), { idle: true, pending: true });
+				emit(s, "agent_end");
+				expect(view(ui)).toContain("AGENT AT WORK");
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test("a sub agent's agent_start and agent_end are ignored", async () => {
+				const { s, ui } = await running();
+				host(s).idle = true;
+				await s.sub("cockpit");
+				const n = ui.draws.n;
+				emit(s, "agent_start", { ...(s.ctx as object), agent: { kind: "sub" } });
+				emit(s, "agent_end", { ...(s.ctx as object), agent: { kind: "sub" } });
+				expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+				expect(ui.draws.n).toBe(n);
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test("the 500 ms redraw catches an idle that agent_end saw too early", async () => {
+				const timers: { fn: () => void; ms: number }[] = [];
+				const real = globalThis.setInterval;
+				const { s, ui } = await running();
+				globalThis.setInterval = ((fn: () => void, ms: number) => timers.push({ fn, ms })) as never;
+				try {
+					await s.sub("cockpit");
+					emit(s, "agent_end"); // still streaming for the host
+					expect(view(ui)).toContain("AGENT AT WORK");
+					host(s).idle = true;
+					timers[0].fn();
+					expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+					ui.opened[0].component.handleInput!("q");
+				} finally {
+					globalThis.setInterval = real;
+				}
+			});
+
+			test("a plan review still closes the cockpit, so the status never has to show it", async () => {
+				const { s, ui } = await running();
+				await s.sub("cockpit");
+				s.handlers.plan_review_requested.forEach(h => h({ sessionId: "sess-0001" }, s.ctx));
+				expect(ui.draws.closed).toBe(1);
+			});
 		});
 
 		// The host owns the interval, so the test takes its place: the callback is driven by hand.

@@ -288,7 +288,16 @@ describe("chronicle and jobs", () => {
 });
 
 describe("keys", () => {
-	test.each([["\x1b", true], ["\x1b[27u", true], ["q", true], ["a", false]])("closes(%j) is %p", (data, expected) => {
+	// Esc as terminals send it: legacy, kitty CSI-u with explicit modifier 1, event press/repeat, and Num/Caps Lock bits (omp's matchesKey ignores locks).
+	test.each([
+		["\x1b", true], ["\x1b[27u", true], ["\x1b[27;1u", true], ["\x1b[27;1:1u", true], ["\x1b[27;1:2u", true],
+		["\x1b[27;129u", true], ["\x1b[27;65u", true], ["\x1b[27;193:1u", true], ["\x1b[27:27;1u", true],
+		["\x1b[27;1:3u", false], ["\x1b[27;2u", false], ["\x1b[27;3u", false], ["\x1b[27;5u", false], ["\x1b[27;129:3u", false],
+		["\x1b[27::27u", true], ["\x1b[27:27:27;1u", true], ["\x1b[27;1;27u", true], ["\x1b[27;1:1;27:27u", true], ["\x1b[27;1;u", true],
+		["\x1b[27;2;27u", false], ["\x1b[27;1:3;27u", false],
+		["a\x1b[27u", false], ["x\x1b[27;1u", false],
+		["q", true], ["a", false],
+	])("closes(%j) is %p", (data, expected) => {
 		expect(closes(data)).toBe(expected);
 	});
 });
@@ -483,18 +492,78 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 		expect(top.match(/┌[^┐]*┐/g)!.map(b => b.length)).toEqual(widths);
 	});
 
-	test("stacked chronicle shows exactly the 8 newest, newest first", () => {
-		const lines = eventLines(renderCockpit(cockpitView(input({ chronicle: many(10) })), 50, 0, TRUE));
-		expect(lines).toHaveLength(8);
-		expect(lines[0]).toContain("event 10");
-		expect(lines[7]).toContain("event 3");
+	// Rows the layout needs with an empty chronicle: everything but the entries.
+	const fixedRows = (width: number) => renderCockpit(cockpitView(input({ chronicle: [] })), width, 0, TRUE).length;
+
+	test.each([50, 100])("chronicle with a height shows the H - fixed newest entries, newest first, at width %i", width => {
+		const H = 30;
+		const spare = H - fixedRows(width);
+		const lines = eventLines(renderCockpit(cockpitView(input({ chronicle: many(40) })), width, 0, TRUE, H));
+		expect(lines).toHaveLength(spare);
+		expect(lines[0]).toContain("event 40");
+		expect(lines.at(-1)).toContain(`event ${40 - spare + 1}`);
 	});
 
-	test("wide chronicle shows exactly the 8 newest, newest first", () => {
-		const lines = eventLines(renderCockpit(cockpitView(input({ chronicle: many(10) })), 100, 0, TRUE));
-		expect(lines).toHaveLength(8);
+	test.each([50, 100])("chronicle without a height shows every entry at width %i", width => {
+		const lines = eventLines(renderCockpit(cockpitView(input({ chronicle: many(10) })), width, 0, TRUE));
+		expect(lines).toHaveLength(10);
 		expect(lines[0]).toContain("event 10");
-		expect(lines[7]).toContain("event 3");
+		expect(lines[9]).toContain("event 1");
+	});
+
+	test.each([72, 100, 140])("framed overlay at height 45 and width %i fills the window", width => {
+		const out = renderCockpit(cockpitView(busy()), width, 0, TRUE, 45).map(plain);
+		expect(out).toHaveLength(45);
+		for (const l of out) expect(Bun.stringWidth(l)).toBe(width);
+		expect(out[0].startsWith("╔")).toBe(true);
+		expect(out[44].startsWith("╚═ esc/q close")).toBe(true);
+		for (const l of out.slice(1, 44)) {
+			expect(l.startsWith("║") || l.startsWith("╟")).toBe(true);
+			expect(l.endsWith("║") || l.endsWith("╢")).toBe(true);
+		}
+	});
+
+	test("spare rows after the chronicle are blank framed rows", () => {
+		const out = renderCockpit(cockpitView(input({ chronicle: many(2) })), 100, 0, TRUE, 45).map(plain);
+		const spare = out.slice(out.findLastIndex(l => l.includes("event")) + 1, 44);
+		expect(spare.length).toBeGreaterThan(0);
+		for (const l of spare) expect(l).toBe(`║${" ".repeat(98)}║`);
+	});
+
+	test("a short height cuts the body and keeps the header and the close border", () => {
+		const out = renderCockpit(cockpitView(busy()), 100, 0, TRUE, 6).map(plain);
+		expect(out).toHaveLength(6);
+		expect(out[0].startsWith("╔")).toBe(true);
+		expect(out[5].startsWith("╚═ esc/q close")).toBe(true);
+	});
+
+	test("height 1 returns only the close hint", () => {
+		const framed = renderCockpit(cockpitView(busy()), 100, 0, TRUE, 1).map(plain);
+		expect(framed).toHaveLength(1);
+		expect(framed[0].startsWith("╚═ esc/q close")).toBe(true);
+		expect(renderCockpit(cockpitView(busy()), 50, 0, TRUE, 1).map(plain)).toEqual(["esc/q close"]);
+	});
+
+	test("stacked layout with a height fills it, chronicle on the spare rows, close hint last", () => {
+		const out = renderCockpit(cockpitView(input({ chronicle: many(40) })), 50, 0, TRUE, 30).map(plain);
+		expect(out).toHaveLength(30);
+		for (const l of out) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(50);
+		expect(out[29]).toBe("esc/q close");
+		const sparse = renderCockpit(cockpitView(input({ chronicle: many(1) })), 50, 0, TRUE, 30).map(plain);
+		expect(sparse).toHaveLength(30);
+		expect(sparse.at(-2)).toBe("");
+		expect(sparse.at(-1)).toBe("esc/q close");
+	});
+
+	test("stacked layout at height 4 is cut and still ends with the close hint", () => {
+		const out = renderCockpit(cockpitView(busy()), 50, 0, TRUE, 4).map(plain);
+		expect(out).toHaveLength(4);
+		expect(out[3]).toBe("esc/q close");
+		expect(out[0]).toContain("STRATEGIUM");
+	});
+
+	test("frames 0 and 1 have the same length at a height", () => {
+		expect(renderCockpit(cockpitView(busy()), 100, 0, TRUE, 45)).toHaveLength(renderCockpit(cockpitView(busy()), 100, 1, TRUE, 45).length);
 	});
 
 	test("active marks: frame 0 is ▶, frame 1 is ▷", () => {
@@ -508,6 +577,30 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 	});
 });
 
+describe("agent status line", () => {
+	const lines = (status: ViewInput["status"], width: number, frame = 0) => renderCockpit(cockpitView(input({ status })), width, frame, TRUE).map(plain);
+
+	test.each([100, 50])("working shows ▶ AGENT AT WORK, flipping to ▷ on odd frames, at width %i", width => {
+		expect(lines("working", width).some(l => l.includes("▶ AGENT AT WORK"))).toBe(true);
+		expect(lines("working", width, 1).some(l => l.includes("▷ AGENT AT WORK"))).toBe(true);
+	});
+
+	test.each([100, 50])("awaiting shows ○ AWAITING YOUR ORDERS in gold at width %i", width => {
+		expect(lines("awaiting", width).some(l => l.includes("○ AWAITING YOUR ORDERS"))).toBe(true);
+		expect(renderCockpit(cockpitView(input({ status: "awaiting" })), width, 0, TRUE).some(l => l.includes(`${GOLD}○ AWAITING YOUR ORDERS`))).toBe(true);
+	});
+
+	test("no status draws no status line and the layout keeps its rows", () => {
+		expect(text()).not.toMatch(/AGENT AT WORK|AWAITING YOUR ORDERS/);
+		for (const w of [100, 50]) expect(lines("working", w)).toHaveLength(lines(undefined, w).length + 1);
+	});
+
+	test("the status row keeps the exact width of the framed layout", () => {
+		for (const l of lines("awaiting", 100)) expect(Bun.stringWidth(l)).toBe(100);
+		for (const l of lines("awaiting", 50)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(50);
+	});
+});
+
 describe("glyphs", () => {
 	const states: [string, Partial<ViewInput>][] = [
 		["skirmish with a veteran", { phases: phases(["[battle-brother] Build squad a", "in_progress"], ["[veteran] Rebuild squad b", "in_progress"]), slices: [{ id: "a" }, { id: "b" }], notes: { b: { veteran: true } } }],
@@ -516,6 +609,8 @@ describe("glyphs", () => {
 		["return", { phases: [{ name: "Forge", tasks: [{ content: "[captain] redo", status: "in_progress" }] }, { name: "Later", tasks: [{ content: "[captain] x", status: "completed" }] }] }],
 		["timed", { clock: { running: true, el: 42, bk: 120 } }],
 		["untimed", { untimed: true, clock: { running: true, el: 42 } }],
+		["agent at work", { status: "working" }],
+		["agent awaiting", { status: "awaiting" }],
 	];
 	// ▶ is Extended_Pictographic but has text presentation without U+FE0F: the user's terminal draws it one cell wide.
 	const emoji = (s: string) => s.replaceAll("▶", "").match(/\p{Extended_Pictographic}/gu) ?? [];

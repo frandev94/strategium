@@ -59,7 +59,7 @@ type Run = {
 	redraft?: true;
 	phases?: Phase[];
 };
-type Tui = { requestRender(): void };
+type Tui = { requestRender(): void; terminal: { rows: number } };
 type Component = { render(width: number): string[]; handleInput?(data: string): void; invalidate?(): void; dispose?(): void };
 // What the extension reads from the host's session context: the real one has more.
 // `hasUI` and the optional ui calls are absent with --no-ui or in headless modes; RPC has them, but its custom() resolves at once without building the component.
@@ -69,7 +69,7 @@ type SessionCtx = {
 	ui: {
 		notify(message: string, level?: "info" | "warning" | "error"): void;
 		setStatus(key: string, value: string | undefined): void;
-		custom?(factory: (tui: Tui, theme: unknown, keybindings: unknown, done: (result?: unknown) => void) => Component, options?: { overlay?: boolean }): unknown;
+		custom?(factory: (tui: Tui, theme: unknown, keybindings: unknown, done: (result?: unknown) => void) => Component, options?: { overlay?: boolean; overlayOptions?: object }): unknown;
 	};
 	setInterval(fn: () => void, ms: number): unknown;
 	agent?: { kind?: string };
@@ -625,7 +625,13 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 		: w.seal
 			? ` · \x1b[33m${nf ? "\u{f051f} " : "⏳"} seal ${w.seal}\x1b[39m`
 			: ` · ${w.back ? (nf ? "\u{f054c}  " : "↩ ") : ""}${w.station}${w.task ? ` › ${w.task}` : ""}`;
-	return `${dot}\x1b[39m ${planet} \x1b[38;5;248mstrategium: \x1b[39m${key}${where} · ${value}`;
+	const line = `${dot}\x1b[39m ${planet} \x1b[38;5;248mstrategium: \x1b[39m${key}${where} · ${value}`;
+	// The cockpit hint goes flush right when the terminal is wide enough. omp collapses runs of plain spaces in a
+	// status line, so the padding is no-break spaces. shortcut: width read once per draw (no resize hook in omp), so a resize shows on the next tick or status refresh.
+	const hint = "ALT + C to enter cockpit";
+	// Measured as omp draws it: sanitizeHookStatusText collapses runs of spaces, even across colour codes.
+	const pad = (process.stdout.columns ?? 0) - Bun.stringWidth(Bun.stripANSI(line).replace(/ +/g, " ")) - hint.length;
+	return pad >= 2 ? `${line}${"\u00a0".repeat(pad)}\x1b[2m${hint}\x1b[22m` : line;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -700,6 +706,7 @@ export default function (pi: ExtensionAPI) {
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
 		overlay: undefined as Tui | undefined,
+		status: undefined as "working" | "awaiting" | undefined,
 		close: undefined as (() => void) | undefined,
 	};
 	const resetCockpit = (key?: string) => {
@@ -721,6 +728,15 @@ export default function (pi: ExtensionAPI) {
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
 		log(key, job.who, ok ? "✓ returned" : "✗ failed", ok ? "ok" : "fail");
 	};
+	/** Idle for the host with nothing queued: the prompt waits for the user. */
+	const agentStatus = (ctx: SessionCtx) => (ctx.isIdle() && !ctx.hasPendingMessages() ? "awaiting" : "working");
+	/** An open cockpit shows the agent's state at once, without rebuilding the run. The host's state decides (it already streams before agent_start). */
+	const setAgentStatus = (ctx: SessionCtx) => {
+		cockpit.status = agentStatus(ctx);
+		if (cockpit.view?.status === cockpit.status || !cockpit.overlay) return;
+		cockpit.view = { ...cockpit.view!, status: cockpit.status };
+		cockpit.overlay.requestRender();
+	};
 	/** Rebuild the view from the run and the in-memory state, then repaint an open overlay. Never ticks the timer. */
 	const drawCockpit = (run: Run) => {
 		if (cockpit.key !== run.key) resetCockpit(run.key);
@@ -734,6 +750,7 @@ export default function (pi: ExtensionAPI) {
 			stopped: run.stopped,
 			agents: run.agents,
 			notes: cockpit.notes,
+			status: cockpit.status,
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
 		});
@@ -745,6 +762,7 @@ export default function (pi: ExtensionAPI) {
 		if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
 		if (!ctx.hasUI || typeof ctx.ui.custom !== "function") return ctx.ui.notify("Strategium: the cockpit needs the interactive UI", "warning");
 		if (cockpit.close) return;
+		cockpit.status = agentStatus(ctx);
 		drawCockpit(run);
 		const closed = () => {
 			cockpit.close = undefined;
@@ -757,6 +775,7 @@ export default function (pi: ExtensionAPI) {
 					let frame = 0;
 					const timer = setInterval(() => {
 						frame++;
+						if (live) setAgentStatus(live); // the host's idle flag lags agent_end
 						tui.requestRender();
 					}, 500);
 					const close = () => {
@@ -767,14 +786,14 @@ export default function (pi: ExtensionAPI) {
 					cockpit.overlay = tui;
 					cockpit.close = close;
 					return {
-						render: width => renderCockpit(cockpit.view!, width, frame, pal),
+						render: width => renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows),
 						handleInput: data => {
 							if (closes(data)) close();
 						},
 						dispose: () => clearInterval(timer),
 					};
 				},
-				{ overlay: true },
+				{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true, mouseTracking: false } },
 			),
 		).catch(() => (cockpit.close ?? closed)());
 	};
@@ -1184,6 +1203,7 @@ export default function (pi: ExtensionAPI) {
 	// An approved plan opens a fresh session (reason "new", no shutdown of the old one); the run follows it only then.
 	pi.on("plan_review_requested", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub") return;
+		cockpit.close?.();
 		const run = ownRun(e.sessionId);
 		reviewSid = run ? e.sessionId : undefined;
 		// The user is called now: the review keeps the clock counting (it is busy), so the attention alarm replaces the idle one.
@@ -1191,10 +1211,16 @@ export default function (pi: ExtensionAPI) {
 		const err = alert(e.sessionId, "attention", `${run.key}: your plan review is waiting`);
 		if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 	});
+	pi.on("tool_approval_requested", (_e, ctx) => {
+		if (ctx?.agent?.kind === "sub") return;
+		cockpit.close?.();
+	});
 	// Every turn, whoever started it (before_agent_start fires only for typed prompts): the idle count restarts and an
 	// idle-paused run continues. A run paused by hand carries no mark and stays paused.
+	// The open cockpit says at once what the agent does; the host is idle only after agent_end returns, so the 500 ms redraw checks again.
 	pi.on("agent_start", (_e, ctx) => {
 		if (ctx?.agent?.kind === "sub") return;
+		setAgentStatus(ctx);
 		idleSince = undefined;
 		const run = ownRun(sidOf(ctx));
 		if (run?.idle) {
@@ -1210,6 +1236,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_end", (_e, ctx) => {
 		if (ctx?.agent?.kind === "sub") return;
 		idleSince = Date.now();
+		setAgentStatus(ctx);
 	});
 	// "Approve and execute" closes the review before the new session exists, so its mark stays until the switch
 	// (onSession spends it); omp restores the plan-mode tool set only after that, see before_agent_start. Any other
@@ -1350,6 +1377,8 @@ export default function (pi: ExtensionAPI) {
 		if (ctx?.agent?.kind === "sub") return;
 		const run = ownRun(sidOf(ctx));
 		const name = e.toolName.replace(/^_+/, "");
+		// omp hands the keys of a dialog opened while the cockpit is up to the cockpit, then focus to the editor: close it before the dialog mounts.
+		if (name === "ask") cockpit.close?.();
 		// A question to the user during a run needs them at the keyboard, wherever they are.
 		if (name === "ask" && run) {
 			const err = alert(sidOf(ctx), "attention", `${run.key}: your answer is needed`);

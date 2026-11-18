@@ -21,6 +21,7 @@ export type ViewInput = {
 	clock?: { running: boolean; el: number; bk?: number }; // bk undefined: untimed, or no booking today
 	chronicle: Entry[];
 	glyphs?: boolean; // Nerd Font glyphs (STRATEGIUM_GLYPHS=1) instead of plain symbols; never emoji
+	status?: "working" | "awaiting"; // what the main agent is doing: a turn runs, or the prompt waits for the user
 };
 export type View = ReturnType<typeof cockpitView>;
 
@@ -61,7 +62,14 @@ export function grantedSeals(before: Phase[] | undefined, after: Phase[]): Seal[
 
 export const pushEntry = (list: Entry[], e: Entry, cap = 20): Entry[] => [...list, e].slice(-cap);
 
-export const closes = (data: string): boolean => data === "\x1b" || data === "\x1b[27u" || data === "q";
+// Esc as omp's matchesKey("escape") takes it: a bare ESC or kitty CSI-u for 27 (optional shifted/base keys, either may be empty, and trailing text) whose modifier is 1 plus any Caps/Num Lock bits (64, 128), not a release (event 3).
+// Not imported from pi-tui: extensions load with no runtime dependency on omp's packages.
+const ESC_CSI_U = /^\x1b\[27(?::\d*)*(?:;(\d+)(?::(\d))?)?(?:;[\d:]*)?u$/;
+export const closes = (data: string): boolean => {
+	if (data === "\x1b" || data === "q") return true;
+	const m = ESC_CSI_U.exec(data);
+	return !!m && ((Number(m[1] ?? 1) - 1) & ~192) === 0 && m[2] !== "3";
+};
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
 
@@ -197,7 +205,7 @@ export function cockpitView(input: ViewInput) {
 		}
 	}
 
-	return { key: input.key, ic, clock, seals: sealsFrom(phases), station, boxes, chronicle: [...input.chronicle].reverse() };
+	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases), station, boxes, chronicle: [...input.chronicle].reverse() };
 }
 
 const paint = (c: string, s: string) => c + s + RESET;
@@ -243,6 +251,10 @@ function clockText(clock: View["clock"], pal: Palette, bar: boolean): string {
 	return parts.join(" ");
 }
 
+// The agent's state under the clock: green and animated while a turn runs, gold (the most visible tone) when the user's turn comes. No line without a status.
+const statusText = (status: View["status"], pal: Palette, frame: number): string[] =>
+	status === "working" ? [markText("active", "▶", "AGENT AT WORK", pal, frame)] : status === "awaiting" ? [paint(pal.gold, "○ AWAITING YOUR ORDERS")] : [];
+
 const entryLine = (e: Entry, pal: Palette) => {
 	const tone: Tone = e.tone === "ok" ? "green" : e.tone === "fail" ? "red" : e.tone === "seal" ? "gold" : "parchment";
 	return `${paint(pal.iron, e.at)}  ${paint(pal.parchment, pad(e.who, 11))} ${paint(pal[tone], e.text)}`;
@@ -275,24 +287,31 @@ function grid(boxes: Box[], cols: number, inner: number, pal: Palette): string[]
 	return out;
 }
 
-export function renderCockpit(view: View, width: number, frame: number, pal: Palette): string[] {
+// With a height: exactly that many lines, the chronicle on the spare rows, `blank` after it, `close` last; a too tall body is cut from the bottom.
+function withHeight(body: string[], entries: string[], blank: string, close: string, height?: number): string[] {
+	if (height === undefined) return [...body, ...entries, close];
+	const spare = Math.max(0, height - body.length - 1);
+	const shown = entries.slice(0, spare);
+	return [...body, ...shown, ...Array(spare - shown.length).fill(blank)].slice(0, Math.max(0, height - 1)).concat(close);
+}
+
+export function renderCockpit(view: View, width: number, frame: number, pal: Palette, height?: number): string[] {
 	const s = view.station;
 	const station = markText(s.kind, s.mark, s.name, pal, frame) + (s.note ? ` · ${paint(pal.gold, s.note)}` : "");
 	// shortcut: no line cap per box; a station with many tasks pushes the chronicle down; cap lines when a real run hits it.
 	const boxes: Box[] = view.boxes.map(b => ({ title: b.title, lines: b.lines.map(l => markText(l.kind, l.mark, l.text, pal, frame)), tone: b.tone }));
 
 	if (width < 72) {
-		const lines = [
+		const body = [
 			`${paint(pal.gold, "✠ STRATEGIUM")} · ${paint(pal.parchment, view.key)}`,
 			clockText(view.clock, pal, false),
+			...statusText(view.status, pal, frame),
 			`${paint(pal.gold, "SEALS")} ${sealsText(view.seals, pal, view.ic)}`,
 			station,
 			...boxes.flatMap(b => [paint(pal.gold, b.title), ...b.lines.map(l => `  ${l}`)]),
 			paint(pal.gold, "CHRONICLE"),
-			...view.chronicle.slice(0, 8).map(e => entryLine(e, pal)),
-			paint(pal.iron, "esc/q close"),
 		];
-		return lines.map(l => fit(l, width));
+		return withHeight(body, view.chronicle.map(e => entryLine(e, pal)), "", paint(pal.iron, "esc/q close"), height).map(l => fit(l, width));
 	}
 
 	const inner = width - 2;
@@ -300,7 +319,7 @@ export function renderCockpit(view: View, width: number, frame: number, pal: Pal
 	const row = (content: string) => `${g("║")}${pad(fit(content, inner), inner)}${g("║")}`;
 	const left = " " + clockText(view.clock, pal, true);
 	const right = `${g("SEALS")} ${sealsText(view.seals, pal, view.ic)} `;
-	const head = Bun.stringWidth(left) + Bun.stringWidth(right) < inner ? [row(left + " ".repeat(inner - Bun.stringWidth(left) - Bun.stringWidth(right)) + right)] : [row(left), row(` ${right}`)];
+	const head = [...(Bun.stringWidth(left) + Bun.stringWidth(right) < inner ? [row(left + " ".repeat(inner - Bun.stringWidth(left) - Bun.stringWidth(right)) + right)] : [row(left), row(` ${right}`)]), ...statusText(view.status, pal, frame).map(l => row(` ${l}`))];
 
 	const lead = "╔═ ✠ STRATEGIUM ── COGITATOR ";
 	const key = fit(view.key, Math.max(1, width - Bun.stringWidth(lead) - 5));
@@ -308,13 +327,11 @@ export function renderCockpit(view: View, width: number, frame: number, pal: Pal
 	const title = fit(station, inner - 4); // keeps at least one cell of rule
 	const cols = Math.max(1, Math.min(boxes.length, Math.floor((inner - 1) / 27)));
 
-	return [
-		g(fit(top, width)),
-		...head,
-		`${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`,
-		...grid(boxes, cols, inner, pal).map(row),
-		g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`),
-		...view.chronicle.slice(0, 8).map(e => row(` ${entryLine(e, pal)}`)),
+	return withHeight(
+		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...grid(boxes, cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
+		view.chronicle.map(e => row(` ${entryLine(e, pal)}`)),
+		row(""),
 		g(`╚═ esc/q close ${"═".repeat(inner - 14)}╝`),
-	];
+		height,
+	);
 }
