@@ -10,8 +10,8 @@ description: Use when a long task, build, run or timer finishes or needs the use
 | Level | Sound |
 |---|---|
 | `50` | calm: the opening boom and its ring (3 s) |
-| `80` | urgent: two booms (1.9 s) |
-| `100` | extraction: the chant at full (3.6 s) |
+| `80` | urgent: the full groove, hard hits (3 s) |
+| `100` | time is up: where the countdown comments land (3 s) |
 | `done` | task complete: a run of hits that ends on a rest (3 s) |
 | `attention` | the user is needed: the end of the break and the drop (3 s) |
 | `idle` | stand-by: the break before the drop, without the drop (2.4 s); the run's clock paused after idle minutes |
