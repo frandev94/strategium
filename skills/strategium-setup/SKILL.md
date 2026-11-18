@@ -51,7 +51,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 ## 4. Tools
 - `bun --version` (alarm script). Missing → point to https://bun.sh; the timer still works without sound.
 - `git --version` (worktrees, commits).
-- `git-cliff --version`: only needed to cut plugin releases (`strategium-release`); optional, report if missing.
+- `git-cliff --version`: only needed to cut plugin releases by hand (`strategium-release`; CI releases on merge); optional, report if missing.
 - `gh --version` (`strategium-github` theatre). Then `gh auth status` (exit code only) and `gh project list --owner @me --limit 1 --format json`: output containing `missing required scopes` → report "project scope missing" and offer `gh auth refresh -s project` in the final table as the user's call (it opens the browser); setup never runs it.
 - Theatre-specific CLIs named in the theatre skill (e.g. an issue-tracker or forge CLI): check `--version` and report.
 
