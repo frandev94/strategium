@@ -181,12 +181,12 @@ const AB = [56, 60, 63]; // Ab major (VI)
 const BB = [58, 62, 65]; // Bb major (VII)
 const C = [60, 64, 67, 72]; // C major: the minor run ends bright
 
-/** The final hit: boom, snare, brass on C and G, the choir on C minor. */
-function hit(b: Buf, t0: number, dur: number) {
+/** The final hit: boom, snare, brass on C and G, and (unless `choir` is false) the choir on C minor. */
+function hit(b: Buf, t0: number, dur: number, choir = true) {
 	boom(b, t0);
 	snare(b, t0, 0.6);
 	for (const m of [24, 36, 43]) brass(b, t0, m, dur);
-	chord(b, t0, CM, dur, 0.22, 0.02);
+	if (choir) chord(b, t0, CM, dur, 0.22, 0.02);
 }
 
 // Theme: four bars of drop (i, VI, iv, V), written once and wrapped so the tails of bar 4 ring into bar 1: it loops without a seam.
@@ -200,24 +200,46 @@ function theme(b: Buf) {
 	for (let i = 0; i < long.length; i++) b[i % b.length] += long[i];
 }
 
+/** One bar of the full groove: war drums, the bass wall and a pickup snare into the next bar. */
+function groove(b: Buf, t0: number) {
+	drums(b, t0, 1);
+	bass(b, t0, 1);
+	snare(b, t0 + BAR - BEAT / 4, 0.4);
+}
+
+/** The swell: a soft boom under brass and the choir rising on C minor. */
+function swell(b: Buf, t0: number, dur: number) {
+	boom(b, t0, 0.6);
+	for (const m of [24, 36]) brass(b, t0, m, dur, 0.2);
+	chord(b, t0, CM, dur, 0.2, 0.3);
+}
+
 const DESIGN: Record<Level, (b: Buf) => void> = {
-	// calm: one boom and a low bell ringing out
-	"50": b => { boom(b, 0); bell(b, 0.05, hz(48), 0.6, 2.9); },
-	// urgent: one bar of the full groove, then a hard hit
-	"80": b => { drums(b, 0, 1); bass(b, 0, 1); snare(b, BAR - BEAT / 4, 0.4); hit(b, BAR, 1.2); },
-	// time is up: a breath that climbs and lands on the final hit
-	"100": b => { riser(b, 0, 1.2, 0.3); hit(b, 1.2, 2.2); },
+	// Each level adds a layer to the one before: 50 the groove into a hit, 80 the swell over it, 100 the riser too.
+	// 50 %: one bar of the groove, then a hard hit with no choir
+	"50": b => { groove(b, 0); hit(b, BAR, 1.2, false); },
+	// 80 %: the groove under the swell, then the full hit
+	"80": b => { groove(b, 0); swell(b, 0, BAR); hit(b, BAR, 1.2); },
+	// time is up: the groove, the swell and a riser climbing together, then the full hit ringing longer
+	"100": b => { groove(b, 0); swell(b, 0, BAR); riser(b, 0, BAR, 0.3); hit(b, BAR, 1.4); },
 	// done: the choir climbs VI, VII to a bright I over the drums, then a dead stop at 2.25 s
 	"done": b => {
 		[AB, BB, C].forEach((notes, i) => { chord(b, i * BEAT, notes, i === 2 ? 1.2 : BEAT, 0.24, 0.03); kick(b, i * BEAT); });
 		snare(b, BEAT * 2, 0.5);
 		b.fill(0, Math.floor(2.25 * RATE));
 	},
-	// attention: a snare roll that speeds up under a riser, into a short hit
+	// attention: a horn call (two stabs on C, a held G), then a short snare roll into the hit
 	"attention": b => {
-		riser(b, 0, 3, 0.26);
-		for (let t = 0; t < 3; t += (BEAT / 2) * (1 - 0.8 * (t / 3))) snare(b, t, 0.12 + 0.3 * (t / 3));
-		hit(b, 3, 0.9);
+		for (const t of [0, BEAT]) {
+			kick(b, t);
+			for (const m of [36, 48]) brass(b, t, m, 0.4, 0.3);
+			chord(b, t, CM, 0.4, 0.22, 0.02);
+		}
+		kick(b, BEAT * 2);
+		for (const m of [43, 55]) brass(b, BEAT * 2, m, 1.2, 0.3);
+		chord(b, BEAT * 2, [55, 59, 62], 1.2, 0.22, 0.02);
+		for (let t = BEAT * 3; t < BAR; t += BEAT / 8) snare(b, t, 0.15 + 0.35 * ((t - BEAT * 3) / BEAT));
+		hit(b, BAR, 0.9);
 	},
 	// idle: stand-by, quieter on purpose: a low drone, soft choir swells and one soft bell; the run's clock paused
 	"idle": b => { drone(b, 0, 3); chord(b, 0.3, [55, 60], 2.4, 0.1, 0.9); bell(b, 0, hz(48), 0.35, 2.5); },
@@ -227,7 +249,7 @@ const DESIGN: Record<Level, (b: Buf) => void> = {
 
 /** Pure synthesis: 16-bit mono PCM WAV, soft-clipped by tanh and normalised to its peak (0.9 of full scale; idle 0.5, quieter on purpose). */
 export function synth(level: Level): Buffer {
-	const secs = { "50": 3, "80": 3.6, "100": 3.4, "done": 2.7, "attention": 3.9, "idle": 3, "theme": BAR * 4 }[level];
+	const secs = { "50": 3.6, "80": 3.6, "100": 3.9, "done": 2.7, "attention": 3.6, "idle": 3, "theme": BAR * 4 }[level];
 	const b = new Float64Array(Math.round(secs * RATE));
 	DESIGN[level](b);
 	// A one-shot fades out over its last 0.25 s, so a hit still ringing never ends in a click; the theme loops instead.
