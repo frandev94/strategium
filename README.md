@@ -12,7 +12,7 @@ The plugin ships three things:
 |---|---|
 | **Extension** | the `strategium` tool and the `/strategium` command: per-session claims, edit guard, optional booking timer |
 | **Agents** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, `confessor`, `archmagos`, plus the bundled `scout` and `sonic` |
-| **Skills** | `strategium`, `strategium-alarm`, `strategium-release`, `strategium-setup`, `strategium-study`, `strategium-ui` |
+| **Skills** | `strategium`, `strategium-alarm`, `strategium-github`, `strategium-release`, `strategium-setup`, `strategium-study`, `strategium-ui` |
 
 ## How a run works
 
@@ -203,7 +203,7 @@ An **untimed** run still counts its time (`status`, `report`), with no alerts, n
 
 | Variable | Meaning |
 |---|---|
-| `STRATEGIUM_THEATRE` | default theatre for `/strategium` |
+| `STRATEGIUM_THEATRE` | default theatre for `/strategium`; empty → the GitHub theatre when the run's repo is on GitHub |
 | `STRATEGIUM_ALARM` | command run when the timer fires, e.g. `bun /path/to/strategium/alarm/vox.ts`; quote a path with spaces (`bun "C:/my tools/vox.ts"`) |
 | `STRATEGIUM_STATE_DIR` | where the session state lives (default `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | `1` to use Nerd Font glyphs instead of emoji |
@@ -226,6 +226,8 @@ bun alarm/vox.ts 100 "the booking is over"
 ### Theatres
 
 A theatre is a `strategium-<name>` skill that binds the run to your organisation: where the tickets live, how the time is booked, how the merge requests are written, which records are kept. Without a theatre nothing is pushed: the delivery is the branch with its commits.
+
+The plugin ships the **GitHub theatre** (`strategium-github`): the issue is the ticket (created in Muster when the objective is free text or a file), a Project gives the status and optional minute fields for the booking, and the delivery is a draft pull request that closes the issue on merge. It is the default: when the run's repo is on GitHub, the run uses it unless another theatre is named, `STRATEGIUM_THEATRE` names one, or you say `none`.
 
 ## Development
 
