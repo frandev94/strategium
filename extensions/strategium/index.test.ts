@@ -21,6 +21,7 @@ function fakePi() {
 	const handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]> = {};
 	const sent: string[] = [];
 	const calls: [unknown, unknown][] = [];
+	const shortcuts: Record<string, { description?: string; handler: (ctx: unknown) => unknown }> = {};
 	let active = ["read", "bash", "edit", "write", "task"];
 	const zod = {
 		object: () => schema(),
@@ -44,11 +45,13 @@ function fakePi() {
 			on: (event: string, fn: (e: unknown, ctx: unknown) => unknown) => ((handlers[event] ??= []).push(fn)),
 			sendUserMessage: (m: string) => sent.push(m),
 			sendMessage: (m: { content: string }, o?: unknown) => calls.push([m, o]),
+			registerShortcut: (key: string, s: { description?: string; handler: (ctx: unknown) => unknown }) => (shortcuts[key] = s),
 		},
 		tools,
 		commands,
 		handlers,
 		sent,
+		shortcuts,
 		calls,
 		activeTools: () => active,
 		setActive: (n: string[]) => {
@@ -106,7 +109,7 @@ function setup(sid = "sess-0001", shared?: string) {
 	delete process.env.STRATEGIUM_GLYPHS;
 	// The alarm tests need notifications on; the tests of the default turn them off again.
 	process.env.STRATEGIUM_NOTIFY = "1";
-	const { pi, tools, commands, handlers, sent, calls, activeTools, setActive } = fakePi();
+	const { pi, tools, commands, handlers, sent, calls, activeTools, setActive, shortcuts } = fakePi();
 	// What the footer and the alert had seen the moment each notification went out.
 	const seen: { via: string; footer: string; events: number }[] = [];
 	const sendMessage = pi.sendMessage;
@@ -133,7 +136,7 @@ function setup(sid = "sess-0001", shared?: string) {
 	const todo = (phases: unknown) => handlers.tool_result[0]({ toolName: "todo", isError: false, details: { phases } }, ctx);
 	// The last footer line, without its colours.
 	const shown = () => (footer.at(-1) ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-	return { dir, call, command, sub, sent, calls, seen, footer, notes, commands, handlers, ctx, start, todo, shown, activeTools, setActive };
+	return { dir, call, command, sub, sent, calls, seen, footer, notes, commands, handlers, shortcuts, ctx, start, todo, shown, activeTools, setActive };
 }
 
 describe("the strategium tool", () => {
@@ -491,6 +494,83 @@ describe("the station in the footer", () => {
 		setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
 		start();
 		expect(shown()).toContain("strategium: dark-mode · Skirmish › Squad 1 · 2 min");
+	});
+
+	// The hint is right-aligned with no-break spaces: omp collapses runs of plain spaces in a status line.
+	describe("the cockpit hint on the footer line", () => {
+		const HINT = "ALT + C to enter cockpit";
+		const cols = (n: number | undefined) => Object.defineProperty(process.stdout, "columns", { value: n, configurable: true, writable: true });
+		afterEach(() => void delete (process.stdout as { columns?: number }).columns);
+		const begun = async () => {
+			const r = setup();
+			setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+			await r.call({ action: "begin", key: "dark-mode" });
+			r.todo(skirmish);
+			setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+			return r;
+		};
+
+		test("a wide terminal ends the line with the hint at the last column", async () => {
+			const { start, shown } = await begun();
+			cols(140);
+			start();
+			const line = shown();
+			expect(line.endsWith(HINT)).toBe(true);
+			expect(line).toContain("strategium: dark-mode · Skirmish › Squad 1 · 2 min");
+			expect(Bun.stringWidth(line)).toBe(140);
+		});
+
+		test("a terminal that is too narrow gets the footer as it is", async () => {
+			const { start, shown } = await begun();
+			cols(undefined);
+			start();
+			const plain = shown();
+			cols(Bun.stringWidth(plain) + 2 + HINT.length - 1);
+			start();
+			expect(shown()).toBe(plain);
+			cols(Bun.stringWidth(plain) + 2 + HINT.length);
+			start();
+			expect(shown()).toBe(`${plain}\u00a0\u00a0${HINT}`);
+		});
+
+		test("an unknown width gets no hint", async () => {
+			const { start, shown } = await begun();
+			cols(undefined);
+			start();
+			expect(shown()).not.toContain(HINT);
+		});
+
+		// omp's sanitizeHookStatusText collapses runs of spaces before drawing, so that is the width that must reach the last column.
+		const drawn = (s: string) => Bun.stringWidth(s.replace(/ +/g, " "));
+
+		test("the hint stays plain text with glyphs on", async () => {
+			const { start, shown } = await begun();
+			process.env.STRATEGIUM_GLYPHS = "1";
+			cols(140);
+			start();
+			expect(shown().endsWith(HINT)).toBe(true);
+			expect(drawn(shown())).toBe(140);
+		});
+
+		test("the hint reaches the last column on a return, whose glyph is followed by two spaces", async () => {
+			const { start, shown, todo } = await begun();
+			process.env.STRATEGIUM_GLYPHS = "1";
+			todo(backToScriptorium);
+			cols(140);
+			start();
+			expect(shown()).toContain("\u{f054c}  Scriptorium");
+			expect(shown().endsWith(HINT)).toBe(true);
+			expect(drawn(shown())).toBe(140);
+		});
+
+		test("a sub agent draws no footer and so no hint", async () => {
+			const { start, footer, ctx } = await begun();
+			cols(140);
+			ctx.agent = { kind: "sub" };
+			footer.length = 0;
+			start();
+			expect(footer).toEqual([]);
+		});
 	});
 
 	test("a timed run keeps its booking next to the station", async () => {
@@ -2396,5 +2476,685 @@ describe("the idle pause", () => {
 		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
 		await s.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, s.ctx);
 		expect(ran(s.notes)).toBe(true);
+	});
+});
+
+describe("cockpit", () => {
+	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
+	type Tui = { requestRender(): void; terminal: { rows: number } };
+	type Comp = { render(w: number): string[]; handleInput?(d: string): void; dispose?(): void };
+	// A UI context: the overlay calls are recorded; `hasUI` false leaves the same functions in place but unused.
+	function uiCtx(s: ReturnType<typeof setup>, hasUI = true) {
+		const opened: { options?: unknown; component: Comp }[] = [];
+		const draws = { n: 0, closed: 0 };
+		const tui: Tui = { requestRender: () => void draws.n++, terminal: { rows: 40 } };
+		const c = s.ctx as unknown as Record<string, unknown> & { ui: Record<string, unknown> };
+		// The helper's todo reaches handler [0] only; the cockpit's hooks come after it.
+		s.todo = phases => s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases } }, s.ctx));
+		c.hasUI = hasUI;
+		c.ui.custom = (factory: (t: Tui, th: unknown, k: unknown, done: () => void) => Comp, options?: unknown) => {
+			opened.push({ options, component: factory(tui, {}, {}, () => void draws.closed++) });
+			return new Promise(() => {});
+		};
+		return { opened, draws, tui };
+	}
+	const sealTodo = (status: string) => [{ name: "Plan", tasks: [{ content: "[seal] Plan", status }] }];
+	// The alarm command appends "<level>|<message>" to a file; the spawn is asynchronous, so poll.
+	const recorder = (dir: string) => {
+		const out = join(dir, "alarm.log");
+		const script = join(dir, "rec.ts");
+		writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_MSG}\\n`);\n');
+		process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
+		return async (want: number) => {
+			for (let i = 0; i < 100; i++) {
+				const lines = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
+				if (lines.length >= want) return lines;
+				await Bun.sleep(50);
+			}
+			return existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
+		};
+	};
+	afterEach(() => delete process.env.STRATEGIUM_ALARM);
+	// A run with the UI on, started like a session does.
+	async function running(hasUI = true) {
+		const s = setup();
+		const ui = uiCtx(s, hasUI);
+		await s.call({ action: "begin", key: "K-1" });
+		await s.start();
+		return { s, ui };
+	}
+	const shutdown = (s: ReturnType<typeof setup>) => s.handlers.session_shutdown.forEach(h => h({}, s.ctx));
+	const plain = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, "");
+	// What the overlay shows now, without colours; it is closed again so no interval stays alive.
+	async function peek(s: ReturnType<typeof setup>, ui: ReturnType<typeof uiCtx>) {
+		await s.sub("cockpit");
+		const comp = ui.opened.at(-1)!.component;
+		const text = plain(comp.render(100).join("\n"));
+		comp.handleInput!("q");
+		return text;
+	}
+	// Only the chronicle part of the overlay: the squad and strategos boxes above it repeat words like "returned".
+	const chron = async (s: ReturnType<typeof setup>, ui: ReturnType<typeof uiCtx>) => {
+		const t = await peek(s, ui);
+		return t.slice(t.indexOf("CHRONICLE"));
+	};
+
+	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
+		const s = setup();
+		await s.sub("config", "cockpit on");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off; the other settings live in ~/.omp/agent/.env");
+		await s.sub("config");
+		expect(s.notes.at(-1)).not.toContain("cockpit:");
+	});
+
+	describe("the cockpit with a run", () => {
+		test("an untimed run shows its clock right after start, not on the next tick", async () => {
+			const { s, ui } = await running();
+			expect(await peek(s, ui)).toContain("⧗ 0 min");
+		});
+
+		test("a booking added to an untimed run shows its bar", async () => {
+			const { s, ui } = await running();
+			await s.sub("pause");
+			await s.sub("resume", "240");
+			expect(await peek(s, ui)).toContain("/240 min");
+		});
+
+		test("a sub agent draws nothing", async () => {
+			const s = setup();
+			const ui = uiCtx(s);
+			await s.call({ action: "begin", key: "K-1" });
+			s.ctx.agent = { kind: "sub" };
+			await s.start();
+			s.todo(sealTodo("in_progress"));
+			await s.sub("cockpit");
+			expect(ui.opened).toEqual([]);
+		});
+	});
+
+	describe("the overlay", () => {
+		test("with no run it warns", async () => {
+			const s = setup();
+			const ui = uiCtx(s);
+			await s.sub("cockpit");
+			expect(s.notes).toContain("Strategium: no active run in this session");
+			expect(ui.opened).toEqual([]);
+		});
+
+		test("without a UI it warns", async () => {
+			const { s, ui } = await running(false);
+			await s.sub("cockpit");
+			expect(s.notes).toContain("Strategium: the cockpit needs the interactive UI");
+			expect(ui.opened).toEqual([]);
+		});
+
+		test("the command opens it as an overlay, a second open does nothing, Esc closes it and it opens again", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			expect(ui.opened.length).toBe(1);
+			expect(ui.opened[0].options).toEqual({
+				overlay: true,
+				overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true, mouseTracking: false },
+			});
+			const lines = ui.opened[0].component.render(100).join("\n");
+			expect(lines).toContain("awaiting orders");
+			expect(lines).toContain("CHRONICLE");
+			await s.sub("cockpit");
+			expect(ui.opened.length).toBe(1);
+			ui.opened[0].component.handleInput!("a");
+			expect(ui.draws.closed).toBe(0);
+			ui.opened[0].component.handleInput!("\x1b");
+			expect(ui.draws.closed).toBe(1);
+			await s.sub("cockpit");
+			expect(ui.opened.length).toBe(2);
+			ui.opened[1].component.handleInput!("q");
+		});
+
+		test("it is as tall as the terminal and follows a resize", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			expect(ui.opened[0].component.render(100)).toHaveLength(40);
+			ui.tui.terminal.rows = 20;
+			expect(ui.opened[0].component.render(100)).toHaveLength(20);
+			ui.opened[0].component.handleInput!("q");
+		});
+
+		test("alt+c is registered and opens it", async () => {
+			const { s, ui } = await running();
+			expect(s.shortcuts["alt+c"].description).toBe("Open the Strategium cockpit");
+			await s.shortcuts["alt+c"].handler(s.ctx);
+			expect(ui.opened.length).toBe(1);
+			ui.opened[0].component.handleInput!("q");
+		});
+
+		test("closing the session closes it", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			shutdown(s);
+			expect(ui.draws.closed).toBe(1);
+		});
+
+		test("the end of the run closes an open overlay", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			await s.sub("end");
+			expect(ui.draws.closed).toBe(1);
+		});
+
+		describe("a decision closes the cockpit before its dialog opens", () => {
+			const call = (s: ReturnType<typeof setup>, event: string, e: object, ctx: unknown = s.ctx) => s.handlers[event].forEach(h => h(e, ctx));
+			const open = async () => {
+				process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+				const r = await running();
+				await r.s.sub("cockpit");
+				expect(r.ui.opened.length).toBe(1);
+				return r;
+			};
+
+			// The host owns the interval, so the test takes its place and counts what it clears.
+			test.each(["ask", "_ask"])("a main-session %s call closes it and it opens again", async name => {
+				const cleared: unknown[] = [];
+				const real = { set: globalThis.setInterval, clear: globalThis.clearInterval };
+				globalThis.setInterval = (() => 7) as never;
+				globalThis.clearInterval = ((id: unknown) => void cleared.push(id)) as never;
+				try {
+					const { s, ui } = await open();
+					const before = ui.draws.n;
+					call(s, "tool_call", { toolName: name, input: {} });
+					expect(ui.draws.closed).toBe(1);
+					expect(cleared).toEqual([7]);
+					expect(ui.draws.n).toBe(before);
+					await s.sub("cockpit");
+					expect(ui.opened.length).toBe(2);
+					ui.opened[1].component.handleInput!("q");
+				} finally {
+					globalThis.setInterval = real.set;
+					globalThis.clearInterval = real.clear;
+				}
+			});
+
+			test("the ask call still raises the attention alarm", async () => {
+				const { s, ui } = await running();
+				const lines = recorder(s.dir);
+				await s.sub("cockpit");
+				call(s, "tool_call", { toolName: "ask", input: {} });
+				expect(ui.draws.closed).toBe(1);
+				expect((await lines(1))[0]).toContain("attention|");
+			});
+
+			test.each(["tool_approval_requested", "plan_review_requested"])("%s closes it", async event => {
+				const { s, ui } = await open();
+				call(s, event, { sessionId: "sess-0001" });
+				expect(ui.draws.closed).toBe(1);
+				await s.sub("cockpit");
+				expect(ui.opened.length).toBe(2);
+				ui.opened[1].component.handleInput!("q");
+			});
+
+			test("another tool call leaves it open", async () => {
+				const { s, ui } = await open();
+				call(s, "tool_call", { toolName: "read", input: {} });
+				expect(ui.draws.closed).toBe(0);
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test.each(["tool_call", "tool_approval_requested", "plan_review_requested"])("a sub agent's %s leaves it open", async event => {
+				const { s, ui } = await open();
+				call(s, event, { toolName: "ask", input: {}, sessionId: "sess-0001" }, { ...(s.ctx as object), agent: { kind: "sub" } });
+				expect(ui.draws.closed).toBe(0);
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test("with no cockpit open the three events change nothing and do not throw", async () => {
+				process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+				const { s, ui } = await running();
+				expect(() => {
+					call(s, "tool_call", { toolName: "ask", input: {} });
+					call(s, "tool_approval_requested", {});
+					call(s, "plan_review_requested", { sessionId: "sess-0001" });
+				}).not.toThrow();
+				expect(ui.draws.closed).toBe(0);
+			});
+		});
+
+		describe("the header says what the agent is doing", () => {
+			const host = (s: ReturnType<typeof setup>) => (s.ctx as unknown as { host: { idle: boolean; pending: boolean } }).host;
+			const view = (ui: ReturnType<typeof uiCtx>) => plain(ui.opened.at(-1)!.component.render(100).join("\n"));
+			const emit = (s: ReturnType<typeof setup>, event: string, ctx: unknown = s.ctx) => s.handlers[event].forEach(h => h({}, ctx));
+
+			test("opened while the session is idle it awaits orders; opened mid-turn the agent is at work", async () => {
+				const { s, ui } = await running();
+				host(s).idle = true;
+				expect(await peek(s, ui)).toContain("○ AWAITING YOUR ORDERS");
+				host(s).idle = false;
+				expect(await peek(s, ui)).toContain("AGENT AT WORK");
+			});
+
+			test("a queued message keeps the agent at work although the session is idle", async () => {
+				const { s, ui } = await running();
+				Object.assign(host(s), { idle: true, pending: true });
+				expect(await peek(s, ui)).toContain("AGENT AT WORK");
+			});
+
+			test("agent_start and agent_end change an open cockpit and repaint it without ticking", async () => {
+				const { s, ui } = await running();
+				host(s).idle = true;
+				await s.sub("cockpit");
+				expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+				let n = ui.draws.n;
+				host(s).idle = false;
+				emit(s, "agent_start");
+				expect(view(ui)).toContain("AGENT AT WORK");
+				expect(ui.draws.n).toBeGreaterThan(n); // agent_start also refreshes the footer, which redraws the overlay
+				n = ui.draws.n;
+				Object.assign(host(s), { idle: true });
+				emit(s, "agent_end");
+				expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+				expect(ui.draws.n).toBe(n + 1);
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test("an agent_end with messages queued keeps it at work", async () => {
+				const { s, ui } = await running();
+				await s.sub("cockpit");
+				Object.assign(host(s), { idle: true, pending: true });
+				emit(s, "agent_end");
+				expect(view(ui)).toContain("AGENT AT WORK");
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test("a sub agent's agent_start and agent_end are ignored", async () => {
+				const { s, ui } = await running();
+				host(s).idle = true;
+				await s.sub("cockpit");
+				const n = ui.draws.n;
+				emit(s, "agent_start", { ...(s.ctx as object), agent: { kind: "sub" } });
+				emit(s, "agent_end", { ...(s.ctx as object), agent: { kind: "sub" } });
+				expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+				expect(ui.draws.n).toBe(n);
+				ui.opened[0].component.handleInput!("q");
+			});
+
+			test("the 500 ms redraw catches an idle that agent_end saw too early", async () => {
+				const timers: { fn: () => void; ms: number }[] = [];
+				const real = globalThis.setInterval;
+				const { s, ui } = await running();
+				globalThis.setInterval = ((fn: () => void, ms: number) => timers.push({ fn, ms })) as never;
+				try {
+					await s.sub("cockpit");
+					emit(s, "agent_end"); // still streaming for the host
+					expect(view(ui)).toContain("AGENT AT WORK");
+					host(s).idle = true;
+					timers[0].fn();
+					expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+					ui.opened[0].component.handleInput!("q");
+				} finally {
+					globalThis.setInterval = real;
+				}
+			});
+
+			test("a plan review still closes the cockpit, so the status never has to show it", async () => {
+				const { s, ui } = await running();
+				await s.sub("cockpit");
+				s.handlers.plan_review_requested.forEach(h => h({ sessionId: "sess-0001" }, s.ctx));
+				expect(ui.draws.closed).toBe(1);
+			});
+		});
+
+		// The host owns the interval, so the test takes its place: the callback is driven by hand.
+		test("every 500 ms the mark flips and the overlay repaints, until it closes", async () => {
+			const timers: { fn: () => void; ms: number }[] = [];
+			const cleared: unknown[] = [];
+			const real = { set: globalThis.setInterval, clear: globalThis.clearInterval };
+			const { s, ui } = await running();
+			s.todo([{ name: "Plan", tasks: [{ content: "Draft", status: "in_progress" }] }]);
+			globalThis.setInterval = ((fn: () => void, ms: number) => timers.push({ fn, ms })) as never;
+			globalThis.clearInterval = ((id: unknown) => void cleared.push(id)) as never;
+			try {
+				await s.sub("cockpit");
+				expect(timers.map(t => t.ms)).toEqual([500]);
+				const comp = ui.opened[0].component;
+				const text = () => plain(comp.render(100).join("\n"));
+				expect(text()).toContain("▶");
+				expect(text()).not.toContain("▷");
+				const before = ui.draws.n;
+				timers[0].fn();
+				expect(ui.draws.n).toBe(before + 1);
+				expect(text()).toContain("▷");
+				expect(text()).not.toContain("▶");
+				timers[0].fn();
+				expect(text()).toContain("▶");
+				expect(cleared).toEqual([]);
+				comp.handleInput!("q");
+				expect(cleared).toEqual([1]);
+			} finally {
+				globalThis.setInterval = real.set;
+				globalThis.clearInterval = real.clear;
+			}
+		});
+
+		test("a rejected overlay leaves the cockpit closed, so it opens again", async () => {
+			const { s } = await running();
+			let calls = 0;
+			(s.ctx.ui as Record<string, unknown>).custom = () => {
+				calls++;
+				return calls === 1 ? Promise.reject(new Error("boom")) : new Promise(() => {});
+			};
+			await s.sub("cockpit");
+			await Bun.sleep(0);
+			await s.sub("cockpit");
+			expect(calls).toBe(2);
+		});
+
+		test("a custom() that resolves without building the overlay (RPC) leaves it closed, so it opens again", async () => {
+			const { s } = await running();
+			let calls = 0;
+			(s.ctx.ui as Record<string, unknown>).custom = () => {
+				calls++;
+				return Promise.resolve(undefined);
+			};
+			await s.sub("cockpit");
+			await Bun.sleep(0);
+			await s.sub("cockpit");
+			expect(calls).toBe(2);
+		});
+
+		test("an overlay that rejects after it was built is closed cleanly", async () => {
+			const { s, ui } = await running();
+			const built: Comp[] = [];
+			(s.ctx.ui as Record<string, unknown>).custom = (factory: (t: Tui, th: unknown, k: unknown, done: () => void) => Comp) => {
+				built.push(factory(ui.tui, {}, {}, () => void ui.draws.closed++));
+				return built.length === 1 ? Promise.reject(new Error("boom")) : new Promise(() => {});
+			};
+			await s.sub("cockpit");
+			await Bun.sleep(0);
+			expect(ui.draws.closed).toBe(1);
+			await s.sub("cockpit");
+			expect(built.length).toBe(2);
+			built[1].handleInput!("q");
+			expect(ui.draws.closed).toBe(2);
+		});
+
+		test("a todo and a task event repaint and refresh an open overlay", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			const comp = ui.opened[0].component;
+			let n = ui.draws.n;
+			s.todo(sealTodo("in_progress"));
+			expect(ui.draws.n).toBeGreaterThan(n);
+			expect(plain(comp.render(100).join("\n"))).toContain("seal Plan");
+			n = ui.draws.n;
+			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "scout", name: "S", task: "look" }] }, details: { progress: [{ index: 0, id: "S", status: "running" }] }, isError: false }, s.ctx));
+			expect(ui.draws.n).toBeGreaterThan(n);
+			expect(plain(comp.render(100).join("\n"))).toContain("SCOUT");
+			comp.handleInput!("q");
+		});
+	});
+
+	describe("seals", () => {
+		test("a granted seal sounds the done fanfare once and the todo is kept on the run", async () => {
+			const { s } = await running();
+			const lines = recorder(s.dir);
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("completed"));
+			expect(await lines(1)).toEqual(["done|K-1: seal Plan granted"]);
+			s.todo(sealTodo("completed"));
+			await Bun.sleep(300);
+			expect(await lines(0)).toEqual(["done|K-1: seal Plan granted"]);
+			expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")).phases).toEqual(sealTodo("completed"));
+		});
+
+		// A second seal, granted the normal way, proves the recorder is live: only its line may be in the file.
+		const other = (status: string) => [{ name: "Other", tasks: [{ content: "[seal] Other", status }] }];
+		async function control(s: ReturnType<typeof setup>, lines: (want: number) => Promise<string[]>) {
+			s.todo(other("in_progress"));
+			s.todo(other("completed"));
+			expect(await lines(1)).toEqual(["done|K-1: seal Other granted"]);
+			await Bun.sleep(300);
+			expect(await lines(0)).toEqual(["done|K-1: seal Other granted"]);
+		}
+
+		test("a seal first seen granted does not sound", async () => {
+			const { s } = await running();
+			const lines = recorder(s.dir);
+			s.todo(sealTodo("completed"));
+			await control(s, lines);
+		});
+
+		test("with notifications off it stays silent", async () => {
+			const { s } = await running();
+			const lines = recorder(s.dir);
+			await s.sub("config", "notify off");
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("completed"));
+			await s.sub("config", "notify on");
+			await control(s, lines);
+		});
+
+		test("a failing alarm is reported", async () => {
+			const { s } = await running();
+			s.todo(sealTodo("in_progress"));
+			process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+			s.todo(sealTodo("completed"));
+			expect(s.notes.some(n => n.includes("the alarm failed"))).toBe(true);
+		});
+
+		test("without a UI a granted seal still sounds and nothing is drawn", async () => {
+			const { s } = await running(false);
+			const lines = recorder(s.dir);
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("completed"));
+			expect(await lines(1)).toEqual(["done|K-1: seal Plan granted"]);
+		});
+
+		test("a granted seal reaches the overlay", async () => {
+			const { s, ui } = await running();
+			recorder(s.dir);
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("completed"));
+			expect(await peek(s, ui)).toContain("granted");
+		});
+	});
+
+	describe("the chronicle", () => {
+		const brother = (name: string, agent = "battle-brother") => ({ agent, name, isolated: true, task: "build squad a." });
+		const result = (s: ReturnType<typeof setup>, agent: string, status: string) =>
+			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A", agent)] }, details: { progress: [{ index: 0, id: "A", status }] }, isError: false }, s.ctx));
+		const jobEnd = (s: ReturnType<typeof setup>, status: string) =>
+			s.handlers.context.forEach(h => h({ type: "context", messages: [{ role: "custom", details: { jobs: [{ jobId: "j", type: "task", status, label: "A" }] } }] }, s.ctx));
+		async function squad() {
+			const r = await running();
+			await r.s.call({ action: "slices", slices: [{ id: "a", parallel: false, files: ["a.ts"] }] });
+			r.s.todo([{ name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
+			return r;
+		}
+
+		test("a task agent deployed in Auspex shows in SCOUTS, running then returned", async () => {
+			const { s, ui } = await running();
+			s.todo([{ name: "Muster", tasks: [{ content: "[captain] Plan", status: "completed" }] }, { name: "Auspex", tasks: [{ content: "[scout] Map the code", status: "in_progress" }] }]);
+			result(s, "scout", "running");
+			const overlay = await peek(s, ui);
+			expect(overlay).toContain("SCOUTS");
+			expect(overlay).toMatch(/│ ▶ A +│/);
+			jobEnd(s, "completed");
+			expect(await peek(s, ui)).toMatch(/│ ✓ A +│/);
+		});
+
+		test("a deployed builder is logged, and its failure too, newest first", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "running");
+			jobEnd(s, "failed");
+			const entries = (await chron(s, ui)).split("\n").filter(l => l.includes("SQUAD a"));
+			expect(entries).toHaveLength(2);
+			expect(entries[0]).toContain("✗ failed");
+			expect(entries[1]).toContain("† battle-brother deployed");
+			expect(await peek(s, ui)).toMatch(/✗ † squad a failed/);
+		});
+
+		test("a builder that returns is logged once", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "running");
+			jobEnd(s, "completed");
+			jobEnd(s, "completed");
+			expect((await chron(s, ui)).match(/returned/g)?.length).toBe(1);
+		});
+
+		test("the same running agent seen twice is deployed once", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "running");
+			result(s, "battle-brother", "running");
+			expect((await chron(s, ui)).match(/deployed/g)?.length).toBe(1);
+		});
+
+		test("a pending agent is deployed", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "pending");
+			expect(await chron(s, ui)).toContain("deployed");
+		});
+
+		test("a completed task result logs the return and an unknown id logs nothing", async () => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "completed");
+			expect(await chron(s, ui)).not.toContain("returned");
+			result(s, "battle-brother", "running");
+			result(s, "battle-brother", "completed");
+			const entries = (await chron(s, ui)).split("\n").filter(l => l.includes("SQUAD a"));
+			expect(entries).toHaveLength(2);
+			expect(entries[0]).toContain("✓ returned");
+			result(s, "battle-brother", "completed");
+			expect((await chron(s, ui)).match(/returned/g)?.length).toBe(1);
+			expect(await peek(s, ui)).not.toMatch(/✗ † squad a failed/);
+		});
+
+		test.each(["failed", "aborted"])("a %s task result logs the failure and, once the agent is gone, marks the squad in the overlay", async status => {
+			const { s, ui } = await squad();
+			result(s, "battle-brother", "running");
+			result(s, "battle-brother", status);
+			const entries = (await chron(s, ui)).split("\n").filter(l => l.includes("SQUAD a"));
+			expect(entries).toHaveLength(2);
+			expect(entries[0]).toContain("✗ failed");
+			// The host's job end removes the agent from the run; the next redraw shows the note.
+			jobEnd(s, status);
+			await s.call({ action: "status" });
+			expect(await peek(s, ui)).toMatch(/✗ † squad a failed/);
+		});
+
+		test("a veteran for a squad is an escalation and the overlay box says so", async () => {
+			const { s, ui } = await squad();
+			result(s, "veteran", "running");
+			expect(await chron(s, ui)).toContain("escalated to VETERAN");
+			expect(await peek(s, ui)).toContain("‡ squad a");
+		});
+
+		test("a station change and a seal waiting are logged, the seal after the station", async () => {
+			const { s, ui } = await running();
+			s.todo([{ name: "Plan", tasks: [{ content: "[seal] Plan", status: "in_progress" }] }]);
+			const text = await chron(s, ui);
+			expect(text).toContain("station Plan");
+			expect(text).toContain("seal Plan awaits the Chapter Master");
+			expect(text.indexOf("awaits the Chapter Master")).toBeLessThan(text.indexOf("station Plan"));
+		});
+
+		test("the same seal waiting sent twice is logged once", async () => {
+			const { s, ui } = await running();
+			s.todo(sealTodo("in_progress"));
+			s.todo(sealTodo("in_progress"));
+			const text = await chron(s, ui);
+			expect(text.match(/awaits the Chapter Master/g)?.length).toBe(1);
+			expect(text.match(/station Plan/g)?.length).toBe(1);
+		});
+
+		test("closing the session forgets the chronicle", async () => {
+			const { s, ui } = await running();
+			s.todo(sealTodo("in_progress"));
+			expect(await chron(s, ui)).toContain("station Plan");
+			shutdown(s);
+			await s.start();
+			const text = await peek(s, ui);
+			expect(text).toContain("K-1");
+			expect(text).not.toContain("station Plan");
+		});
+
+		test("a run with a new key starts a clean chronicle", async () => {
+			const { s, ui } = await running();
+			s.todo(sealTodo("in_progress"));
+			expect(await chron(s, ui)).toContain("station Plan");
+			await s.sub("end");
+			await s.call({ action: "begin", key: "K-2" });
+			await s.sub("status");
+			const text = await peek(s, ui);
+			expect(text).toContain("K-2");
+			expect(text).not.toContain("station Plan");
+		});
+	});
+
+	describe("the booking clock", () => {
+		// 3 min booked from 09:00; the clock reads 09:02, so 67 % and the 50 % alert.
+		async function timed() {
+			const s = setup();
+			const ui = uiCtx(s);
+			setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+			await s.call({ action: "begin", key: "K-1", booked: 3 });
+			setSystemTime(new Date(2026, 10, 16, 9, 2, 0));
+			await s.start();
+			return { s, ui };
+		}
+
+		test("a timed run shows elapsed over booked, the bar and the percentage in the overlay", async () => {
+			const { s, ui } = await timed();
+			const overlay = await peek(s, ui);
+			expect(overlay).toContain("⧗ 2/3 min");
+			expect(overlay).toContain("▰");
+			expect(overlay).toContain("▱");
+			expect(overlay).toContain("67%");
+		});
+
+		test("a booking alert is written to the chronicle, once per threshold", async () => {
+			const { s, ui } = await timed();
+			const entries = async () => (await chron(s, ui)).split("\n").filter(l => l.includes("of the booking"));
+			expect(await entries()).toHaveLength(1);
+			expect((await entries())[0]).toContain("TIMER");
+			expect((await entries())[0]).toContain("⧗ 50% of the booking");
+			await s.call({ action: "status" });
+			expect(await entries()).toHaveLength(1);
+			setSystemTime(new Date(2026, 10, 16, 9, 3, 0));
+			await s.call({ action: "status" });
+			expect(await entries()).toHaveLength(2);
+			expect((await entries())[0]).toContain("⧗ 100% of the booking");
+		});
+	});
+
+	describe("agents spawned by eval", () => {
+		const spawn = (s: ReturnType<typeof setup>, e: unknown) => s.handlers.before_subagent_spawn.forEach(h => h(e, s.ctx));
+		const deployed = async (s: ReturnType<typeof setup>, ui: ReturnType<typeof uiCtx>) => (await chron(s, ui)).split("\n").filter(l => l.includes("deployed"));
+
+		test("an eval spawn of a roster agent logs its role", async () => {
+			const { s, ui } = await running();
+			spawn(s, { invocationKind: "eval", agent: "scout" });
+			expect(await deployed(s, ui)).toHaveLength(1);
+			expect((await deployed(s, ui))[0]).toContain("SCOUT");
+		});
+
+		test("a spawn that is not from eval logs nothing", async () => {
+			const { s, ui } = await running();
+			spawn(s, { invocationKind: "task", agent: "scout" });
+			spawn(s, { agent: "scout" });
+			expect(await deployed(s, ui)).toEqual([]);
+		});
+
+		test("an agent outside the roster logs nothing", async () => {
+			const { s, ui } = await running();
+			spawn(s, { invocationKind: "eval", agent: "stranger" });
+			expect(await deployed(s, ui)).toEqual([]);
+		});
+
+		test("an eval-spawned apothecary in Skirmish shows as a running line in APOTHECARIES", async () => {
+			const { s, ui } = await running();
+			s.todo([{ name: "Muster", tasks: [{ content: "[captain] Plan", status: "completed" }] }, { name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
+			spawn(s, { invocationKind: "eval", agent: "apothecary" });
+			const overlay = await peek(s, ui);
+			expect(overlay).toContain("APOTHECARIES");
+			expect(overlay).toMatch(/│ ▶ eval-apothecary-1 +│/);
+		});
 	});
 });
