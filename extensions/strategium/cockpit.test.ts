@@ -640,3 +640,56 @@ describe("glyphs", () => {
 		expect(t).not.toMatch(/[☩†‡◷]/);
 	});
 });
+
+describe("box line cap", () => {
+	const tasks = (spec: [string, string, number][]): Phase[] => [
+		{ name: "Auspex", tasks: spec.flatMap(([prefix, status, n]) => Array.from({ length: n }, (_, i) => ({ content: `[scout] ${prefix}${i + 1}`, status }))) },
+	];
+	// 4 active, 3 failed, 3 idle, 2 done: 12 lines in one box
+	const twelve = () => tasks([["d", "completed", 2], ["i", "pending", 3], ["a", "in_progress", 4], ["f", "failed", 3]]);
+	const draw = (p: Phase[], width = 100, height?: number, chronicle: Entry[] = []) => renderCockpit(cockpitView(input({ phases: p, chronicle })), width, 0, TRUE, height).map(plain);
+
+	test("box lines run active, failed, idle, then done", () => {
+		const out = draw(tasks([["d", "completed", 1], ["i", "pending", 1], ["f", "failed", 1], ["a", "in_progress", 1]])).join("\n");
+		const at = (s: string) => out.indexOf(s);
+		expect(at("▶ a1")).toBeGreaterThan(-1);
+		expect(at("▶ a1")).toBeLessThan(at("✗ f1"));
+		expect(at("✗ f1")).toBeLessThan(at("○ i1"));
+		expect(at("○ i1")).toBeLessThan(at("✓ d1"));
+	});
+
+	test("a box shows at most 8 lines, the last one +N more naming what it hides", () => {
+		const out = draw(twelve());
+		const rows = out.slice(out.findIndex(l => l.includes("┌")) + 1, out.findIndex(l => l.includes("└")));
+		expect(rows).toHaveLength(8);
+		const text = rows.join("\n");
+		for (const id of ["a1", "a2", "a3", "a4", "f1", "f2", "f3"]) expect(text).toContain(id);
+		expect(rows[7]).toContain("+5 more (2 done, 3 idle)");
+		expect(text).not.toContain("✓ d");
+	});
+
+	test.each([50, 100])("active and failed lines are never hidden while a done line shows at width %i", width => {
+		const p = tasks([["d", "completed", 4], ["i", "pending", 3], ["a", "in_progress", 4], ["f", "failed", 3]]);
+		for (let h = 8; h <= 45; h++) {
+			const text = draw(p, width, h).join("\n");
+			if (/✓ d/.test(text)) for (const id of ["a1", "a2", "a3", "a4", "f1", "f2", "f3"]) expect(text).toContain(id);
+		}
+	});
+
+	test("a station with 20 tasks at 140x45 still shows at least 5 chronicle rows", () => {
+		const states = ["in_progress", "failed", "pending", "completed"];
+		const p: Phase[] = [{ name: "Skirmish", tasks: Array.from({ length: 20 }, (_, i) => ({ content: `[battle-brother] Build squad s${i + 1}`, status: states[i % 4] })) }];
+		const slices = Array.from({ length: 20 }, (_, i) => ({ id: `s${i + 1}` }));
+		const out = renderCockpit(cockpitView(input({ phases: p, slices, chronicle: many(10) })), 140, 0, TRUE, 45);
+		expect(out).toHaveLength(45);
+		expect(eventLines(out).length).toBeGreaterThanOrEqual(5);
+	});
+
+	test.each([50, 100])("a short window gives the boxes fewer lines so the chronicle keeps 5 rows at width %i", width => {
+		const p = tasks([["t", "pending", 20]]);
+		const out = draw(p, width, 18, many(10));
+		expect(out).toHaveLength(18);
+		expect(eventLines(out)).toHaveLength(5);
+		expect(out.join("\n")).toContain("+15 more");
+	});
+});
