@@ -24,7 +24,7 @@ import { childEnv } from "./env";
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
 // Several sessions can run different tickets at the same time; the day file holds them all.
 // Ownership of a ticket is an atomic claim file (see claim() in timer.ts), held while the session lives.
-// `untimed`: the run has no booking. Its time is counted, but there are no alerts, no stand down and no new shift.
+// `untimed`: the run has no booking until a `begin` or `start` with booked. Its time is counted, but there are no alerts, no stand down and no new shift.
 // `where`: the station the run is at, read from the todo (see whereFrom), so the footer shows it after a restart too.
 type Where = { station: string; back?: true; seal?: string; task?: string };
 type Slice = { id: string; parallel: boolean; files: string[] };
@@ -85,6 +85,25 @@ export function whereFrom(phases: Phase[]): Where | undefined {
 	const chars = [...text];
 	const short = chars.length > 32 ? `${chars.slice(0, 31).join("")}…` : text;
 	return { station: phases[i].name, ...(back ? { back: true as const } : {}), ...(seal ? { seal } : {}), ...(short ? { task: short } : {}) };
+}
+
+/**
+ * The run's KEY from the objective as /strategium parsed it: a key as given, a `@file`'s base name, or the first words of "free text".
+ * A key as given passes through verbatim (any text without spaces; timer.lockPath sanitises it for the lock file). A `@file` or "free text" gives
+ * `[a-z0-9]+(-[a-z0-9]+)*`, at most 32 characters; `objective` when nothing usable is left.
+ */
+export function keyOf(objective: string): string {
+	const file = objective.startsWith("@");
+	if (!file && !objective.startsWith('"')) return objective;
+	const text = file ? (objective.slice(1).split(/[\\/]/).pop() ?? "").replace(/\.[^.]*$/, "") : objective;
+	const words = text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+	let slug = "";
+	for (const w of words.slice(0, 4)) {
+		const next = slug ? `${slug}-${w}` : w;
+		if (next.length > 32) break;
+		slug = next;
+	}
+	return slug || words[0]?.slice(0, 32) || "objective";
 }
 
 // Read on every use: the environment can change it, and a test points it somewhere of its own.
@@ -188,8 +207,10 @@ function startKey(key: string, booked?: number, prior?: number, untimed = false)
 	// ponytail: booked fallback reads only today's file; a run spanning midnight needs `start` with booked.
 	const bk = booked ?? bookedMin(evs, key);
 	if (openKeys(evs).includes(key)) {
-		// Already running: the minutes already worked are kept as an adjustment, not dropped.
-		if (prior) append(file, { ts: nowIso(), event: "adjust", key, prior });
+		// Already running: a new booking is a start event (every span reader ignores a start on an open key, so no time is lost);
+		// without one, the minutes already worked are kept as an adjustment, not dropped.
+		if (booked !== undefined && booked !== bookedMin(evs, key)) append(file, { ts: nowIso(), event: "start", key, booked, ...(prior ? { prior } : {}) });
+		else if (prior) append(file, { ts: nowIso(), event: "adjust", key, prior });
 		return;
 	}
 	if (bk === undefined && !untimed) throw new Error(`booked minutes unknown for ${key}; pass booked`);
@@ -223,6 +244,13 @@ function shift(run: Run, booked?: number): string {
 	if (run.untimed && booked === undefined) {
 		startKey(run.key, undefined, undefined, true);
 		return `resumed ${run.key}`;
+	}
+	if (run.untimed && booked !== undefined) {
+		// spendIdle may have rewritten the run file already, so clear `untimed` from its current content.
+		const { untimed: _u, ...timed } = readRun(run.sid) ?? run;
+		writeRun(timed);
+		startKey(run.key, booked);
+		return `timed ${run.key}: booked ${booked} min today`;
 	}
 	if (booked === undefined && today_ === undefined)
 		throw new NewShift(`new day for ${run.key}: today's booked minutes are needed for the new shift`);
@@ -696,6 +724,22 @@ export default function (pi: ExtensionAPI) {
 		if (names?.length) await pi.setActiveTools([...new Set([...pi.getActiveTools(), ...names])]);
 	}
 
+	/** Begin `key` for the session: the tool's `begin` and the /strategium command both come here, so the edit guard is armed the same way. */
+	async function beginRun(sid: string, key: string, theatre: string, booked?: number, spent?: number, takeover?: string, archmagos?: boolean): Promise<string> {
+		begin(sid, key, theatre, booked, spent, takeover);
+		// A block start always restarts the idle count.
+		idleSince = undefined;
+		const run = ownRun(sid)!;
+		const hid = await hideCaptainTools();
+		writeRun({
+			...run,
+			hidden: [...new Set([...(run.hidden ?? []), ...hid])],
+			// Omitted keeps what a same-key begin stored; false clears it.
+			...(archmagos !== undefined ? { archmagos: archmagos || undefined } : {}),
+		});
+		return statusLines();
+	}
+
 	/** End the session's run. When it was its own, the tools come back and the Strategium theme plays; a takeover end does neither. */
 	async function finish(sid: string, ctx: SessionCtx, key?: string, takeover?: string): Promise<string> {
 		const mine = ownRun(sid);
@@ -799,7 +843,7 @@ export default function (pi: ExtensionAPI) {
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. slices (slices: [{id, parallel, files}]: the plan's squads; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos setting. redraft (no params) allows one more archmagos once per run, only after the run's first archmagos and an area's part was redrafted.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. slices (slices: [{id, parallel, files}]: the plan's squads; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos setting. redraft (no params) allows one more archmagos once per run, only after the run's first archmagos and an area's part was redrafted.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
@@ -810,18 +854,7 @@ export default function (pi: ExtensionAPI) {
 				switch (params.action) {
 					case "begin": {
 						if (!params.key) throw new Error("begin needs key");
-						begin(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover);
-						// A block start always restarts the idle count.
-						idleSince = undefined;
-						const run = ownRun(sid)!;
-						const hid = await hideCaptainTools();
-						writeRun({
-							...run,
-							hidden: [...new Set([...(run.hidden ?? []), ...hid])],
-							// Omitted keeps what a same-key begin stored; false clears it.
-							...(params.archmagos !== undefined ? { archmagos: params.archmagos || undefined } : {}),
-						});
-						return text(statusLines());
+						return text(await beginRun(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover, params.archmagos));
 					}
 					case "repo": {
 						const run = ownRun(sid);
@@ -907,6 +940,7 @@ export default function (pi: ExtensionAPI) {
 			const raw = (args ?? "").trim();
 			// The objective: "free text" in quotes, @path to a spec or an approved plan, or a key (a ticket or a short name).
 			// A theatre name may follow. Free text needs the quotes: unquoted words would read as a key and a theatre.
+			// The command begins the run itself (the clock counts from here) and hands the Captain the objective.
 			const parsed = raw.match(/^"([^"]+)"(?:\s+(\S+))?$/) ?? raw.match(/^(\S+)(?:\s+(\S+))?$/);
 			if (!parsed) {
 				ctx.ui.notify(
@@ -917,10 +951,25 @@ export default function (pi: ExtensionAPI) {
 			}
 			const objective = raw.startsWith('"') ? `"${parsed[1]}"` : parsed[1];
 			const theatre = (parsed[2] ?? process.env.STRATEGIUM_THEATRE ?? "none").replace(/^strategium-/, "");
+			const key = keyOf(objective);
+			const sid = sidOf(ctx);
+			// Begin the run now, untimed, so the clock counts from the command; a key this session already holds is left as it is.
+			let note = `Strategium run ${key} has begun, untimed: first todo init the skeleton todo from the skill.`;
+			if (ownRun(sid)?.key === key) note = `Strategium run ${key} is already this session's run.`;
+			else {
+				try {
+					await beginRun(sid, key, theatre);
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					ctx.ui.notify(`Strategium: ${message}`, "warning");
+					note = `Strategium could not begin run ${key}: ${message}`;
+				}
+			}
+			refreshFooter?.();
 			pi.sendUserMessage(
-				theatre === "none"
+				`${theatre === "none"
 					? `Read skill://strategium and run it for the objective ${objective} with no theatre.`
-					: `Read skill://strategium and run it for the objective ${objective} with theatre skill://strategium-${theatre}.`,
+					: `Read skill://strategium and run it for the objective ${objective} with theatre skill://strategium-${theatre}.`} ${note}`,
 			);
 		},
 	});
