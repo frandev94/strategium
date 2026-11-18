@@ -12,9 +12,9 @@ description: Use when a long task, build, run or timer finishes or needs the use
 | `50` | calm: the opening boom and its ring (3 s) |
 | `80` | urgent: the full groove, hard hits (3 s) |
 | `100` | time is up: where the countdown comments land (3 s) |
-| `done` | task complete: a run of hits that ends on a rest (3 s) |
-| `attention` | the user is needed: the end of the break and the drop (3 s) |
-| `idle` | stand-by: the break before the drop, without the drop (2.4 s); the run's clock paused after idle minutes |
+| `done` | task complete: the chant at full, cut dead (2.7 s) |
+| `attention` | the user is needed: the break rising into the drop (3.6 s) |
+| `idle` | stand-by: the intro's low ring, soft (3 s); the run's clock paused after idle minutes |
 | `theme` | the Strategium theme: the drop, four bars (9.6 s); plays when the session's run ends (`strategium` `end`, `/strategium-end`); also by hand |
 
 ## Booking alarm and attention
