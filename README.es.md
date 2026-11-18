@@ -95,7 +95,7 @@ Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un de
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}}}%%
-flowchart LR
+flowchart TB
   A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I["Inquisition"] --> X["Extraction"]
   S -.->|"Recon · 1/run"| A
   K -.->|"Redraft · 1/run"| S
