@@ -75,11 +75,6 @@ flowchart TB
 
   muster --> auspex --> scriptorium --> deployment --> skirmish --> inquisition --> extraction --> debrief
 
-  scriptorium -.->|"Recon"| auspex
-  skirmish -.->|"Redraft"| scriptorium
-  inquisition -.->|"Penance → Retrial"| skirmish
-  B3 -.->|"Penance"| B1
-
   classDef agent fill:#1e1b16,stroke:#b8963e,color:#f3e9cf
   classDef seal fill:#7a1212,stroke:#e0b84a,stroke-width:2px,color:#fff4d6
   classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
@@ -89,7 +84,7 @@ flowchart TB
   class U you
   class muster,auspex,scriptorium,deployment,skirmish,inquisition,extraction,debrief station
   linkStyle 0 stroke:#b8963e,color:#f3e9cf
-  linkStyle 6,19,20,21,22 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
+  linkStyle 6 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
 ```
 
 Los nombres de estación, los nombres de agente y las alertas tienen su propia voz; el `archmagos` la usa solo en el chat y el todo, nunca en el fichero del plan. Los tickets, los mensajes de commit y las merge requests se quedan planos y profesionales.
@@ -97,6 +92,22 @@ Los nombres de estación, los nombres de agente y las alertas tienen su propia v
 ### Volver atrás
 
 Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un destino y un presupuesto. Cuando el presupuesto se agota, la run se para y te enseña lo que queda abierto.
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}}}%%
+flowchart LR
+  A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I["Inquisition"] --> X["Extraction"]
+  S -.->|"Recon · 1/run"| A
+  K -.->|"Redraft · 1/run"| S
+  I -.->|"Penance · 2/squad, luego veteran"| K
+  K -.->|"Retrial · 2/item"| I
+  I -.->|"Stand down"| Y(["tú"])
+  classDef station fill:#2a2620,stroke:#b8963e,color:#e0b84a
+  classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
+  class A,S,K,I,X station
+  class Y you
+  linkStyle 4,5,6,7,8 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
+```
 
 | Vuelta | Detonante | Destino | Presupuesto |
 |---|---|---|---|
