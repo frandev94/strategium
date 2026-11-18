@@ -1071,7 +1071,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const objective = raw.startsWith('"') ? `"${parsed[1]}"` : parsed[1];
-			const theatre = (parsed[2] ?? process.env.STRATEGIUM_THEATRE ?? "none").replace(/^strategium-/, "");
+			const named = parsed[2] ?? (process.env.STRATEGIUM_THEATRE?.trim() || undefined);
+			const theatre = (named ?? "none").replace(/^strategium-/, "");
 			const key = keyOf(objective);
 			const sid = sidOf(ctx);
 			// Begin the run now, untimed, so the clock counts from the command; a key this session already holds is left as it is.
@@ -1088,9 +1089,11 @@ export default function (pi: ExtensionAPI) {
 			}
 			refreshFooter?.();
 			pi.sendUserMessage(
-				`${theatre === "none"
-					? `Read skill://strategium and run it for the objective ${objective} with no theatre.`
-					: `Read skill://strategium and run it for the objective ${objective} with theatre skill://strategium-${theatre}.`} ${note}`,
+				`${named === undefined
+					? `Read skill://strategium and run it for the objective ${objective}; no theatre was named: take the default theatre from the skill's Theatre section.`
+					: theatre === "none"
+						? `Read skill://strategium and run it for the objective ${objective} with no theatre.`
+						: `Read skill://strategium and run it for the objective ${objective} with theatre skill://strategium-${theatre}.`} ${note}`,
 			);
 		},
 	});
@@ -1131,7 +1134,7 @@ export default function (pi: ExtensionAPI) {
 			pi.sendUserMessage(
 				run.theatre === "none"
 					? `New Strategium shift for ${run.key}: ask me today's booked minutes, then call strategium start with booked.`
-					: `New Strategium shift for ${run.key}: read today's booked minutes for it as skill://${skill} Muster says (not booked today: tell me and stop), then call strategium start with booked. If I already worked on it today before this, propose those minutes as Muster does and record them with strategium add after my OK.`,
+					: `New Strategium shift for ${run.key}: read today's booked minutes for it as skill://${skill} Muster says (including what to do when it is not booked today), then call strategium start with booked. If I already worked on it today before this, propose those minutes as Muster does and record them with strategium add after my OK.`,
 			);
 		}
 	});
