@@ -271,7 +271,27 @@ describe("the /strategium command", () => {
 	test("free text in quotes is the objective", async () => {
 		const { command, sent } = setup();
 		await command('"add a dark mode"');
-		expect(sent[0]).toContain('for the objective "add a dark mode" with no theatre');
+		expect(sent[0]).toContain('for the objective "add a dark mode"; no theatre was named: take the default theatre from the skill\'s Theatre section.');
+		expect(sent[0]).not.toContain("with no theatre.");
+	});
+
+	test("an explicit none runs with no theatre", async () => {
+		const { command, sent, call } = setup();
+		await command('"add a dark mode" none');
+		expect(sent[0]).toContain('for the objective "add a dark mode" with no theatre.');
+		expect(sent[0]).not.toContain("no theatre was named");
+		expect(await call({ action: "status" })).toContain("theatre=none");
+	});
+
+	test("an empty STRATEGIUM_THEATRE counts as none named", async () => {
+		process.env.STRATEGIUM_THEATRE = "";
+		try {
+			const { command, sent } = setup();
+			await command('"add a dark mode"');
+			expect(sent[0]).toContain("no theatre was named");
+		} finally {
+			delete process.env.STRATEGIUM_THEATRE;
+		}
 	});
 
 	test("a file is the objective, and a theatre may follow", async () => {
@@ -1318,6 +1338,17 @@ describe("resume after a reload", () => {
 		await s.handlers.session_start[0]({}, s.ctx);
 		expect(s.notes).toContain("Strategium: K-1 needs today's booking; /strategium-resume <min>");
 		expect(s.shown()).toContain("new day: /strategium-resume");
+	});
+
+	test("the new-day prompt defers to the theatre's Muster for a day without booking", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 15, 23, 30, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 120, theatre: "github" });
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await s.handlers.session_start[0]({}, s.ctx);
+		await s.sub("resume");
+		expect(s.sent.at(-1)).toContain("including what to do when it is not booked today");
+		expect(s.sent.at(-1)).not.toContain("tell me and stop");
 	});
 
 	test("an untimed run shut down yesterday runs again today", async () => {
