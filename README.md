@@ -101,23 +101,7 @@ Station names, agent names and alerts have their own voice; the `archmagos` spea
 
 ### Going back
 
-A run goes back instead of forward, and every return has a trigger, a target and a budget. When the budget is spent, the run stops and shows you what is open.
-
-```mermaid
-%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}, "flowchart": {"curve": "step"}}}%%
-flowchart TB
-  A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I{"Inquisition"} --> X["Extraction"]
-  S -.->|"Recon · 1/run"| A
-  K -.->|"Redraft · 1/run"| S
-  I -.->|"Penance · 2/squad, then veteran"| K
-  K -.->|"Retrial · 2/item"| I
-  I -.->|"Stand down"| Y(["you"])
-  classDef station fill:#2a2620,stroke:#b8963e,color:#e0b84a
-  classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
-  class A,S,K,I,X station
-  class Y you
-  linkStyle 4,5,6,7,8 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
-```
+A run goes back instead of forward, and every return has a trigger, a target and a budget. When the budget is spent, the run stops and shows you what is open. The red arrows in the diagram above show the returns; the table gives the detail.
 
 | Return | Trigger | Target | Budget |
 |---|---|---|---|

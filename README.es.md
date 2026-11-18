@@ -101,23 +101,7 @@ Los nombres de estación, los nombres de agente y las alertas tienen su propia v
 
 ### Volver atrás
 
-Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un destino y un presupuesto. Cuando el presupuesto se agota, la run se para y te enseña lo que queda abierto.
-
-```mermaid
-%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}, "flowchart": {"curve": "step"}}}%%
-flowchart TB
-  A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I{"Inquisition"} --> X["Extraction"]
-  S -.->|"Recon · 1/run"| A
-  K -.->|"Redraft · 1/run"| S
-  I -.->|"Penance · 2/squad, luego veteran"| K
-  K -.->|"Retrial · 2/item"| I
-  I -.->|"Stand down"| Y(["tú"])
-  classDef station fill:#2a2620,stroke:#b8963e,color:#e0b84a
-  classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
-  class A,S,K,I,X station
-  class Y you
-  linkStyle 4,5,6,7,8 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
-```
+Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un destino y un presupuesto. Cuando el presupuesto se agota, la run se para y te enseña lo que queda abierto. Las flechas rojas del diagrama de arriba muestran las vueltas; la tabla da el detalle.
 
 | Vuelta | Detonante | Destino | Presupuesto |
 |---|---|---|---|
