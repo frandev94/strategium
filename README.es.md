@@ -37,7 +37,7 @@ flowchart TB
 
   subgraph muster["I · MUSTER"]
     direction LR
-    M["Capitán<br/>objetivo · reserva"] --> S0{{"seal Seals"}}
+    M["Capitán<br/>objetivo · reserva"] --> S0{{"eliges los sellos"}}
   end
   subgraph auspex["II · AUSPEX"]
     direction LR
