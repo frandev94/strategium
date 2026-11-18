@@ -94,7 +94,7 @@ Station names, agent names and alerts have their own voice; the `archmagos` spea
 A run goes back instead of forward, and every return has a trigger, a target and a budget. When the budget is spent, the run stops and shows you what is open.
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}, "flowchart": {"curve": "step"}}}%%
 flowchart TB
   A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I["Inquisition"] --> X["Extraction"]
   S -.->|"Recon · 1/run"| A

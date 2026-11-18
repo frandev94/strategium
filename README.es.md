@@ -94,7 +94,7 @@ Los nombres de estación, los nombres de agente y las alertas tienen su propia v
 Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un destino y un presupuesto. Cuando el presupuesto se agota, la run se para y te enseña lo que queda abierto.
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}, "flowchart": {"curve": "step"}}}%%
 flowchart TB
   A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I["Inquisition"] --> X["Extraction"]
   S -.->|"Recon · 1/run"| A
