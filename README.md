@@ -119,17 +119,17 @@ The Captain plans and delegates; every other role is an agent it starts. Each on
 
 | Agent | Station | What it does | Never | Model / effort |
 |---|---|---|---|---|
-| **Captain** (main session) | all | plans, delegates, guards the seals, commits | edits product code | your session's model |
-| `scout` | Auspex | maps the code the objective touches; 1–3 at once, each with its own focus | writes files or runs bash | `@smol` / medium |
-| `librarian` | Scriptorium | writes the spec, the squads and the Merge bar; one per area when the objective splits, then a lead merges | edits repository files | claude-opus-5-5 / high |
-| `archmagos` | Scriptorium | integrates the area plans into one, checking every assumption against the source; only when marked in Muster | edits, writes or starts agents | claude-fable-5-2 / max |
-| `battle-brother` | Skirmish | builds one squad test-first and reports red/green evidence | commits or touches files outside its squad | claude-sonnet-5-5 / medium |
-| `veteran` | Skirmish | rebuilds a squad that failed twice, after finding why | commits | claude-sonnet-5-5 / high |
-| `apothecary` | Skirmish | mutates the squad's changed lines and fuzzes untrusted input, to show where the tests do not protect the code | edits the tests under audit, or leaves the tree changed | claude-sonnet-5-5 / medium |
-| `inquisitor` | Inquisition | reviews the diff against the Merge bar; a PASS needs file:line or command evidence | edits, commits or pushes | claude-opus-5-5 / high |
-| `confessor` | Inquisition | a second, independent review by another model family, when the plan flags the diff as large or risky | reads the inquisitor's report | gpt-6-astra / high |
-| `security-reviewer` | Inquisition | joins when the diff touches auth, external input, secrets or the network | edits | bundled, `@slow` |
-| `sonic` | Auspex, Inquisition | runs the repo's checks: the baseline first, the full checks at the end | fixes what fails | `@smol` / medium |
+| <img src="docs/icons/shield-crown.svg" width="18" alt=""> **Captain** (main session) | all | plans, delegates, guards the seals, commits | edits product code | your session's model |
+| <img src="docs/icons/radar.svg" width="18" alt=""> `scout` | Auspex | maps the code the objective touches; 1–3 at once, each with its own focus | writes files or runs bash | `@smol` / medium |
+| <img src="docs/icons/book-open-page-variant.svg" width="18" alt=""> `librarian` | Scriptorium | writes the spec, the squads and the Merge bar; one per area when the objective splits, then a lead merges | edits repository files | claude-opus-5-5 / high |
+| <img src="docs/icons/head-cog.svg" width="18" alt=""> `archmagos` | Scriptorium | integrates the area plans into one, checking every assumption against the source; only when marked in Muster | edits, writes or starts agents | claude-fable-5-2 / max |
+| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | builds one squad test-first and reports red/green evidence | commits or touches files outside its squad | claude-sonnet-5-5 / medium |
+| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rebuilds a squad that failed twice, after finding why | commits | claude-sonnet-5-5 / high |
+| <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | mutates the squad's changed lines and fuzzes untrusted input, to show where the tests do not protect the code | edits the tests under audit, or leaves the tree changed | claude-sonnet-5-5 / medium |
+| <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | reviews the diff against the Merge bar; a PASS needs file:line or command evidence | edits, commits or pushes | claude-opus-5-5 / high |
+| <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | a second, independent review by another model family, when the plan flags the diff as large or risky | reads the inquisitor's report | gpt-6-astra / high |
+| <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | joins when the diff touches auth, external input, secrets or the network | edits | bundled, `@slow` |
+| <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | runs the repo's checks: the baseline first, the full checks at the end | fixes what fails | `@smol` / medium |
 
 ## Install
 
