@@ -1371,6 +1371,84 @@ describe("attention without an alarm", () => {
 	});
 });
 
+// A block still open at midnight goes on in the new day, split at 00:00.
+describe("the midnight rollover", () => {
+	const T = (h: number, m: number, s = 0, day = 16) => new Date(2026, 10, day, h, m, s);
+	const dayEvents = (dir: string, day = 16) => load(join(dir, `2026-11-${day}.jsonl`));
+	const at = async (s: ReturnType<typeof setup>, h: number, m: number, sec = 0, day = 16) => {
+		setSystemTime(T(h, m, sec, day));
+		await s.sub("status");
+	};
+	// Ticks every 2 minutes (under the 3-minute heartbeat gap) from 23:31 to 23:59, then 00:01 on the 17th.
+	const toMidnight = async (s: ReturnType<typeof setup>) => {
+		for (let m = 31; m < 60; m += 2) await at(s, 23, m);
+		await at(s, 0, 1, 0, 17);
+	};
+	const midnight = nowIso(T(0, 0, 0, 17));
+	const reports = async (s: ReturnType<typeof setup>, today: string) => {
+		expect(await s.call({ action: "report", date: "2026-11-16" })).toContain("K-1 23:30-00:00 (30 min)");
+		expect(await s.call({ action: "report" })).toContain(today);
+	};
+
+	test("an untimed run counting at midnight goes on in the new day", async () => {
+		const s = setup();
+		setSystemTime(T(23, 30));
+		await s.call({ action: "begin", key: "K-1" });
+		await s.start();
+		await toMidnight(s);
+		expect(dayEvents(s.dir).at(-1)).toEqual({ ts: midnight, event: "stop", key: "K-1" });
+		expect(dayEvents(s.dir, 17)).toEqual([{ ts: midnight, event: "start", key: "K-1" }]);
+		expect(await s.call({ action: "status" })).toContain("K-1 1 min (no booking) running");
+		await at(s, 0, 3, 0, 17);
+		expect(await s.call({ action: "status" })).toContain("K-1 3 min (no booking) running");
+		expect(s.shown()).toContain("K-1 · 3 min");
+		expect(dayEvents(s.dir, 17).filter(e => e.event === "start").length).toBe(1);
+		await reports(s, "K-1 00:00-now (3 min)");
+	});
+
+	test("a timed run counting at midnight counts unbooked until resume gives today's booking", async () => {
+		const s = setup();
+		setSystemTime(T(23, 30));
+		await s.call({ action: "begin", key: "K-1", booked: 120 });
+		await s.start();
+		await toMidnight(s);
+		expect(dayEvents(s.dir, 17)[0]).toEqual({ ts: midnight, event: "start", key: "K-1" });
+		await at(s, 0, 3, 0, 17);
+		expect(s.shown()).toContain("3 min · new day: /strategium-resume <min>");
+		expect(s.shown().startsWith("●")).toBe(true);
+		expect(dayEvents(s.dir, 17).some(e => e.event === "alert")).toBe(false);
+		await s.sub("resume", "90");
+		expect(s.notes.at(-1)).toBe("Strategium: new shift for K-1 today, booked 90 min");
+		expect(await s.call({ action: "status" })).toContain("K-1 3/90 min (3%) running");
+		await reports(s, "K-1 00:00-now (3 min)");
+	});
+
+	test.each([undefined, 120])("a paused run opens nothing at midnight (booked %p)", async booked => {
+		const s = setup();
+		setSystemTime(T(23, 30));
+		await s.call({ action: "begin", key: "K-1", ...(booked ? { booked } : {}) });
+		await s.start();
+		await at(s, 23, 32);
+		await s.call({ action: "stop" });
+		await at(s, 0, 1, 0, 17);
+		expect(dayEvents(s.dir, 17)).toEqual([]);
+		expect(dayEvents(s.dir).filter(e => e.event === "stop")).toEqual([{ ts: nowIso(T(23, 32)), event: "stop", key: "K-1" }]);
+		expect(s.shown().startsWith("○")).toBe(true);
+	});
+
+	test("an idle pause stamped before midnight and noticed after it opens nothing", async () => {
+		const s = setup();
+		setSystemTime(T(23, 56, 30));
+		await s.call({ action: "begin", key: "K-1" });
+		s.ctx.host.idle = true;
+		await s.start();
+		await at(s, 23, 58, 30);
+		await at(s, 0, 0, 30, 17);
+		expect(dayEvents(s.dir).at(-1)).toEqual({ ts: nowIso(T(23, 59, 30)), event: "stop", key: "K-1", reason: "idle" } as Ev);
+		expect(dayEvents(s.dir, 17)).toEqual([]);
+	});
+});
+
 // A reload of omp closes the session and opens it again: the run goes on by itself, unless the user stopped it.
 describe("resume after a reload", () => {
 	const reload = async (s: { handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]>; ctx: unknown }) => {
