@@ -217,7 +217,7 @@ El estado (un JSONL por día más las reservas de las runs) vive fuera del repos
 
 ### La alarma
 
-`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras y sin dependencias. Los niveles son `50`, `80`, `100`, `done`, `attention`, `idle` (un sonido corto de espera cuando el reloj se pausa por inactividad) y `theme` (15 s, suena cuando termina la run de la sesión, o a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
+`alarm/vox.ts` reproduce un trozo corto de "Disposal Unit", de la banda sonora de Darktide, por nivel (`alarm/clips/`, unos segundos cada uno; los cortes están en `alarm/clips/README.md`), sin dependencias. Los niveles son `50`, `80`, `100`, `done`, `attention`, `idle` (un sonido corto de espera cuando el reloj se pausa por inactividad) y `theme` (9,6 s, suena cuando termina la run de la sesión, o a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux).
 
 ```
 bun alarm/vox.ts 100 "la reserva se ha agotado"
@@ -231,7 +231,7 @@ Un teatro es una skill `strategium-<nombre>` que ata la run a tu organización: 
 
 ```
 bun run check                     # TypeScript estricto sobre la extensión
-bun test                          # temporizador, reservas entre procesos, la extensión con un host falso, WAV de la alarma
+bun test                          # temporizador, reservas entre procesos, la extensión con un host falso, trozos de la alarma
 ```
 
 ```

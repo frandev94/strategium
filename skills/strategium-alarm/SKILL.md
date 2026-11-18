@@ -5,17 +5,17 @@ description: Use when a long task, build, run or timer finishes or needs the use
 
 # Strategium alarm (vox-caster)
 
-`bun <plugin>/alarm/vox.ts [50|80|100|done|attention|idle|theme] ["message"]` plays a synthesized sound (no audio files, no dependencies) and exits 0 when playback ends. The level is argv[2], else env `STRATEGIUM_P`, else `done`. With a message (argv[3], else env `STRATEGIUM_MSG`) it also shows a desktop notification titled "Strategium" (Windows toast, macOS notification, Linux `notify-send`), so the user sees it with the terminal hidden. A missing audio player prints one line to stderr; it never fails.
+`bun <plugin>/alarm/vox.ts [50|80|100|done|attention|idle|theme] ["message"]` plays a short clip of Darktide's "Disposal Unit" (`alarm/clips/<level>.mp3`, no dependencies) and exits 0 when playback ends. The level is argv[2], else env `STRATEGIUM_P`, else `done`. With a message (argv[3], else env `STRATEGIUM_MSG`) it also shows a desktop notification titled "Strategium" (Windows toast, macOS notification, Linux `notify-send`), so the user sees it with the terminal hidden. A missing audio player prints one line to stderr; it never fails.
 
 | Level | Sound |
 |---|---|
-| `50` | calm: one low bell toll, three servo-skull chirps |
-| `80` | urgent: two bell tolls, static crackle, fast chirp run |
-| `100` | extraction: klaxon wails over a deep bell |
-| `done` | task complete: ascending bell fanfare, final deep toll |
-| `attention` | the user is needed: a dark call to war, a horn section in C minor (C, Eb, then a long low G) over war drums |
-| `idle` | stand-by: a power-down glide and one soft low bell; the run's clock paused after idle minutes |
-| `theme` | the Strategium theme: 15 s, a drop with a dead stop and a chromatic fall; plays when the session's run ends (`strategium` `end`, `/strategium-end`); also by hand |
+| `50` | calm: the opening boom and its ring (3 s) |
+| `80` | urgent: two booms (1.9 s) |
+| `100` | extraction: the chant at full (3.6 s) |
+| `done` | task complete: a run of hits that ends on a rest (3 s) |
+| `attention` | the user is needed: the end of the break and the drop (3 s) |
+| `idle` | stand-by: the break before the drop, without the drop (2.4 s); the run's clock paused after idle minutes |
+| `theme` | the Strategium theme: the drop, four bars (9.6 s); plays when the session's run ends (`strategium` `end`, `/strategium-end`); also by hand |
 
 ## Booking alarm and attention
 

@@ -217,7 +217,7 @@ The state (one JSONL per day plus the run claims) stays outside the repository, 
 
 ### The alarm
 
-`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done`, `attention`, `idle` (a short stand-by sound when the clock pauses after idle) and `theme` (15 s, plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
+`alarm/vox.ts` plays a short clip of Darktide's "Disposal Unit" per level (`alarm/clips/`, a few seconds each; the cuts are in `alarm/clips/README.md`), with no dependencies. Levels are `50`, `80`, `100`, `done`, `attention`, `idle` (a short stand-by sound when the clock pauses after idle) and `theme` (9.6 s, plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
 
 ```
 bun alarm/vox.ts 100 "the booking is over"
@@ -231,7 +231,7 @@ A theatre is a `strategium-<name>` skill that binds the run to your organisation
 
 ```
 bun run check                     # strict TypeScript over the extension
-bun test                          # timer, claims across processes, the extension through a fake host, alarm WAVs
+bun test                          # timer, claims across processes, the extension through a fake host, alarm clips
 ```
 
 ```
