@@ -9,11 +9,11 @@ description: Use when a long task, build, run or timer finishes or needs the use
 
 | Level | Sound |
 |---|---|
-| `50` | calm: one boom and a low bell ringing out |
-| `80` | urgent: one bar of war drums and distorted bass, then a hard hit |
-| `100` | time is up: a climbing breath that lands on the final hit (boom, brass, choir) |
+| `50` | one bar of war drums and distorted bass, then a hard hit (boom, brass; no choir) |
+| `80` | the `50` groove with a brass and choir swell over it, then the full hit (with the choir) |
+| `100` | time is up: the `80` groove and swell with a riser climbing too, then the full hit ringing longer |
 | `done` | task complete: the choir climbs to a bright chord over the drums, then a dead stop |
-| `attention` | the user is needed: a snare roll that speeds up under a riser, into a short hit |
+| `attention` | the user is needed: a horn call (two stabs on C, a held G), then a short snare roll into a hit |
 | `idle` | stand-by, quieter on purpose: a low drone, soft choir swells and one soft bell; the run's clock paused after idle minutes |
 | `theme` | the Strategium theme: four bars of drop (9.6 s) that loop without a seam; plays when the session's run ends (`strategium` `end`, `/strategium-end`); also by hand |
 
