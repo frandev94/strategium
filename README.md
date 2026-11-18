@@ -75,11 +75,6 @@ flowchart TB
 
   muster --> auspex --> scriptorium --> deployment --> skirmish --> inquisition --> extraction --> debrief
 
-  scriptorium -.->|"Recon"| auspex
-  skirmish -.->|"Redraft"| scriptorium
-  inquisition -.->|"Penance → Retrial"| skirmish
-  B3 -.->|"Penance"| B1
-
   classDef agent fill:#1e1b16,stroke:#b8963e,color:#f3e9cf
   classDef seal fill:#7a1212,stroke:#e0b84a,stroke-width:2px,color:#fff4d6
   classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
@@ -89,7 +84,7 @@ flowchart TB
   class U you
   class muster,auspex,scriptorium,deployment,skirmish,inquisition,extraction,debrief station
   linkStyle 0 stroke:#b8963e,color:#f3e9cf
-  linkStyle 6,19,20,21,22 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
+  linkStyle 6 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
 ```
 
 Station names, agent names and alerts have their own voice; the `archmagos` speaks in that voice only in chat and todo, never in the plan file. Tickets, commit messages and merge requests stay plain and professional.
@@ -97,6 +92,22 @@ Station names, agent names and alerts have their own voice; the `archmagos` spea
 ### Going back
 
 A run goes back instead of forward, and every return has a trigger, a target and a budget. When the budget is spent, the run stops and shows you what is open.
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}}}%%
+flowchart LR
+  A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I["Inquisition"] --> X["Extraction"]
+  S -.->|"Recon · 1/run"| A
+  K -.->|"Redraft · 1/run"| S
+  I -.->|"Penance · 2/squad, then veteran"| K
+  K -.->|"Retrial · 2/item"| I
+  I -.->|"Stand down"| Y(["you"])
+  classDef station fill:#2a2620,stroke:#b8963e,color:#e0b84a
+  classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
+  class A,S,K,I,X station
+  class Y you
+  linkStyle 4,5,6,7,8 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
+```
 
 | Return | Trigger | Target | Budget |
 |---|---|---|---|
