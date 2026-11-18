@@ -1,0 +1,82 @@
+name: release
+
+# Every push to main that changes what omp installs cuts a release: the version comes from the
+# conventional commits since the last tag (cliff.toml) and lands in package.json, the marketplace
+# manifest (the one omp reads), CHANGELOG.md, an annotated tag and a GitHub release.
+# Test files alone cut none. package.json is not watched on purpose: it would release on every
+# dev-dependency bump, and its `omp` field only changes together with extensions/, which is watched.
+# The gate runs on ubuntu only; Windows runs in test.yml in parallel, so a Windows-only failure
+# after a release is fixed by the next patch.
+on:
+  push:
+    branches: [main]
+    paths: [extensions/**, skills/**, agents/**, alarm/**, .omp-plugin/**, '!**/*.test.ts']
+
+permissions:
+  contents: read
+
+# One release at a time; a later run starts from the main the earlier one pushed.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # No write token here: checkout persists credentials in .git/config, and install/test run repo code.
+  test:
+    # A release commit pushed by hand (skills/strategium-release) already carries its version.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile && bun run check && bun test
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.test.outputs.sha }}
+          fetch-depth: 0
+      - run: npm install -g git-cliff@2.14.2
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          last=$(git describe --tags --abbrev=0)
+          v=$(git cliff --bumped-version)
+          if [ "$v" = "$last" ]; then
+            if [ -n "$(git rev-list "$last"..HEAD)" ]; then
+              echo "::warning::Commits since $last bump nothing: non-conventional messages (feat:/fix:/... missing)? No release was cut."
+            fi
+            echo "Nothing to release since $last"
+            # A run that pushed but failed at `gh release create` is finished here on re-run.
+            if ! gh release view "$last" >/dev/null 2>&1; then
+              git cliff --latest --strip all > "$RUNNER_TEMP/notes.md"
+              gh release create "$last" --title "$last" --notes-file "$RUNNER_TEMP/notes.md"
+            fi
+            exit 0
+          fi
+          for f in package.json .omp-plugin/marketplace.json; do
+            sed -i -E "0,/\"version\": \"[^\"]+\"/s//\"version\": \"${v#v}\"/" "$f"
+            grep -q "\"version\": \"${v#v}\"" "$f"
+          done
+          git cliff --tag "$v" -o CHANGELOG.md
+          git cliff --unreleased --tag "$v" --strip all > "$RUNNER_TEMP/notes.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json .omp-plugin/marketplace.json CHANGELOG.md
+          git commit -m "chore(release): $v"
+          git tag -a "$v" -m "strategium $v"
+          git push --atomic origin HEAD:main "refs/tags/$v"
+          gh release create "$v" --title "$v" --notes-file "$RUNNER_TEMP/notes.md"
