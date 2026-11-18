@@ -1733,6 +1733,25 @@ describe("the Captain's hooks never throw and keep their wording", () => {
 	});
 });
 
+describe("the start notice", () => {
+	const start = async (s: ReturnType<typeof setup>) => {
+		for (const h of s.handlers.session_start) await h({}, s.ctx);
+	};
+
+	test("session_start shows Strategium loaded with the theatre and the notify state", async () => {
+		const s = setup();
+		await start(s);
+		expect(s.notes).toContain("Strategium loaded: theatre none, notifications on");
+	});
+
+	test("a subagent session shows no start notice", async () => {
+		const s = setup();
+		s.ctx.agent = { kind: "sub" };
+		await start(s);
+		expect(s.notes.some(n => n.includes("Strategium loaded"))).toBe(false);
+	});
+});
+
 describe("the archmagos setting", () => {
 	const runOf = (dir: string) => JSON.parse(readFileSync(join(dir, "runs", "sess-0001.json"), "utf8"));
 
