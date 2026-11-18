@@ -134,6 +134,7 @@ class Run:
         self.cmd = f'"{omp}" --no-extensions --session-dir "{self.sess}" --resume "{self.sfile}" -e "{PLUGIN}"' + (f' -e "{ponytail}"' if ponytail else "")
         env = os.environ.copy()
         env.update(STRATEGIUM_STATE_DIR=self.state, STRATEGIUM_GLYPHS="1", TERM_PROGRAM="Windows_Terminal", WT_SESSION="00000000-0000-0000-0000-000000000001")
+        if ponytail: env["PONYTAIL_QUIET_STARTUP"] = "0"  # ponytail's own start notice must show: it is what replaces Strategium's (R16)
         if ext:  # every model role pinned to the fake provider: side turns (title...) never reach a real model either
             with open(os.path.join(self.work, "replay.yml"), "w") as f:
                 f.write("modelRoles:\n" + "".join(f"  {r}: replay/ask\n" for r in ("default", "slow", "plan", "advisor", "task", "vision", "commit", "smol")))
@@ -493,8 +494,12 @@ def checks_select(C):
     C.ck("after-q: still no value", not sel, sel)
     C.ck("after-q: the select is still drawn (the omp limit F9 cannot reach)", s.type == "normal" and s.has("REPLAY select"), s.type, None, s)
 
-def steps_ponytail(R): R.snap("screen")
-def checks_ponytail(C): C.ck("Strategium loaded: is in the stream", b"Strategium loaded:" in C.R.out, None, None, C.s["screen"])
+def steps_ponytail(R): R.wait_for(b"Ponytail", 10); R.wait_quiet(3.0, 15); R.snap("screen", True)
+def checks_ponytail(C):
+    s = C.s["screen"]
+    # omp replaces the last status line in place, so what stays is whichever status came last: ponytail's notice or the MCP connection line.
+    C.ck("ponytail ran and a later status replaced it: Ponytail loaded: or Connected is on screen", b"Ponytail" in C.R.out and (s.has("Ponytail loaded:") or s.has("Connected")), None, None, s)
+    C.ck("Strategium loaded: is not on screen (omp's showStatus replaced it)", not s.has("Strategium loaded:"), None, None, s)
 
 # name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, settle (False: wait only for the first heartbeat), steps, checks
 REPLAYS = {
@@ -515,7 +520,7 @@ REPLAYS = {
     "q-close":            {"r": "R19", "kind": "FIXED", "seed": "scriptorium", "steps": steps_q_close, "checks": checks_q_close},
     "capslock-altc":      {"r": "R1", "kind": "KNOWN", "seed": "scriptorium", "steps": steps_capslock, "checks": checks_capslock},
     "select-behind-cockpit": {"r": "R10", "kind": "KNOWN", "seed": "scriptorium", "ext": True, "steps": steps_select, "checks": checks_select},
-    "ponytail-notice":    {"r": "R16", "kind": "OPEN", "seed": "scriptorium", "ponytail": True, "settle": False, "steps": steps_ponytail, "checks": checks_ponytail},
+    "ponytail-notice":    {"r": "R16", "kind": "KNOWN", "seed": "scriptorium", "ponytail": True, "settle": False, "steps": steps_ponytail, "checks": checks_ponytail},
 }
 
 def parse_snaps(dom):

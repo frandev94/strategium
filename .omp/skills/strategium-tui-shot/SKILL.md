@@ -68,7 +68,7 @@ Kinds: `FIXED` (PASS = the fix holds), `KNOWN` (PASS = an omp limit shows up exa
 | `q-close` | R19 | FIXED | `q` (win32 record and plain) closes the cockpit; footer and editor rows equal the ones before opening (clock rows skipped) |
 | `capslock-altc` | R1 | KNOWN | Caps Lock + Alt+C opens no cockpit; omp shows `Nothing to copy` (its `app.clipboard.copyPrompt` matches first) |
 | `select-behind-cockpit` | R10 (rest) | KNOWN | a dialog opened with no `tool_call` (`/replay-select`) while the cockpit is open stays stuck: no value after `q` either; F9 cannot reach it |
-| `ponytail-notice` | R16 | OPEN | `Strategium loaded:` is in the stream when ponytail is loaded too |
+| `ponytail-notice` | R16 | KNOWN | `Strategium loaded:` is not on screen, a later status (ponytail's `Ponytail loaded:` or omp's `Connected to MCP servers`) is: omp's `showStatus` updates a status line that is still the last chat entry, so the next start notice replaces the earlier one (upstream: <URL>) |
 
 Not replayable on screen: R11 (the code path is gone; `no-widget` covers its replacement), R15 (xterm.js DOM renderer artifact in the PNG; the text checks read the border cell itself), R17 (no expected value until the same screen is captured in Windows Terminal; `footer-hint` prints the last rows for that), R18 (subagent isolation, nothing on screen). Also not replayed: F9 on `tool_approval_requested`/`plan_review_requested` (needs approval or plan-mode settings; the index tests cover it) and F11 `AGENT AT WORK`/`PLAN REVIEW PENDING` (only the idle state).
 

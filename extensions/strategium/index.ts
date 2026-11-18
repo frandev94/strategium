@@ -1313,6 +1313,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_e: unknown, ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
 		const theatre = process.env.STRATEGIUM_THEATRE?.trim().replace(/^strategium-/, "") || "none";
+		// shortcut: omp merges back-to-back info notices (showStatus), so the next status line (another plugin's start notice, or its "Connected to MCP servers" line) replaces this one; upgrade when omp keeps notices from different sources apart.
 		ctx.ui.notify(`Strategium loaded: theatre ${theatre}, notifications ${notifyOn(sidOf(ctx)) ? "on" : "off"}`, "info");
 	});
 
