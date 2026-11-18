@@ -222,7 +222,7 @@ The state (one JSONL per day plus the run claims) stays outside the repository, 
 
 ### The alarm
 
-`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies. Levels are `50`, `80`, `100`, `done` (also the sound of a seal granted in the cockpit), `attention`, `idle` (a short stand-by sound when the clock pauses after idle) and `theme` (15 s, plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
+`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies, all original and under the project's MIT licence. They share one grimdark kit at 100 bpm in C minor (war drums, distorted bass, choir, brass, bell). Levels are `50`, `80`, `100`, `done` (also the sound of a seal granted in the cockpit), `attention`, `idle` (a quieter stand-by sound when the clock pauses after idle) and `theme` (four bars, 9.6 s, that loop without a seam; plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`).
 
 ```
 bun alarm/vox.ts 100 "the booking is over"
