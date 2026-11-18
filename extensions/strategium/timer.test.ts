@@ -107,6 +107,16 @@ describe("parallel tickets", () => {
 		expect(overlapMin(par, at(40))).toBe(15);
 		expect(overlapMin(par.slice(0, 2), at(20))).toBe(10);
 	});
+	test("a start that carries a booking on an open key changes the booking only", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A" },
+			{ ts: t(10), event: "start", key: "A", booked: 60 },
+		];
+		expect(elapsedMin(evs, "A", at(30))).toBe(30);
+		expect(blocks(evs, at(30))).toEqual([{ key: "A", start: "09:00", end: "now", min: 30 }]);
+		expect(openKeys(evs)).toEqual(["A"]);
+		expect(bookedMin(evs, "A")).toBe(60);
+	});
 	test("blocks end an open block in now", () =>
 		expect(blocks(ab, at(16))).toEqual([
 			{ key: "A", start: "09:00", end: "09:05", min: 5 },
