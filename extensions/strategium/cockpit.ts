@@ -12,7 +12,7 @@ export type Palette = Record<"gold" | "parchment" | "green" | "red" | "purple" |
 export type ViewInput = {
 	key: string;
 	untimed?: true;
-	deployed?: Map<string, Deployed>; // agent id (or eval-<role>-<n>) → what the host deployed, kept by index.ts
+	deployed?: Map<string, Deployed>; // agent id (eval-<role>-<n> for an eval spawn without spawnKey) → what the host deployed, kept by index.ts
 	phases?: Phase[];
 	slices?: { id: string }[];
 	stopped?: { id: string }[];
@@ -73,14 +73,18 @@ export const closes = (data: string): boolean => {
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
 
-/** Task jobs that are no longer running, from what the host sends to the model: a job's label is its agent id. */
+/** Agents that are no longer running, from what the host sends to the model: a task job's label is its agent id (eval agents are task jobs too), and an eval cell's agent status events carry the id and its last state. */
 export function jobEnds(messages: unknown): { id: string; status: string }[] {
 	const out: { id: string; status: string }[] = [];
 	for (const m of Array.isArray(messages) ? messages : []) {
-		const jobs = obj(obj(m).details).jobs;
-		if (!Array.isArray(jobs)) continue;
-		for (const job of jobs.map(obj))
+		const { jobs, cells } = obj(obj(m).details);
+		for (const job of Array.isArray(jobs) ? jobs.map(obj) : [])
 			if (job.type === "task" && job.status !== "running" && typeof job.label === "string") out.push({ id: job.label, status: String(job.status) });
+		for (const cell of Array.isArray(cells) ? cells.map(obj) : []) {
+			const events = obj(cell).statusEvents;
+			for (const e of Array.isArray(events) ? events.map(obj) : [])
+				if (e.op === "agent" && typeof e.id === "string" && ["completed", "failed", "aborted"].includes(String(e.status))) out.push({ id: e.id, status: String(e.status) });
+		}
 	}
 	return out;
 }
