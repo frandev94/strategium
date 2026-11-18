@@ -113,6 +113,24 @@ A run goes back instead of forward, and every return has a trigger, a target and
 
 If the code can satisfy the squad's check as written, it is a penance; if it cannot, the squad was cut wrong and it is a redraft. A return past a granted seal breaks the seal, and it is asked for again. What already passed stays passed.
 
+### The agents
+
+The Captain plans and delegates; every other role is an agent it starts. Each one has a single job and a hard limit.
+
+| Agent | Station | What it does | Never | Model / effort |
+|---|---|---|---|---|
+| **Captain** (main session) | all | plans, delegates, guards the seals, commits | edits product code | your session's model |
+| `scout` | Auspex | maps the code the objective touches; 1–3 at once, each with its own focus | writes files or runs bash | `@smol` / medium |
+| `librarian` | Scriptorium | writes the spec, the squads and the Merge bar; one per area when the objective splits, then a lead merges | edits repository files | claude-opus-5-5 / high |
+| `archmagos` | Scriptorium | integrates the area plans into one, checking every assumption against the source; only when marked in Muster | edits, writes or starts agents | claude-fable-5-2 / max |
+| `battle-brother` | Skirmish | builds one squad test-first and reports red/green evidence | commits or touches files outside its squad | claude-sonnet-5-5 / medium |
+| `veteran` | Skirmish | rebuilds a squad that failed twice, after finding why | commits | claude-sonnet-5-5 / high |
+| `apothecary` | Skirmish | mutates the squad's changed lines and fuzzes untrusted input, to show where the tests do not protect the code | edits the tests under audit, or leaves the tree changed | claude-sonnet-5-5 / medium |
+| `inquisitor` | Inquisition | reviews the diff against the Merge bar; a PASS needs file:line or command evidence | edits, commits or pushes | claude-opus-5-5 / high |
+| `confessor` | Inquisition | a second, independent review by another model family, when the plan flags the diff as large or risky | reads the inquisitor's report | gpt-6-astra / high |
+| `security-reviewer` | Inquisition | joins when the diff touches auth, external input, secrets or the network | edits | bundled, `@slow` |
+| `sonic` | Auspex, Inquisition | runs the repo's checks: the baseline first, the full checks at the end | fixes what fails | `@smol` / medium |
+
 ## Install
 
 Strategium runs inside [omp](https://omp.sh/), our coding agent: install omp first.

@@ -113,6 +113,24 @@ Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un de
 
 Si el código puede cumplir el check del squad tal como está escrito, es un penance; si no puede, el squad se cortó mal y es un redraft. Una vuelta que pasa por delante de un sello ya concedido rompe el sello y hay que pedirlo otra vez. Lo que ya pasó, sigue pasado.
 
+### Los agentes
+
+El Capitán planifica y delega; cada uno de los demás papeles es un agente que él lanza. Cada uno tiene un único trabajo y un límite estricto.
+
+| Agente | Estación | Qué hace | Nunca | Modelo / esfuerzo |
+|---|---|---|---|---|
+| **Capitán** (sesión principal) | todas | planifica, delega, guarda los sellos, hace los commits | edita código del producto | el modelo de tu sesión |
+| `scout` | Auspex | mapea el código que toca el objetivo; de 1 a 3 a la vez, cada uno con su foco | escribe ficheros o ejecuta bash | `@smol` / medium |
+| `librarian` | Scriptorium | escribe la spec, los squads y el Merge bar; uno por área cuando el objetivo se divide, y luego un líder une las partes | edita ficheros del repositorio | claude-opus-5-5 / high |
+| `archmagos` | Scriptorium | integra los planes de cada área en uno, comprobando cada supuesto contra el código; solo si se marcó en Muster | edita, escribe o lanza agentes | claude-fable-5-2 / max |
+| `battle-brother` | Skirmish | construye un squad con los tests primero y reporta la evidencia rojo/verde | hace commits o toca ficheros fuera de su squad | claude-sonnet-5-5 / medium |
+| `veteran` | Skirmish | rehace un squad que falló dos veces, después de averiguar por qué | hace commits | claude-sonnet-5-5 / high |
+| `apothecary` | Skirmish | muta las líneas cambiadas del squad y hace fuzzing de la entrada no fiable, para enseñar dónde los tests no protegen el código | edita los tests que audita, o deja el árbol cambiado | claude-sonnet-5-5 / medium |
+| `inquisitor` | Inquisition | revisa el diff contra el Merge bar; un PASS necesita evidencia con fichero:línea o un comando | edita, hace commits o push | claude-opus-5-5 / high |
+| `confessor` | Inquisition | una segunda revisión, independiente y de otra familia de modelos, cuando el plan marca el diff como grande o arriesgado | lee el informe del inquisitor | gpt-6-astra / high |
+| `security-reviewer` | Inquisition | entra cuando el diff toca auth, entrada externa, secretos o la red | edita | incluido en omp, `@slow` |
+| `sonic` | Auspex, Inquisition | ejecuta los checks del repo: primero la línea base, al final los checks completos | arregla lo que falla | `@smol` / medium |
+
 ## Instalación
 
 Strategium funciona dentro de [omp](https://omp.sh/), nuestro agente de código: instala omp primero.
