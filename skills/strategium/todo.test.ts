@@ -121,14 +121,15 @@ test("the skill's todo example builds without errors", async () => {
 	expect(m).not.toBeNull();
 	const example = m![2].split("\n").map(l => l.slice(m![1].length)).join("\n");
 	const [call] = buildTodo(example);
-	expect(call.op === "init" && call.list[0]).toEqual({
-		phase: "Muster",
-		items: [
-			"[captain] Requirements and theatre skills",
-			"[captain] Objective and booking",
-			"[seal] Seals",
-			"[captain] Begin run and theatre status",
-			"[captain] Build the todo",
-		],
-	});
+	expect(call.op === "init" && call.list.map(p => p.phase)).toEqual([
+		"Muster",
+		"Auspex",
+		"Scriptorium",
+		"Deployment",
+		"Skirmish",
+		"Inquisition",
+		"Extraction",
+		"Debrief",
+	]);
+	expect(call.op === "init" && call.list[0].items).toEqual(["[captain] Objective", "[seal] Seals"]);
 });
