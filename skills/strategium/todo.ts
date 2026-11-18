@@ -27,6 +27,7 @@ export const AGENTS: Record<string, string> = {
 	veteran: "\u{f0787}", // md-sword_cross
 	apothecary: "\u{f06ef}", // md-medical_bag
 	inquisitor: "\u{f029b}", // md-gavel
+	confessor: "\u{f00a2}", // md-book_cross
 	"security-reviewer": "\u{f0d9a}", // md-shield_search
 	sonic: "\u{f068c}", // md-skull, the servo-skull
 	task: "\u{f0474}", // md-school

@@ -11,7 +11,7 @@ El plugin trae tres cosas:
 | Parte | Qué es |
 |---|---|
 | **Extensión** | el tool `strategium` y el comando `/strategium`: reserva de la run por sesión, bloqueo de edición, temporizador de reserva opcional |
-| **Agentes** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, `archmagos`, más los incluidos `scout` y `sonic` |
+| **Agentes** | `battle-brother`, `veteran`, `librarian`, `apothecary`, `inquisitor`, `confessor`, `archmagos`, más los incluidos `scout` y `sonic` |
 | **Skills** | `strategium`, `strategium-alarm`, `strategium-setup`, `strategium-study`, `strategium-ui` |
 
 ## Cómo funciona una run
@@ -27,30 +27,64 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 3. **Scriptorium** — un librarian escribe una especificación, de 1 a 5 squads y una Merge bar; cuando el objetivo se divide en áreas, un librarian por área y después un líder une las partes (con el Archmagos Dominus marcado en Muster, un `archmagos` integra las partes en lugar del líder).
 4. **Deployment** — una rama para la run, los squads declarados con sus ficheros; cada agente aislado trabaja en su propio checkout de omp.
 5. **Skirmish** — un `battle-brother` implementa cada squad con los tests primero; un `apothecary` intenta romper los tests nuevos, solo en squads con lógica nueva y dentro de un presupuesto fijo.
-6. **Inquisition** — un `inquisitor` revisa el diff contra la Merge bar; un `sonic` ejecuta las comprobaciones del repo.
+6. **Inquisition** — un `inquisitor` revisa el diff contra la Merge bar, y se une un `confessor` de otra familia de modelos (si está disponible) cuando el plan marca el diff como grande o arriesgado; un `sonic` ejecuta las comprobaciones del repo.
 7. **Extraction** — el commit y la merge request, después de tu sello.
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}}}%%
 flowchart TB
-  U["Tú · Maestro de Capítulo<br/>concedes los sellos"] -->|"/strategium objetivo"| C
-  subgraph run["Sesión principal · el Capitán"]
-    C["Capitán<br/>tool strategium + /strategium<br/>nunca edita código"]
-    C --> M["Muster<br/>objetivo · sellos · reserva?"]
-    M --> A["Auspex<br/>scout"]
-    A --> B["Scriptorium<br/>librarian → plan"]
-    B --> S1{{"seal Plan"}}
-    S1 --> D["Deployment<br/>una rama + squads declarados"]
-    D --> E["Skirmish<br/>battle-brother → veteran<br/>apothecary rompe los tests"]
-    E --> I["Inquisition<br/>inquisitor · sonic<br/>security-reviewer si toca auth"]
-    I --> S2{{"seal UI"}}
-    S2 --> X["Extraction<br/>commit + MR"]
-    X --> S3{{"seal MR"}}
-    S3 --> F["Debrief<br/>informe del día"]
+  U(["Maestro de Capítulo · tú"]) -->|"/strategium"| muster
+
+  subgraph muster["I · MUSTER"]
+    direction LR
+    M["Capitán<br/>objetivo · reserva"] --> S0{{"eliges los sellos"}}
   end
-  T["Temporizador de reserva · solo ticketing<br/>50% · 80% · 100%"] -.->|avisa| C
-  T --> V["vox-caster<br/>sonido + notificación"]
-  G["Guarda de edición<br/>edit · write · ast_edit"] -.->|bloquea| C
-  R["Estado por día<br/>JSONL + reservas por run"] --- C
+  subgraph auspex["II · AUSPEX"]
+    direction LR
+    A1["scout ×1-3<br/>mapean el código"] --> A2["sonic<br/>línea base"]
+  end
+  subgraph scriptorium["III · SCRIPTORIUM"]
+    direction LR
+    L2["librarians por área<br/>líder o archmagos"] --> SP{{"seal Plan"}}
+    L1["librarian<br/>spec · squads · Merge bar"] --> SP
+  end
+  subgraph deployment["IV · DEPLOYMENT"]
+    direction LR
+    D["Capitán<br/>rama · squads declarados"]
+  end
+  subgraph skirmish["V · SKIRMISH"]
+    direction LR
+    B1["battle-brother<br/>uno por squad · tests primero"] --> B3["apothecary<br/>mutantes · fuzz"]
+    B1 -.->|"2 fallidos"| B2["veteran"]
+  end
+  subgraph inquisition["VI · INQUISITION"]
+    direction LR
+    Q3["security-reviewer<br/>si auth · red"] --> Q4["sonic<br/>checks"]
+    Q2["confessor<br/>si se marca"] --> Q4
+    Q1["inquisitor"] --> Q4
+    Q4 --> SU{{"seal UI"}}
+  end
+  subgraph extraction["VII · EXTRACTION"]
+    direction LR
+    X["commit · MR"] --> SM{{"seal MR"}}
+  end
+  subgraph debrief["VIII · DEBRIEF"]
+    direction LR
+    F["informe del día"]
+  end
+
+  muster --> auspex --> scriptorium --> deployment --> skirmish --> inquisition --> extraction --> debrief
+
+  classDef agent fill:#1e1b16,stroke:#b8963e,color:#f3e9cf
+  classDef seal fill:#7a1212,stroke:#e0b84a,stroke-width:2px,color:#fff4d6
+  classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
+  classDef station fill:#2a2620,stroke:#b8963e,color:#e0b84a
+  class M,A1,A2,L1,L2,D,B1,B2,B3,Q1,Q2,Q3,Q4,X,F agent
+  class S0,SP,SU,SM seal
+  class U you
+  class muster,auspex,scriptorium,deployment,skirmish,inquisition,extraction,debrief station
+  linkStyle 0 stroke:#b8963e,color:#f3e9cf
+  linkStyle 6 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
 ```
 
 Los nombres de estación, los nombres de agente y las alertas tienen su propia voz; el `archmagos` la usa solo en el chat y el todo, nunca en el fichero del plan. Los tickets, los mensajes de commit y las merge requests se quedan planos y profesionales.
@@ -59,17 +93,56 @@ Los nombres de estación, los nombres de agente y las alertas tienen su propia v
 
 Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un destino y un presupuesto. Cuando el presupuesto se agota, la run se para y te enseña lo que queda abierto.
 
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}}}%%
+flowchart LR
+  A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I["Inquisition"] --> X["Extraction"]
+  S -.->|"Recon · 1/run"| A
+  K -.->|"Redraft · 1/run"| S
+  I -.->|"Penance · 2/squad, luego veteran"| K
+  K -.->|"Retrial · 2/item"| I
+  I -.->|"Stand down"| Y(["tú"])
+  classDef station fill:#2a2620,stroke:#b8963e,color:#e0b84a
+  classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
+  class A,S,K,I,X station
+  class Y you
+  linkStyle 4,5,6,7,8 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
+```
+
 | Vuelta | Detonante | Destino | Presupuesto |
 |---|---|---|---|
 | **Recon** | el mapa del código está equivocado | un `scout` más con ese hueco concreto | 1 por run |
 | **Redraft** | el plan está equivocado, o el check de un squad no se puede cumplir tal cual está escrito | el mismo `librarian` reescribe el trabajo restante (con áreas, solo el área afectada, y el líder vuelve a unir; en una run marcada para el Archmagos Dominus, un `archmagos` nuevo vuelve a integrar solo esa área) | 1 por run |
-| **Rally** | el código está equivocado: check rojo, supervivientes del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con todos los IDs de hallazgos abiertos en un solo brief, nunca el informe anterior | 2 rondas por squad, luego un `veteran` |
-| **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez, solo sobre los IDs de hallazgos abiertos y el rango del arreglo, y luego `sonic` para los checks | 2 rondas por item del Merge bar |
+| **Penance** | el código está equivocado: check rojo, supervivientes o crashes del fuzz del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con todos los IDs de hallazgos abiertos en un solo brief, nunca el informe anterior; primero reproduce cada hallazgo, y el que no puede reproducir vuelve como NOT REPRODUCED | 2 rondas por squad, luego un `veteran` |
+| **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez (el `confessor` revisa sus propios IDs), solo sobre los IDs de hallazgos abiertos y el rango del arreglo, y luego `sonic` para los checks | 2 rondas por item del Merge bar |
 | **Stand down** | se agotó el presupuesto, o el fallo no está en el código | tú, con los puntos abiertos | — |
 
-Si el código puede cumplir el check del squad tal como está escrito, es un rally; si no puede, el squad se cortó mal y es un redraft. Una vuelta que pasa por delante de un sello ya concedido rompe el sello y hay que pedirlo otra vez. Lo que ya pasó, sigue pasado.
+Si el código puede cumplir el check del squad tal como está escrito, es un penance; si no puede, el squad se cortó mal y es un redraft. Una vuelta que pasa por delante de un sello ya concedido rompe el sello y hay que pedirlo otra vez. Lo que ya pasó, sigue pasado.
 
 ## Instalación
+
+Strategium funciona dentro de [omp](https://omp.sh/), nuestro agente de código: instala omp primero.
+
+**Que lo haga un agente:** pega este prompt en cualquier agente de código con acceso a la shell. Instala omp si falta y después el plugin.
+
+```text
+Set up omp (https://omp.sh/) with the Strategium plugin on this machine.
+
+1. Run `omp --version`. If omp is not found, install it:
+   - macOS / Linux: curl -fsSL https://omp.sh/install | sh
+   - Windows (PowerShell): irm https://omp.sh/install.ps1 | iex
+   If `omp` is still not on PATH, open a new shell and try again. Stop and report if it still fails.
+2. Run `git --version` and `bun --version`. If one is missing, tell me with its official install command; do not install it without asking.
+3. Install the plugins (if one is already there, keep it and move on):
+   omp plugin marketplace add addyosmani/agent-skills
+   omp plugin install agent-skills@addy-agent-skills
+   omp plugin marketplace add frandev94/strategium
+   omp plugin install strategium@strategium
+4. Verify with `omp plugin list` and `omp plugin doctor`.
+5. Report a table: step, result, and the error output of any failure. Then tell me to open a fresh omp session and run /skill:strategium-setup.
+
+Change no other omp settings, and do not remove or upgrade anything already installed.
+```
 
 **Como plugin de marketplace:**
 
@@ -113,13 +186,13 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 /strategium-end                       cierra la run
 ```
 
-El texto libre necesita las comillas, para no chocar nunca con un subcomando. Sin ticket, el librarian propone los criterios de aceptación y tú los confirmas en el sello Plan, que no se puede saltar.
+El texto libre necesita las comillas, para no chocar nunca con un subcomando. Sin ticket, el librarian propone los criterios de aceptación y tú los confirmas en el sello Plan, que no se puede saltar. El comando inicia la run de inmediato, sin temporizador, bajo una KEY tomada del objetivo (una clave tal cual, el nombre base de un fichero, o las primeras palabras del texto libre en kebab-case).
 
 Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. Cerrar una sesión pausa su run y libera la reserva; al reabrir esa sesión la recupera y la reanuda sola, salvo que tú la hubieras pausado (`/strategium-pause`, acción `stop`, el stand down). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy. El Capitán no puede editar el repositorio de la run: mientras la run está abierta `edit` y `ast_edit` se ocultan de la sesión principal, `write` está bloqueado dentro del repo de la run y de su carpeta `<repo>-worktrees`, los ejecutores de tests y builds por bash y las escrituras de ficheros por bash están bloqueados (solo pasan las redirecciones a `$TEMP` y `local://`), se rechazan los agentes fuera del plantel de Strategium y se rechazan los battle-brothers hasta que se declaren los squads del plan (`strategium` `slices`; los squads en paralelo no pueden compartir un fichero). Cuando el plan se aprueba en el modo plan de omp, "Approve and execute" abre una sesión nueva y la run se va con ella; un `/new` normal deja la run en su propia sesión.
 
 Pausa por inactividad: cuando ningún agente trabaja y nada espera para ejecutarse, el reloj de la run se pausa tras `STRATEGIUM_IDLE_MIN` minutos de inactividad (3 por defecto), suena el sonido `idle` (con las notificaciones activas) y el pie la muestra pausada. El siguiente turno la reanuda sola; el Capitán no llama a `start`. Una run que pausaste a mano (`/strategium-pause`, acción `stop`, el stand down) nunca se reanuda sola. Una pregunta o una revisión de plan que te espera cuenta como actividad: el reloj sigue corriendo y la alarma `attention` te avisa (con las notificaciones activas). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy.
 
-Pie: la estación se muestra como `<estación> › <tarea>`, donde `<tarea>` es la tarea activa del todo sin su etiqueta de agente, cortada a 32 caracteres con `…`. Un sello mantiene `⏳ seal <nombre>`; un retorno muestra `↩ <estación> › <tarea>`. Durante los pasos 0-2 de Muster aún no existe una run, así que no hay pie; desde `begin` muestra p. ej. `Muster › Begin run and theatre status`. Si el terminal es lo bastante ancho (cabe el texto del pie más dos espacios y la pista) la línea termina, pegada a la derecha, con la pista `ALT + C to enter cockpit`; más estrecho, o con ancho desconocido, no hay pista. El ancho se lee en cada dibujo del pie (cada minuto y en cada cambio de estado), no al redimensionar.
+Pie: la estación se muestra como `<estación> › <tarea>`, donde `<tarea>` es la tarea activa del todo sin su etiqueta de agente, cortada a 32 caracteres con `…`. Un sello mantiene `⏳ seal <nombre>`; un retorno muestra `↩ <estación> › <tarea>`. El pie aparece en cuanto `/strategium` inicia la run (`strategium: <KEY> · <transcurrido> min`); al iniciar la primera tarea del esqueleto muestra p. ej. `Muster › Objective`, y luego `⏳ seal Seals`. Si el terminal es lo bastante ancho (cabe el texto del pie más dos espacios y la pista) la línea termina, pegada a la derecha, con la pista `ALT + C to enter cockpit`; más estrecho, o con ancho desconocido, no hay pista. El ancho se lee en cada dibujo del pie (cada minuto y en cada cambio de estado), no al redimensionar.
 
 Cockpit: `/strategium-cockpit` (o Alt+C) abre el overlay a pantalla completa (tapa el prompt, la lista de todos y la transcripción hasta que Esc o `q` lo cierra; también se cierra solo cuando el agente te pregunta algo, pide aprobar una herramienta o abre una revisión de plan) mientras esta sesión tiene una run abierta: la clave, el reloj y los sellos arriba, debajo una línea de estado (`▶ AGENT AT WORK` mientras corre un turno, `○ AWAITING YOUR ORDERS` en dorado cuando el agente se ha parado y el prompt te espera; un diálogo de otra extensión no tiene evento, así que no se anuncia), luego solo la estación activa (la primera fase con una tarea del todo en curso; si no, la primera con una tarea en espera) como título (`▶` en curso, `↶` tras un retorno, `○` en espera; un sello en espera añade `· seal <nombre> awaits you`), una caja por tipo de agente presente en ella, y las últimas entradas de la crónica. Las cajas, en este orden, toman las tareas del todo con esa etiqueta y los agentes lanzados en esa estación: CAPTAIN, SCOUTS, LIBRARIANS (también `[archmagos]`), BATTLE-BROTHERS (también `[veteran]`), APOTHECARIES, INQUISITOR, SECURITY-REVIEWER, SONIC, ADEPTS (`[task]`) y SEAL. Una caja solo sale si la estación tiene una tarea o un agente de su tipo. Cada línea lleva su marca de estado: `▶` en curso, `✓` hecha, `○` en espera, `✗` fallida; las líneas de BATTLE-BROTHERS llevan `†` (o `‡` si es veterano) y suman una línea `squad <id> …` por escuadrón declarado. Un sello concedido pasa a ✠ y, con las notificaciones activas, suena el sonido `done`. La crónica y la lista de agentes lanzados viven solo en memoria, así que reiniciar omp las borra; un agente lanzado desde eval nunca informa de su fin, así que sigue en `▶` hasta que cambie la clave de la run. Los colores son truecolor si el terminal lo admite y 256 colores si no. El cockpit no puede mostrar recuentos de tests ni de mutantes: los eventos de los agentes ocurren dentro de subagentes, que el padre no ve. El cockpit dibuja glifos Nerd Font con `STRATEGIUM_GLYPHS=1` y símbolos simples si no, nunca emoji.
 

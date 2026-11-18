@@ -93,6 +93,19 @@ describe("the todo of a run", () => {
 		}
 	});
 
+	test("confessor is a known agent: md-book_cross glyph tag, plain tag without glyphs", () => {
+		const text = "Inquisition\n  confessor: Review";
+		const [plain] = buildTodo(text);
+		const [glyph] = buildTodo(text, { glyphs: true });
+		expect(plain.op === "init" && plain.list[0].items).toEqual(["[confessor] Review"]);
+		expect(glyph.op === "init" && glyph.list[0].items).toEqual(["\u{f00a2} confessor · Review"]);
+		for (const call of [plain, glyph]) {
+			const list = call.op === "init" ? call.list : [];
+			const phases = list.map(p => ({ name: p.phase, tasks: p.items.map(content => ({ content, status: "in_progress" })) }));
+			expect(whereFrom(phases)).toEqual({ station: "Inquisition", task: "Review" });
+		}
+	});
+
 	test("mistakes are refused with their line, before the todo tool sees them", () => {
 		expect(() => buildTodo("Muster\n  captian: Muster")).toThrow('line 2: unknown agent "captian"');
 		expect(() => buildTodo("  captain: Muster")).toThrow("line 1: a task needs a station above it");
@@ -108,14 +121,15 @@ test("the skill's todo example builds without errors", async () => {
 	expect(m).not.toBeNull();
 	const example = m![2].split("\n").map(l => l.slice(m![1].length)).join("\n");
 	const [call] = buildTodo(example);
-	expect(call.op === "init" && call.list[0]).toEqual({
-		phase: "Muster",
-		items: [
-			"[captain] Requirements and theatre skills",
-			"[captain] Objective and booking",
-			"[seal] Seals",
-			"[captain] Begin run and theatre status",
-			"[captain] Build the todo",
-		],
-	});
+	expect(call.op === "init" && call.list.map(p => p.phase)).toEqual([
+		"Muster",
+		"Auspex",
+		"Scriptorium",
+		"Deployment",
+		"Skirmish",
+		"Inquisition",
+		"Extraction",
+		"Debrief",
+	]);
+	expect(call.op === "init" && call.list[0].items).toEqual(["[captain] Objective", "[seal] Seals"]);
 });

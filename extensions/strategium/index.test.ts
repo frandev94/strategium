@@ -2,7 +2,7 @@ import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension, { whereFrom } from "./index";
+import extension, { keyOf, whereFrom } from "./index";
 import { claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
 
 // The extension registers itself on a host. A fake one is enough: it hands back the tool it
@@ -218,11 +218,59 @@ describe("the strategium tool", () => {
 		await call({ action: "stop" });
 		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 		expect(await call({ action: "start" })).toContain("today's booked minutes are needed");
+		expect(await call({ action: "start", booked: 90 })).toContain("new shift for K-1 today, booked 90 min");
+	});
+
+	const storedRun = (dir: string) => JSON.parse(readFileSync(join(dir, "runs", "sess-0001.json"), "utf8"));
+
+	test("an untimed run given a booking with start is timed from then", async () => {
+		const { call, dir } = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await call({ action: "begin", key: "dark-mode" });
+		setSystemTime(new Date(2026, 10, 16, 9, 30, 0));
+		const out = await call({ action: "start", booked: 60 });
+		expect(out).toContain("booked 60 min today");
+		expect(out).not.toContain("new shift");
+		expect(storedRun(dir).untimed).toBeUndefined();
+		expect(await call({ action: "status" })).toContain("dark-mode 30/60 min (50%) running");
+	});
+
+	test("a stopped untimed run given a booking with start is timed", async () => {
+		const { call, dir } = setup();
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		await call({ action: "begin", key: "dark-mode" });
+		setSystemTime(new Date(2026, 10, 16, 9, 10, 0));
+		await call({ action: "stop" });
+		setSystemTime(new Date(2026, 10, 16, 9, 20, 0));
+		const out = await call({ action: "start", booked: 60 });
+		expect(out).toContain("booked 60 min today");
+		expect(out).not.toContain("new shift");
+		expect(storedRun(dir).untimed).toBeUndefined();
+		expect(await call({ action: "status" })).toContain("dark-mode 10/60 min (16%) running");
+	});
+
+	test("an idle-paused untimed run given a booking clears both marks", async () => {
+		const { call, dir } = setup();
+		await call({ action: "begin", key: "dark-mode" });
+		const file = join(dir, "runs", "sess-0001.json");
+		writeFileSync(file, JSON.stringify({ ...storedRun(dir), idle: true }));
+		await call({ action: "start", booked: 60 });
+		const run = storedRun(dir);
+		expect(run.idle).toBeUndefined();
+		expect(run.untimed).toBeUndefined();
 	});
 });
 
 // The command hands the objective to the Captain; the workflow does not need a ticket.
 describe("the /strategium command", () => {
+	test("the command hides edit and ast_edit from the Captain at once", async () => {
+		const { command, activeTools, setActive } = setup();
+		setActive([...activeTools(), "edit", "ast_edit"]);
+		await command('"add a dark mode"');
+		expect(activeTools()).not.toContain("edit");
+		expect(activeTools()).not.toContain("ast_edit");
+	});
+
 	test("free text in quotes is the objective", async () => {
 		const { command, sent } = setup();
 		await command('"add a dark mode"');
@@ -230,9 +278,10 @@ describe("the /strategium command", () => {
 	});
 
 	test("a file is the objective, and a theatre may follow", async () => {
-		const { command, sent } = setup();
+		const { command, sent, call } = setup();
 		await command("@docs/spec.md acme");
 		expect(sent[0]).toContain("for the objective @docs/spec.md with theatre skill://strategium-acme");
+		expect(await call({ action: "status" })).toContain("RUN spec theatre=acme");
 	});
 
 	test("a theatre named with its prefix is not doubled", async () => {
@@ -243,10 +292,100 @@ describe("the /strategium command", () => {
 	});
 
 	test("unquoted free text is refused: it would read as a key and a theatre", async () => {
-		const { command, sent, notes } = setup();
+		const { command, sent, notes, call } = setup();
 		await command("make the header blue");
 		expect(sent).toEqual([]);
 		expect(notes[0]).toContain('"free text"');
+		expect(await call({ action: "status" })).not.toContain("RUN");
+	});
+
+	test("the command begins the run at once, untimed, with a key from the objective", async () => {
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		const { command, call, sent, start, shown } = setup();
+		await command('"add a dark mode"');
+		const status = await call({ action: "status" });
+		expect(status).toContain("RUN add-a-dark-mode theatre=none");
+		expect(status).toContain("add-a-dark-mode 0 min (no booking) running");
+		expect(sent[0]).toContain("Strategium run add-a-dark-mode has begun, untimed");
+		expect(sent[0]).toContain("todo init the skeleton todo");
+		start();
+		expect(shown()).toContain("strategium: add-a-dark-mode");
+		setSystemTime(new Date(2026, 10, 16, 9, 5, 0));
+		expect(await call({ action: "status" })).toContain("add-a-dark-mode 5 min");
+	});
+
+	test("the key is a ticket as given, a file's base name or the free text's first words", () => {
+		expect(keyOf("PROJ-123")).toBe("PROJ-123");
+		expect(keyOf("@docs/Spec File.md")).toBe("spec-file");
+		expect(keyOf("@C:\\work\\plan.v2.md")).toBe("plan-v2");
+		expect(keyOf('"add a dark mode"')).toBe("add-a-dark-mode");
+		expect(keyOf('"Añadir el modo oscuro a la cabecera"')).toBe("anadir-el-modo-oscuro");
+		expect(keyOf('"supercalifragilistic expialidocious word"')).toBe("supercalifragilistic");
+		expect(keyOf('"!!! ¿?"')).toBe("objective");
+		expect(keyOf('"日本語"')).toBe("objective");
+		// Free text keeps whole words up to 32 characters: exactly 32 stays, 33 drops the last word.
+		expect(keyOf(`"${"a".repeat(10)} ${"b".repeat(10)} ${"c".repeat(10)}"`)).toBe(`${"a".repeat(10)}-${"b".repeat(10)}-${"c".repeat(10)}`);
+		expect(keyOf(`"${"a".repeat(10)} ${"b".repeat(10)} ${"c".repeat(11)}"`)).toBe(`${"a".repeat(10)}-${"b".repeat(10)}`);
+		// A first word longer than 32 is cut at exactly 32.
+		expect(keyOf(`"${"x".repeat(40)}"`)).toBe("x".repeat(32));
+		const tricky: [string, string][] = [
+			['"🚀🔥 launch day 🎉"', "launch-day"],
+			['"日本語のテキスト"', "objective"],
+			['"..."', "objective"],
+			['"Ünïcödé Çrème Brûlée à la façon"', "unicode-creme-brulee-a"],
+			[`"${"palabra ".repeat(15).trim()}"`, "palabra-palabra-palabra-palabra"],
+			["@a/b\\c.d.e", "c-d"],
+			[`"${"x".repeat(40)}"`, "x".repeat(32)],
+			["@docs/", "objective"],
+			["@", "objective"],
+			['"   "', "objective"],
+		];
+		for (const [input, expected] of tricky) {
+			const key = keyOf(input);
+			expect(key).toBe(expected);
+			expect(key).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
+			expect(key.length).toBeLessThanOrEqual(32);
+		}
+	});
+
+	test("the command redraws the footer at once: after a begin and after a failed begin", async () => {
+		const s = setup();
+		await s.start();
+		await s.command('"add a dark mode"');
+		expect(s.shown()).toContain("strategium: add-a-dark-mode");
+
+		const a = setup("sess-0001");
+		await a.call({ action: "begin", key: "K-1" });
+		const b = setup("sess-0002", a.dir);
+		await b.start();
+		const before = b.footer.length;
+		await b.command("K-1");
+		expect(b.sent[0]).toContain("could not begin run K-1");
+		expect(b.footer.length).toBeGreaterThan(before);
+	});
+
+	test("a key another session holds is not begun: the user and the Captain are told", async () => {
+		const a = setup("sess-0001");
+		await a.call({ action: "begin", key: "K-1" });
+		const b = setup("sess-0002", a.dir);
+		await b.command("K-1");
+		expect(b.notes.join("\n")).toContain("is held by omp session");
+		expect(b.sent[0]).toContain("could not begin run K-1");
+		expect(await b.call({ action: "status" })).not.toContain("(this session)");
+		expect(await a.call({ action: "status" })).toContain("RUN K-1");
+		expect(await a.call({ action: "status" })).toContain("(this session)");
+	});
+
+	test("the command on this session's own run leaves it as it is", async () => {
+		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+		const { command, call, sent, dir } = setup();
+		await call({ action: "begin", key: "K-1", booked: 120 });
+		const events = load(join(dir, "2026-11-16.jsonl")).length;
+		await command("K-1");
+		const run = JSON.parse(readFileSync(join(dir, "runs", "sess-0001.json"), "utf8"));
+		expect(run.untimed).toBeUndefined();
+		expect(load(join(dir, "2026-11-16.jsonl")).length).toBe(events);
+		expect(sent[0]).toContain("is already this session's run");
 	});
 });
 
@@ -724,14 +863,14 @@ describe("the Captain's limits", () => {
 			launch(s, [brother("S1gDeviceSite", a.id), brother("Grid", b.id)], ["S1gDeviceSite", "Grid"]);
 			end(s, "S1gDeviceSite");
 			await s.call({ action: "slices", slices: [a, b] });
-			// The rally would share attachments.ts with S2b, still running.
+			// The penance would share attachments.ts with S2b, still running.
 			expect(launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite-2"])?.reason).toBe(
 				"Strategium: squad S1g-device-site changes src/cards/attachments.ts, which squad S2b-grid-device-site is changing right now. " +
 					"Two agents working on the same file at the same time overwrite each other's changes. Wait until that agent has finished, then launch this one.",
 			);
 			end(s, "Grid");
 			expect(launch(s, [brother("S1gDeviceSite", a.id)], ["S1gDeviceSite-2"])).toBeUndefined();
-			// The first run's completion, still in the history, does not stop the rally.
+			// The first run's completion, still in the history, does not stop the penance.
 			end(s, "S1gDeviceSite");
 			expect(await s.call({ action: "slices", slices: [a, b] })).toStartWith("WARN squad S2b-grid-device-site is no longer active");
 			end(s, "S1gDeviceSite-2");
@@ -1420,12 +1559,42 @@ describe("tools, begin and end", () => {
 
 		test("an untimed run begun again with a booking is timed", async () => {
 			const s = setup();
+			setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 			await s.call({ action: "begin", key: "K-1" });
 			const stored = () => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8"));
 			expect(stored().untimed).toBe(true);
-			await s.call({ action: "begin", key: "K-1", booked: 120 });
+			await s.call({ action: "begin", key: "K-1", booked: 120, spent: 30 });
 			expect(stored().untimed).toBeUndefined();
 			expect(stored().key).toBe("K-1");
+			// The minutes already worked count toward the booking, and every reader sees it.
+			expect(await s.call({ action: "status" })).toContain("K-1 30/120 min (25%) running");
+			expect(await s.call({ action: "report" })).toContain("PRIOR K-1 30 min");
+			await s.start();
+			expect(s.shown()).toContain("30/120 min");
+			expect(s.shown()).not.toContain("new day");
+			await s.call({ action: "begin", key: "K-1", booked: 120 });
+			expect(load(join(s.dir, "2026-11-16.jsonl")).filter(e => e.event === "start" && e.booked !== undefined)).toHaveLength(1);
+		});
+
+		test("begun again on a timed key without a booking, the day file keeps its events", async () => {
+			const s = setup();
+			setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+			await s.call({ action: "begin", key: "K-1", booked: 120 });
+			const file = join(s.dir, "2026-11-16.jsonl");
+			const before = load(file);
+			await s.call({ action: "begin", key: "K-1" });
+			expect(load(file)).toEqual(before);
+			expect(await s.call({ action: "status" })).toContain("/120 min");
+		});
+
+		test("begun again on an open key with spent and no new booking appends an adjust", async () => {
+			const s = setup();
+			setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
+			await s.call({ action: "begin", key: "K-1", booked: 120 });
+			await s.call({ action: "begin", key: "K-1", spent: 30 });
+			expect(load(join(s.dir, "2026-11-16.jsonl")).filter(e => e.event === "adjust")).toEqual([expect.objectContaining({ key: "K-1", prior: 30 })]);
+			expect(await s.call({ action: "status" })).toContain("K-1 30/120 min");
+			expect(await s.call({ action: "report" })).toContain("ADJUST K-1 30 min");
 		});
 
 		test("a takeover adopts the repo of the run it replaces", async () => {
@@ -1440,7 +1609,7 @@ describe("tools, begin and end", () => {
 });
 
 describe("the Captain's hooks never throw and keep their wording", () => {
-	const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "security-reviewer", "sonic", "task"];
+	const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "confessor", "security-reviewer", "sonic", "task"];
 	type Verdict = { block?: true; reason?: string } | undefined;
 	const disjoint = [
 		{ id: "S1", parallel: true, files: ["a.ts"] },
@@ -1936,6 +2105,24 @@ describe("the idle pause", () => {
 			expect(stops(s.dir).length, name).toBe(1);
 		}
 	});
+
+	type Idler = Awaited<ReturnType<typeof idler>>;
+	const begins: [string, (s: Idler) => Promise<unknown>][] = [
+		["the command", s => s.command('"other thing"')],
+		["the tool", s => s.call({ action: "begin", key: "K-2" })],
+	];
+	for (const [via, begin] of begins) {
+		test(`a begin by ${via} restarts the idle count`, async () => {
+			const s = await idler();
+			// The count started at 9:00; the begin at 9:02 restarts it, so 9:03 (3 min after 9:00) does not pause.
+			setSystemTime(T(9, 2));
+			await begin(s);
+			await at(s, 9, 3);
+			expect(stops(s.dir).filter(e => e.reason === "idle")).toEqual([]);
+			await at(s, 9, 5);
+			expect(stops(s.dir).filter(e => e.reason === "idle").length).toBe(1);
+		});
+	}
 
 	test("a turn between two ticks restarts the idle count", async () => {
 		const s = await idler();
