@@ -37,7 +37,7 @@ flowchart TB
 
   subgraph muster["I · MUSTER"]
     direction LR
-    M["Capitán<br/>objetivo · reserva"] --> S0{{"eliges los sellos"}}
+    M["Capitán<br/>objetivo · reserva"] --> S0{"eliges<br/>los sellos"}
   end
   subgraph auspex["II · AUSPEX"]
     direction LR
@@ -45,35 +45,43 @@ flowchart TB
   end
   subgraph scriptorium["III · SCRIPTORIUM"]
     direction LR
-    L2["librarians por área<br/>líder o archmagos"] --> SP{{"seal Plan"}}
+    L2["librarians por área<br/>líder o archmagos"] --> SP{"seal Plan"}
     L1["librarian<br/>spec · squads · Merge bar"] --> SP
   end
   subgraph deployment["IV · DEPLOYMENT"]
     direction LR
-    D["Capitán<br/>rama · squads declarados"]
+    D{{"Capitán<br/>rama · squads declarados"}}
   end
   subgraph skirmish["V · SKIRMISH"]
     direction LR
-    B1["battle-brother<br/>uno por squad · tests primero"] --> B3["apothecary<br/>mutantes · fuzz"]
-    B1 -.->|"2 fallidos"| B2["veteran"]
+    B1["battle-brother<br/>uno por squad · tests primero"] --> BF{"¿falló<br/>dos veces?"}
+    BF -->|"no"| B3["apothecary<br/>mutantes · fuzz"]
+    BF -.->|"sí"| B2["veteran"] --> B3
   end
   subgraph inquisition["VI · INQUISITION"]
     direction LR
-    Q3["security-reviewer<br/>si auth · red"] --> Q4["sonic<br/>checks"]
-    Q2["confessor<br/>si se marca"] --> Q4
-    Q1["inquisitor"] --> Q4
-    Q4 --> SU{{"seal UI"}}
+    Q1["inquisitor"] --> Q4["sonic<br/>checks"]
+    QF{"¿diff grande<br/>o arriesgado?"} -->|"sí"| Q2["confessor"] --> Q4
+    QF -->|"no"| Q4
+    QS{"¿auth<br/>o red?"} -->|"sí"| Q3["security-reviewer"] --> Q4
+    QS -->|"no"| Q4
+    Q4 --> SU{"seal UI"}
   end
   subgraph extraction["VII · EXTRACTION"]
     direction LR
-    X["commit · MR"] --> SM{{"seal MR"}}
+    X[/"commit · MR"/] --> SM{"seal MR"}
   end
   subgraph debrief["VIII · DEBRIEF"]
     direction LR
-    F["informe del día"]
+    F[/"informe del día"/]
   end
 
-  muster --> auspex --> scriptorium --> deployment --> skirmish --> inquisition --> extraction --> debrief
+  muster --> auspex --> scriptorium --> deployment --> skirmish --> inquisition --> extraction --> debrief --> E(["fin de la run"])
+
+  auspex <-.->|"Recon · 1/run"| scriptorium
+  scriptorium <-.->|"Redraft · 1/run"| skirmish
+  skirmish <-.->|"Penance · 2/squad · Retrial · 2/item"| inquisition
+  inquisition -.->|"Stand down"| Y(["tú"])
 
   classDef agent fill:#1e1b16,stroke:#b8963e,color:#f3e9cf
   classDef seal fill:#7a1212,stroke:#e0b84a,stroke-width:2px,color:#fff4d6
@@ -81,10 +89,12 @@ flowchart TB
   classDef station fill:#2a2620,stroke:#b8963e,color:#e0b84a
   class M,A1,A2,L1,L2,D,B1,B2,B3,Q1,Q2,Q3,Q4,X,F agent
   class S0,SP,SU,SM seal
-  class U you
+  class BF,QF,QS agent
+  class U,E,Y you
   class muster,auspex,scriptorium,deployment,skirmish,inquisition,extraction,debrief station
   linkStyle 0 stroke:#b8963e,color:#f3e9cf
-  linkStyle 6 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
+  linkStyle 6,10,12,13,15 color:#f3e9cf
+  linkStyle 7,26,27,28,29 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
 ```
 
 Los nombres de estación, los nombres de agente y las alertas tienen su propia voz; el `archmagos` la usa solo en el chat y el todo, nunca en el fichero del plan. Los tickets, los mensajes de commit y las merge requests se quedan planos y profesionales.
@@ -96,7 +106,7 @@ Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un de
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}, "flowchart": {"curve": "step"}}}%%
 flowchart TB
-  A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I["Inquisition"] --> X["Extraction"]
+  A["Auspex"] --> S["Scriptorium"] --> K["Skirmish"] --> I{"Inquisition"} --> X["Extraction"]
   S -.->|"Recon · 1/run"| A
   K -.->|"Redraft · 1/run"| S
   I -.->|"Penance · 2/squad, luego veteran"| K
