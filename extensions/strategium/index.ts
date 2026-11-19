@@ -20,7 +20,7 @@ import {
 	type Ev,
 } from "./timer";
 import { childEnv } from "./env";
-import { activePhase, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
 // Several sessions can run different tickets at the same time; the day file holds them all.
@@ -1540,7 +1540,7 @@ export default function (pi: ExtensionAPI) {
 				const item = typeof p.index === "number" ? items[p.index] : undefined;
 				const agent = agentName(String(item?.agent ?? "task"));
 				const squad = item && builtSlice(item, run)?.id;
-				const station = activePhase(run.phases ?? []);
+				const station = activeStation(run.phases ?? []);
 				// log first: it resets the cockpit when the run key changed, which would wipe a registry entry set before it.
 				if (!squad) {
 					log(run.key, agent.toUpperCase(), "deployed");
@@ -1574,7 +1574,7 @@ export default function (pi: ExtensionAPI) {
 		if (!run || !ROSTER.includes(agent)) return;
 		log(run.key, agent.toUpperCase(), "deployed");
 		// shortcut: eval spawns never report an end (no host id), so they stay ▶ until the run key changes; upgrade when omp gives eval agents an id and an end event.
-		cockpit.deployed.set(`eval-${agent}-${cockpit.deployed.size + 1}`, { who: agent.toUpperCase(), role: agent, station: activePhase(run.phases ?? []), state: "active" });
+		cockpit.deployed.set(`eval-${agent}-${cockpit.deployed.size + 1}`, { who: agent.toUpperCase(), role: agent, station: activeStation(run.phases ?? []), state: "active" });
 		drawCockpit(run);
 	});
 
