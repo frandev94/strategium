@@ -133,7 +133,7 @@ The Captain plans and delegates; every other role is an agent it starts. Each on
 
 #### Models
 
-Agents pick their model through omp's role aliases, so you choose the models once in `~/.omp/agent/config.yml` and Strategium follows. Set the three roles it uses; a role you leave unset falls back to omp's built-ins (an unset `slow` can land on the costliest model omp knows, an unset `task` on your session's model):
+Agents pick their model through omp's role aliases, so you choose the models once in `~/.omp/agent/config.yml` and Strategium follows. Set the three roles it uses, without a `:level` suffix (a suffix overrides the effort of every agent on that role). A role you leave unset falls back to omp's built-ins: `plan` and `task` to your session's model, `slow` to your `default` (with neither set, to omp's slow list, which can mean the costliest model omp knows):
 
 ```yaml
 modelRoles:

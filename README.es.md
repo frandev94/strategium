@@ -133,7 +133,7 @@ El Capitán planifica y delega; cada uno de los demás papeles es un agente que 
 
 #### Modelos
 
-Los agentes eligen modelo con los alias de rol de omp: eliges los modelos una vez en `~/.omp/agent/config.yml` y Strategium los sigue. Configura los tres roles que usa; un rol sin configurar cae en lo que trae omp (un `slow` sin configurar puede acabar en el modelo más caro que conoce omp, un `task` sin configurar en el modelo de tu sesión):
+Los agentes eligen modelo con los alias de rol de omp: eliges los modelos una vez en `~/.omp/agent/config.yml` y Strategium los sigue. Configura los tres roles que usa, sin sufijo `:nivel` (un sufijo pisa el effort de todos los agentes de ese rol). Un rol sin configurar cae en lo que trae omp: `plan` y `task` en el modelo de tu sesión, `slow` en tu `default` (si tampoco está, en la lista de omp, que puede acabar en el modelo más caro que conoce):
 
 ```yaml
 modelRoles:
