@@ -22,6 +22,7 @@ function fakePi() {
 	const sent: string[] = [];
 	const calls: [unknown, unknown][] = [];
 	const shortcuts: Record<string, { description?: string; handler: (ctx: unknown) => unknown }> = {};
+	const conflicts: Record<string, unknown> = {};
 	let active = ["read", "bash", "edit", "write", "task"];
 	const zod = {
 		object: () => schema(),
@@ -46,12 +47,14 @@ function fakePi() {
 			sendUserMessage: (m: string) => sent.push(m),
 			sendMessage: (m: { content: string }, o?: unknown) => calls.push([m, o]),
 			registerShortcut: (key: string, s: { description?: string; handler: (ctx: unknown) => unknown }) => (shortcuts[key] = s),
+			getShortcutConflict: (k: string) => conflicts[k],
 		},
 		tools,
 		commands,
 		handlers,
 		sent,
 		shortcuts,
+		conflicts,
 		calls,
 		activeTools: () => active,
 		setActive: (n: string[]) => {
@@ -90,6 +93,7 @@ const dirs: string[] = [];
 afterEach(() => {
 	setSystemTime();
 	delete process.env.STRATEGIUM_STATE_DIR;
+	delete process.env.STRATEGIUM_COCKPIT_KEY;
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
@@ -111,7 +115,7 @@ function setup(sid = "sess-0001", shared?: string) {
 	delete process.env.STRATEGIUM_GLYPHS;
 	// The alarm tests need notifications on; the tests of the default turn them off again.
 	process.env.STRATEGIUM_NOTIFY = "1";
-	const { pi, tools, commands, handlers, sent, calls, activeTools, setActive, shortcuts } = fakePi();
+	const { pi, tools, commands, handlers, sent, calls, activeTools, setActive, shortcuts, conflicts } = fakePi();
 	// What the footer and the alert had seen the moment each notification went out.
 	const seen: { via: string; footer: string; events: number }[] = [];
 	const sendMessage = pi.sendMessage;
@@ -138,7 +142,7 @@ function setup(sid = "sess-0001", shared?: string) {
 	const todo = (phases: unknown) => handlers.tool_result[0]({ toolName: "todo", isError: false, details: { phases } }, ctx);
 	// The last footer line, without its colours.
 	const shown = () => (footer.at(-1) ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-	return { dir, call, command, sub, sent, calls, seen, footer, notes, commands, handlers, shortcuts, ctx, start, todo, shown, activeTools, setActive };
+	return { dir, call, command, sub, sent, calls, seen, footer, notes, commands, handlers, shortcuts, conflicts, ctx, start, todo, shown, activeTools, setActive };
 }
 
 describe("the strategium tool", () => {
@@ -634,6 +638,24 @@ describe("the station in the footer", () => {
 			expect(line.endsWith(HINT)).toBe(true);
 			expect(line).toContain("strategium: dark-mode · Skirmish › Squad 1 · 2 min");
 			expect(Bun.stringWidth(line)).toBe(140);
+		});
+
+		test("the hint names the configured key", async () => {
+			process.env.STRATEGIUM_COCKPIT_KEY = "ctrl+shift+k";
+			const { start, shown } = await begun();
+			cols(140);
+			start();
+			const line = shown();
+			expect(line.endsWith("CTRL + SHIFT + K to enter cockpit")).toBe(true);
+			expect(Bun.stringWidth(line)).toBe(140);
+		});
+
+		test("the hint names a plus key as itself", async () => {
+			process.env.STRATEGIUM_COCKPIT_KEY = "ctrl++";
+			const { start, shown } = await begun();
+			cols(140);
+			start();
+			expect(shown().endsWith("CTRL + + to enter cockpit")).toBe(true);
 		});
 
 		test("a terminal that is too narrow gets the footer as it is", async () => {
@@ -2688,6 +2710,142 @@ describe("the idle pause", () => {
 	});
 });
 
+describe("the cockpit key", () => {
+	const start = async (s: ReturnType<typeof setup>) => {
+		for (const h of s.handlers.session_start) await h({}, s.ctx);
+	};
+
+	test("STRATEGIUM_COCKPIT_KEY registers that key instead of alt+c", () => {
+		process.env.STRATEGIUM_COCKPIT_KEY = "ctrl+shift+k";
+		expect(Object.keys(setup().shortcuts)).toEqual(["ctrl+shift+k"]);
+	});
+
+	test("/strategium-config cockpit-key saves the key for the next omp start", async () => {
+		const s = setup();
+		await s.sub("config", "cockpit-key F8");
+		expect(s.notes.at(-1)).toContain("cockpit-key: alt+c (default); next omp start: f8 (/strategium-config)");
+		expect(readFileSync(join(s.dir, "cockpit-key"), "utf8")).toBe("f8");
+		expect(Object.keys(setup("sess-0002", s.dir).shortcuts)).toEqual(["f8"]);
+		await s.sub("config", "cockpit-key default");
+		expect(existsSync(join(s.dir, "cockpit-key"))).toBe(false);
+		expect(s.notes.at(-1)).toContain("cockpit-key: alt+c (default)\n");
+		expect(s.notes.at(-1)).not.toContain("next omp start");
+	});
+
+	test("the saved key wins over STRATEGIUM_COCKPIT_KEY", async () => {
+		process.env.STRATEGIUM_COCKPIT_KEY = "ctrl+shift+k";
+		const s = setup();
+		await s.sub("config", "cockpit-key f8");
+		expect(s.notes.at(-1)).toContain("cockpit-key: ctrl+shift+k (STRATEGIUM_COCKPIT_KEY); next omp start: f8 (/strategium-config)");
+		expect(Object.keys(setup("sess-0002", s.dir).shortcuts)).toEqual(["f8"]);
+	});
+
+	test("config refuses a cockpit key that is not a key, and a reserved one", async () => {
+		const s = setup();
+		s.conflicts["ctrl+c"] = { kind: "reserved" };
+		await s.sub("config", "cockpit-key hello");
+		expect(s.notes.at(-1)).toContain("cockpit-key takes a key such as alt+c, ctrl+shift+k or f8, or default");
+		await s.sub("config", "cockpit-key ctrl+c");
+		expect(s.notes.at(-1)).toContain("ctrl+c is reserved by omp and never opens the cockpit; pick another key");
+		expect(existsSync(join(s.dir, "cockpit-key"))).toBe(false);
+	});
+
+	test("config saves a key another extension holds and warns", async () => {
+		const s = setup();
+		s.conflicts.f8 = { kind: "extension", extensionPath: "/x/other" };
+		await s.sub("config", "cockpit-key f8");
+		expect(readFileSync(join(s.dir, "cockpit-key"), "utf8")).toBe("f8");
+		expect(s.notes.at(-1)).toBe("Strategium: f8 is also a shortcut of /x/other, and only one of them runs; set another key with /strategium-config cockpit-key <key> or use /strategium-cockpit");
+	});
+
+	test("session_start warns when the cockpit key is taken", async () => {
+		const s = setup();
+		s.conflicts["alt+c"] = { kind: "keybinding", keybindings: ["app.foo"] };
+		await start(s);
+		expect(s.notes.some(n => n.includes("Strategium: alt+c is also omp's app.foo"))).toBe(true);
+	});
+
+	test("an invalid STRATEGIUM_COCKPIT_KEY falls back to alt+c and is reported", async () => {
+		process.env.STRATEGIUM_COCKPIT_KEY = "Hello";
+		const s = setup();
+		expect(Object.keys(s.shortcuts)).toEqual(["alt+c"]);
+		await start(s);
+		expect(s.notes).toContain('Strategium: STRATEGIUM_COCKPIT_KEY "Hello" is not a key such as alt+c, ctrl+shift+k or f8; ignored');
+	});
+
+	test.each(["e", "space", "tab", "up", "1", "/", "shift+a", "shift+tab", "ctrl+ctrl+a", "alt+alt+c"])("config refuses the unusable cockpit key %s and writes no file", async k => {
+		const s = setup();
+		await s.sub("config", `cockpit-key ${k}`);
+		expect(s.notes.at(-1)).toContain("cockpit-key takes a key such as alt+c, ctrl+shift+k or f8, or default");
+		expect(existsSync(join(s.dir, "cockpit-key"))).toBe(false);
+	});
+
+	test.each(["e", "shift+a", "ctrl+ctrl+a"])("STRATEGIUM_COCKPIT_KEY=%s falls back to alt+c and is reported as ignored", async k => {
+		process.env.STRATEGIUM_COCKPIT_KEY = k;
+		const s = setup();
+		expect(Object.keys(s.shortcuts)).toEqual(["alt+c"]);
+		await start(s);
+		expect(s.notes.some(n => n.includes(`"${k}" is not a key such as alt+c, ctrl+shift+k or f8; ignored`))).toBe(true);
+	});
+
+	test("a saved file holding a bare key falls back to the next source", () => {
+		process.env.STRATEGIUM_COCKPIT_KEY = "f8";
+		const first = setup();
+		writeFileSync(join(first.dir, "cockpit-key"), "e");
+		expect(Object.keys(setup("sess-0002", first.dir).shortcuts)).toEqual(["f8"]);
+	});
+
+	test.each(["f8", "shift+f8", "alt+c", "ctrl+shift+k", "super+k"])("config still accepts the cockpit key %s", async k => {
+		const s = setup();
+		await s.sub("config", `cockpit-key ${k}`);
+		expect(readFileSync(join(s.dir, "cockpit-key"), "utf8")).toBe(k);
+	});
+
+	test.each([[" F8 ", "f8"], ["CTRL+K", "ctrl+k"]])("a hand-written cockpit-key file %j binds %s", (raw, bound) => {
+		const first = setup();
+		writeFileSync(join(first.dir, "cockpit-key"), raw);
+		expect(Object.keys(setup("sess-0002", first.dir).shortcuts)).toEqual([bound]);
+	});
+
+	test.each([["F8", "f8"], ["CTRL+SHIFT+K", "ctrl+shift+k"]])("STRATEGIUM_COCKPIT_KEY=%s registers %s and the config names its source", async (raw, bound) => {
+		process.env.STRATEGIUM_COCKPIT_KEY = raw;
+		const s = setup();
+		expect(Object.keys(s.shortcuts)).toEqual([bound]);
+		await s.sub("config");
+		expect(s.notes.at(-1)).toContain(`cockpit-key: ${bound} (STRATEGIUM_COCKPIT_KEY)\n`);
+	});
+
+	test("saving the key the env already binds still lists the next start's source", async () => {
+		process.env.STRATEGIUM_COCKPIT_KEY = "f8";
+		const s = setup();
+		await s.sub("config", "cockpit-key f8");
+		expect(s.notes.at(-1)).toContain("cockpit-key: f8 (STRATEGIUM_COCKPIT_KEY); next omp start: f8 (/strategium-config)");
+	});
+
+	test("a valid uppercase STRATEGIUM_COCKPIT_KEY is not reported as ignored", async () => {
+		process.env.STRATEGIUM_COCKPIT_KEY = "F8";
+		const s = setup();
+		await start(s);
+		expect(s.notes.some(n => n.includes("ignored"))).toBe(false);
+	});
+
+	test("session_start warns that a reserved cockpit key never opens the cockpit", async () => {
+		const s = setup();
+		s.conflicts["alt+c"] = { kind: "reserved" };
+		await start(s);
+		expect(s.notes).toContain("Strategium: alt+c is reserved by omp and never opens the cockpit; set another key with /strategium-config cockpit-key <key> or use /strategium-cockpit");
+	});
+
+	test("config saves f12 and refuses f13", async () => {
+		const s = setup();
+		await s.sub("config", "cockpit-key f13");
+		expect(s.notes.at(-1)).toContain("cockpit-key takes a key");
+		expect(existsSync(join(s.dir, "cockpit-key"))).toBe(false);
+		await s.sub("config", "cockpit-key f12");
+		expect(readFileSync(join(s.dir, "cockpit-key"), "utf8")).toBe("f12");
+	});
+});
+
 describe("cockpit", () => {
 	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
 	type Tui = { requestRender(): void; terminal: { rows: number } };
@@ -2751,7 +2909,7 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or cockpit-key <key>; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
@@ -2832,6 +2990,15 @@ describe("cockpit", () => {
 			const { s, ui } = await running();
 			expect(s.shortcuts["alt+c"].description).toBe("Open the Strategium cockpit");
 			await s.shortcuts["alt+c"].handler(s.ctx);
+			expect(ui.opened.length).toBe(1);
+			ui.opened[0].component.handleInput!("q");
+		});
+
+		test("a configured key opens it", async () => {
+			process.env.STRATEGIUM_COCKPIT_KEY = "f8";
+			const { s, ui } = await running();
+			expect(Object.keys(s.shortcuts)).toEqual(["f8"]);
+			await s.shortcuts.f8.handler(s.ctx);
 			expect(ui.opened.length).toBe(1);
 			ui.opened[0].component.handleInput!("q");
 		});

@@ -621,8 +621,20 @@ export function editTargets(name: string, input: Record<string, unknown>): strin
 	return out;
 }
 
+// The cockpit key comes from env, a file or a command, so it is checked against omp's KeyId grammar before it is bound.
+const KEY_RE = /^((ctrl|shift|alt|super)\+){0,4}([a-z0-9`\-=[\]\\;',./!@#$%^&*()_+|~{}:<>?]|escape|esc|enter|return|tab|space|backspace|delete|insert|clear|home|end|pageup|pagedown|up|down|left|right|f[1-9]|f1[0-2])$/;
+// Usable: no repeated modifier, and a ctrl, alt or super modifier or an F key, because omp runs extension shortcuts before the editor, so a bare "e" would make e untypable.
+const usableKey = (k: string): boolean => {
+	if (!KEY_RE.test(k)) return false;
+	const parts = k.split(/\+(?=.)/);
+	const mods = parts.slice(0, -1);
+	return new Set(mods).size === mods.length && (mods.some(m => m !== "shift") || /^f\d/.test(parts.at(-1)!));
+};
+type KeyId = Parameters<ExtensionAPI["registerShortcut"]>[0];
+const cockpitHint = (key: string) => `${key.split(/\+(?=.)/).map(p => p.toUpperCase()).join(" + ")} to enter cockpit`;
+
 /** The footer line for a run: dot, planet, key, station, then its time or booking. */
-function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: number): string {
+function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: number, hint: string): string {
 	const key = run.key;
 	const pct = bk ? Math.floor((el / bk) * 100) : 0;
 	// Same shape as other plugins' footer lines: dot, icon, grey "name:", value. Dot: grey paused, green/yellow/red by booking use.
@@ -657,7 +669,6 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 	const line = `${dot}\x1b[39m ${planet} \x1b[38;5;248mstrategium: \x1b[39m${key}${where} · ${value}`;
 	// The cockpit hint goes flush right when the terminal is wide enough. omp collapses runs of plain spaces in a
 	// status line, so the padding is no-break spaces. shortcut: width read once per draw (no resize hook in omp), so a resize shows on the next tick or status refresh.
-	const hint = "ALT + C to enter cockpit";
 	// Measured as omp draws it: sanitizeHookStatusText collapses runs of spaces, even across colour codes.
 	const pad = (process.stdout.columns ?? 0) - Bun.stringWidth(Bun.stripANSI(line).replace(/ +/g, " ")) - hint.length;
 	return pad >= 2 ? `${line}${"\u00a0".repeat(pad)}\x1b[2m${hint}\x1b[22m` : line;
@@ -955,7 +966,7 @@ export default function (pi: ExtensionAPI) {
 			const now = new Date();
 			const el = Math.floor(elapsedMin(evs, key, now));
 			const bk = bookedMin(evs, key) ?? 0;
-			ctx.ui.setStatus("strategium", renderFooter(found, evs, running, el, bk));
+			ctx.ui.setStatus("strategium", renderFooter(found, evs, running, el, bk, cockpitHint(cockpitKey.key)));
 			// A paused run never alerts. Reset first, so the clock stored below is not wiped by the first draw of a new key.
 			if (cockpit.key !== key) resetCockpit(key);
 			if (running) maybeAlert(ctx, sid, file, evs, key, now, el, bk);
@@ -1173,21 +1184,35 @@ export default function (pi: ExtensionAPI) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; cockpit-key <key> sets the cockpit key from the next omp start", (arg, ctx, sid) => {
+		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
 		if (arg !== undefined) {
 			const m = arg.match(/^notify\s+(on|off)$/);
 			const so = arg.match(/^sound\s+(on|off)$/);
 			const to = arg.match(/^toast\s+(on|off)$/);
 			const i = arg.match(/^idle\s+(\d+)$/);
 			const a = arg.match(/^archmagos\s+(on|off)$/);
-			if (!m && !so && !to && !i && !a) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			const k = arg.match(/^cockpit-key\s+(\S+)$/);
+			if (!m && !so && !to && !i && !a && !k) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or cockpit-key <key>; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
 			else if (to) toastBySession.set(sid, to[1] === "on");
 			else if (a) archmagosBySession.set(sid, a[1] === "on");
-			else idleBySession.set(sid, Number(i![1]));
+			else if (k) {
+				const v = k[1].toLowerCase();
+				if (v === "default") rmSync(keyFile(), { force: true });
+				else {
+					if (!usableKey(v)) throw new Error("cockpit-key takes a key such as alt+c, ctrl+shift+k or f8, or default");
+					const c = pi.getShortcutConflict(v as KeyId);
+					if (c?.kind === "reserved") throw new Error(`${v} is reserved by omp and never opens the cockpit; pick another key`);
+					mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
+					writeFileSync(keyFile(), v);
+					if (c) conflict = { key: v, c };
+				}
+			} else idleBySession.set(sid, Number(i![1]));
 		}
 		const env = (k: string) => process.env[k]?.trim() || "not set";
+		const next = keySetting();
 		ctx.ui.notify(
 			[
 				"Strategium config",
@@ -1196,6 +1221,7 @@ export default function (pi: ExtensionAPI) {
 				`toast: ${toastState(sid)}`,
 				`idle: ${idleState(sid)}`,
 				`archmagos: ${archmagosState(sid)}`,
+				`cockpit-key: ${cockpitKey.key} (${cockpitKey.from})${next.key !== cockpitKey.key || next.from !== cockpitKey.from ? `; next omp start: ${next.key} (${next.from})` : ""}`,
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`alarm: ${env("STRATEGIUM_ALARM")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
@@ -1203,6 +1229,7 @@ export default function (pi: ExtensionAPI) {
 			].join("\n"),
 			"info",
 		);
+		if (conflict) ctx.ui.notify(keyConflict(conflict.key, conflict.c), "warning");
 	});
 
 	subcommand("end", "Close this session's Strategium run", async (_arg, ctx, sid) => {
@@ -1212,7 +1239,28 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	subcommand("cockpit", "Open the Strategium cockpit", (_arg, ctx) => openCockpit(ctx));
-	pi.registerShortcut("alt+c", { description: "Open the Strategium cockpit", handler: ctx => openCockpit(ctx) });
+	const keyFile = () => path.join(stateDir(), "cockpit-key");
+	const keySetting = (): { key: string; from: string } => {
+		let saved = "";
+		try {
+			saved = readFileSync(keyFile(), "utf8").trim().toLowerCase();
+		} catch {
+			// no saved key: fall through to the env and the default
+		}
+		const fromEnv = process.env.STRATEGIUM_COCKPIT_KEY?.trim().toLowerCase() ?? "";
+		if (usableKey(saved)) return { key: saved, from: "/strategium-config" };
+		if (usableKey(fromEnv)) return { key: fromEnv, from: "STRATEGIUM_COCKPIT_KEY" };
+		return { key: "alt+c", from: "default" };
+	};
+	// Read once: omp binds shortcuts before session_start, so a new key applies on the next omp start.
+	const cockpitKey = keySetting();
+	const keyConflict = (key: string, c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>>) => {
+		const fix = "set another key with /strategium-config cockpit-key <key> or use /strategium-cockpit";
+		if (c.kind === "reserved") return `Strategium: ${key} is reserved by omp and never opens the cockpit; ${fix}`;
+		if (c.kind === "keybinding") return `Strategium: ${key} is also omp's ${c.keybindings.join(", ")}, which may take it first; ${fix}`;
+		return `Strategium: ${key} is also a shortcut of ${c.extensionPath}, and only one of them runs; ${fix}`;
+	};
+	pi.registerShortcut(cockpitKey.key as KeyId, { description: "Open the Strategium cockpit", handler: ctx => openCockpit(ctx) });
 
 	const onSession = async (e: { type: string; reason?: string }, ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
@@ -1350,6 +1398,10 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.agent?.kind === "sub") return;
 		const theatre = process.env.STRATEGIUM_THEATRE?.trim().replace(/^strategium-/, "") || "none";
 		ctx.ui.notify(`Strategium loaded: theatre ${theatre}, notifications ${notifyOn(sidOf(ctx)) ? "on" : "off"}`, "info");
+		const c = pi.getShortcutConflict(cockpitKey.key as KeyId);
+		if (c) ctx.ui.notify(keyConflict(cockpitKey.key, c), "warning");
+		const rawKey = process.env.STRATEGIUM_COCKPIT_KEY?.trim();
+		if (rawKey && !usableKey(rawKey.toLowerCase())) ctx.ui.notify(`Strategium: STRATEGIUM_COCKPIT_KEY "${rawKey}" is not a key such as alt+c, ctrl+shift+k or f8; ignored`, "warning");
 	});
 
 	// Closing the session pauses its ticket and releases the claim; the run file stays so a resumed session

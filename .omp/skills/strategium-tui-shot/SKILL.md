@@ -66,7 +66,7 @@ Kinds: `FIXED` (PASS = the fix holds), `KNOWN` (PASS = an omp limit shows up exa
 | `footer-hint` | R14 | FIXED | the last char of `ALT + C to enter cockpit` is at col W-1 at 140 and at 100 cols; on failure it prints the gap and the last 3 rows |
 | `esc-close` | R19 | FIXED | every Esc encoding closes the cockpit (`win32` record, `\x1b`, CSI-u variants with modifiers, event types and lock bits); prints `variant closed sent saw`, `saw` being what `onTerminalInput` received. Variants other than `win32` go through conhost's own input parser, so `saw` may differ from `sent`: marked `not faithful` |
 | `q-close` | R19 | FIXED | `q` (win32 record and plain) closes the cockpit; footer and editor rows equal the ones before opening (clock rows skipped) |
-| `capslock-altc` | R1 | KNOWN | Caps Lock + Alt+C opens no cockpit; omp shows `Nothing to copy` (its `app.clipboard.copyPrompt` matches first) |
+| `capslock-altc` | R1 | KNOWN | Caps Lock + Alt+C opens no cockpit; omp shows `Nothing to copy` (its `app.clipboard.copyPrompt` matches first); the footer still shows the hint `ALT + C to enter cockpit`; `/strategium-cockpit`, the alternative, opens it |
 | `select-behind-cockpit` | R10 (rest) | KNOWN | a dialog opened with no `tool_call` (`/replay-select`) while the cockpit is open stays stuck: no value after `q` either; F9 cannot reach it |
 | `ponytail-notice` | R16 | OPEN | `Strategium loaded:` is in the stream when ponytail is loaded too |
 

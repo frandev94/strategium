@@ -72,6 +72,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 | `STRATEGIUM_TOAST` | optional | `1` (the alarm's desktop notification, on by default; `0` turns it off; per session `/strategium-config toast on` or `off`) |
 | `STRATEGIUM_IDLE_MIN` | optional | `3` (minutes of idle before the run's clock pauses; `0` off; per session `/strategium-config idle <min>`) |
 | `STRATEGIUM_ARCHMAGOS` | optional | `0` (off; `1` lets runs mark the Archmagos Dominus in Muster; per session `/strategium-config archmagos on` or `off`) |
+| `STRATEGIUM_COCKPIT_KEY` | optional | `alt+c` (the key that opens the cockpit, e.g. `f8` or `ctrl+shift+k`; it needs `ctrl`, `alt` or `super`, or is `f1`-`f12`; `/strategium-config cockpit-key <key>` saves another for the next omp start and wins over it) |
 | `OBSIDIAN_VAULT_PATH` | only with obsidian-second-brain | absolute path of the vault; check the folder exists and contains `.obsidian/` |
 
 - Ask the user for the values in one `ask` form (text inputs prefilled with the defaults; the vault path has no default).

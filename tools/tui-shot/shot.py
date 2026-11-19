@@ -490,11 +490,16 @@ def checks_q_close(C):
         C.ck(f"{n}: normal buffer, no frame", s.type == "normal" and not s.framed(), s.type, "normal, no frame", s)
         C.ck(f"{n}: footer and editor rows as before", keep(s) == keep(b), None, None, s)
 
-def steps_capslock(R): R.key("caps-altc"); R.sleep(1.5); R.snap("after")
+def steps_capslock(R):
+    R.key("caps-altc"); R.sleep(1.5); R.snap("after")
+    R.type_text("/strategium-cockpit"); R.key("enter"); R.wait_quiet(1.0, 3.0); R.snap("alternative", True)
 def checks_capslock(C):
     s = C.s["after"]
     C.ck("no cockpit", s.type == "normal" and not s.framed(), s.type, "normal, no frame", s)
     C.ck("Nothing to copy on screen or in the stream", s.has("Nothing to copy") or b"Nothing to copy" in C.R.out, None, None, s)
+    C.ck("after: the footer hint names the cockpit key", s.has(HINT), None, HINT, s)
+    a = C.s["alternative"]
+    C.ck("alternative: /strategium-cockpit opens the cockpit", a.type == "alternate" and a.framed(), a.type, "alternate, framed", a)
 
 def steps_select(R):
     R.type_text("/replay-select"); R.key("enter"); R.open(); R.sleep(4)
