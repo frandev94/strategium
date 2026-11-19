@@ -1,3 +1,29 @@
+## [0.2.1] - 2026-11-19
+
+### 🚀 Features
+
+- *(cockpit)* Configurable cockpit key with a conflict warning
+- *(alarm)* Switch the alarm sound and the desktop toast separately
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* End eval agents through their spawn key
+- *(cockpit)* Tie deployed agents to the station name
+- *(timer)* Keep counting a run that crosses midnight
+- *(tui-shot)* Vendor xterm.js so shots and replays run offline
+- *(cockpit)* Cap box lines so the chronicle stays visible
+
+### 📚 Documentation
+
+- *(github)* Map the Kanban template Status names
+- *(skills)* Automatic releases and the manual fallback
+- *(readme)* Describe automatic releases
+- State what bumps the version
+
+### ⚙️ Miscellaneous Tasks
+
+- *(release)* Cut a release on every merge to main
+- *(release)* Install git-cliff from its checksummed binary and finish a missing release first
 ## [0.2.0] - 2026-11-18
 
 ### 🚀 Features
