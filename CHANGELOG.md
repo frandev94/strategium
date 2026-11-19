@@ -1,3 +1,16 @@
+## [0.2.3] - 2026-11-19
+
+### 🚀 Features
+
+- *(github-theatre)* One card per piece of work, one useful issue comment
+
+### 🐛 Bug Fixes
+
+- *(github-theatre)* Gate issue-field writes on TRIAGE, name the missing-scope text
+
+### 📚 Documentation
+
+- *(readme)* Describe the GitHub theatre's single card and summary comment
 ## [0.2.2] - 2026-11-19
 
 ### 🐛 Bug Fixes
