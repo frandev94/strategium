@@ -59,6 +59,14 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 - `omp config get task.isolation.enabled` must be `true` and `omp config get task.isolation.merge` must be `branch`: Strategium squads run isolated and land on the run's branch.
 - When missing, offer `omp config set task.isolation.enabled true` and `omp config set task.isolation.merge branch` in the same `ask`, and say that the task tool shows `isolated` only in sessions started afterwards.
 
+## 4c. Model roles
+The recommended config, its reasons and the open questions are in `<R>/docs/models.md`; read it before advising.
+- `omp config get modelRoles` and `omp config get task.agentModelOverrides`. Strategium agents need `plan` (librarian, archmagos), `slow` (inquisitor) and `task` (battle-brother, veteran, apothecary, confessor without Codex).
+- Unset `plan`, `slow` or `task` → report it with what omp falls back to (unset `slow` can resolve to Fable 5.2, the costliest model; unset `plan` or `task` to the session's model).
+- Compare every role with the recommended config and show a table (role | current | recommended | why). Recommend; never push the user's existing choices: a different model or effort that is set on purpose is fine, only flag `max` effort or Fable as costly.
+- Offer the missing or changed roles in the same `ask`. Roles are not per-key settings (`omp config get modelRoles.plan` is an unknown key): with the user's OK, edit the `modelRoles:` map in `~/.omp/agent/config.yml` (`omp config path` if elsewhere), touching only those roles and quoting `@` aliases (`plan: "@slow:xhigh"`), or point them to `/model` → Roles. `task.maxEffort` is a plain key: `omp config set task.maxEffort high` when unset. Changing an already-set role needs its own explicit OK. Re-read with `omp config get modelRoles` afterwards.
+- A non-Anthropic account: keep the role layout (strong model for `slow`/`plan`, mid model for `task`, fast model for `smol`) and ask which models they have; never invent ids, list them with `omp models --kind chat`.
+
 ## 5. `.env` (`~/.omp/agent/.env`; omp loads it into every session for keys not already set in the process environment)
 
 | Key | Need | Default / how to fill |

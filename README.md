@@ -142,7 +142,7 @@ modelRoles:
   task: anthropic/claude-sonnet-5-5 # battle-brother, veteran, apothecary, confessor without Codex
 ```
 
-The effort each agent asks for is in the table above. To move a single agent to another model, use `task.agentModelOverrides`, e.g. `inquisitor: anthropic/claude-sonnet-5-5`.
+The effort each agent asks for is in the table above. To move a single agent to another model, use `task.agentModelOverrides`, e.g. `inquisitor: anthropic/claude-sonnet-5-5`. The full recommended config and its reasons: [docs/models.md](docs/models.md); `/skill:strategium-setup` checks your roles against it.
 
 ## Install
 
