@@ -1,0 +1,2 @@
+# Vendored files are checked byte for byte against vendor/SHA256SUMS: no line-ending conversion.
+tools/tui-shot/vendor/** -text

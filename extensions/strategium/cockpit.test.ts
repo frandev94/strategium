@@ -42,7 +42,7 @@ const run = (at: number): Phase[] =>
 	STATIONS.map(([name, tags], i) => ({ name, tasks: tags.map((tag, j) => ({ content: `[${tag}] ${tag} job`, status: i < at ? "completed" : i === at && j === 0 ? "in_progress" : "pending" })) }));
 // Box titles are the `┌─ TITLE ─` / `╔═ …` tops; a plain icon before the name is dropped.
 const titles = (t: string) => [...t.matchAll(/[┌╔]─ (.+?) ─/g)].map(m => m[1].replace(/^\S+ (?=[A-Z-]+$)/, ""));
-const dep = (over: Partial<Deployed>): Deployed => ({ who: "X", role: "scout", station: 0, state: "active", ...over });
+const dep = (over: Partial<Deployed>): Deployed => ({ who: "X", role: "scout", station: "Plan", state: "active", ...over });
 
 describe("seals", () => {
 	test("sealsFrom reads bracket and glyph tags with their three states", () => {
@@ -72,6 +72,16 @@ describe("seals", () => {
 });
 
 describe("view", () => {
+	test("an agent deployed in Skirmish still shows in Skirmish after a todo with phases in another order", () => {
+		const deployed = new Map([["a1", dep({ role: "apothecary", station: "Skirmish" })]]);
+		const ph = (name: string, status: string): Phase => ({ name, tasks: [{ content: "[captain] x", status }] });
+		expect(text({ phases: [ph("Muster", "completed"), ph("Skirmish", "in_progress")], deployed })).toContain("▶ a1");
+		const reordered = text({ phases: [ph("Skirmish", "in_progress"), ph("Muster", "completed")], deployed });
+		expect(reordered).toContain("▶ a1");
+		expect(reordered).toContain("APOTHECARIES");
+		expect(text({ phases: [ph("Skirmish", "completed"), ph("Muster", "in_progress")], deployed })).not.toContain("a1");
+	});
+
 	test("activePhase is the first in_progress phase, by index", () => {
 		const two = (a: string, b: string): Phase[] => [{ name: "Same", tasks: [{ content: "[captain] x", status: a }] }, { name: "Same", tasks: [{ content: "[captain] y", status: b }] }];
 		expect(activePhase(two("completed", "in_progress"))).toBe(1);
@@ -132,8 +142,8 @@ describe("view", () => {
 		expect(titles(t)).toEqual([]);
 	});
 
-	test("no phases: an agent registered with station -1 opens no box", () => {
-		expect(titles(text({ deployed: new Map([["a1", dep({ station: -1 })]]) }))).toEqual([]);
+	test("no phases: an agent with no station opens no box", () => {
+		expect(titles(text({ deployed: new Map([["a1", dep({ station: undefined })]]) }))).toEqual([]);
 	});
 
 	test("the old fixed boxes are gone", () => {
@@ -208,12 +218,12 @@ describe("view", () => {
 	});
 
 	test("a registry agent seen in this station shows with its id and state", () => {
-		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ station: 1 })], ["a2", dep({ station: 1, state: "done" })], ["a3", dep({ station: 1, state: "failed" })]]) });
+		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ station: "Auspex" })], ["a2", dep({ station: "Auspex", state: "done" })], ["a3", dep({ station: "Auspex", state: "failed" })]]) });
 		for (const l of ["▶ a1", "✓ a2", "✗ a3"]) expect(t).toContain(l);
 	});
 
 	test("a registry agent seen in another station does not show", () => {
-		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ role: "battle-brother", station: 0 })]]) });
+		const t = text({ phases: run(1), deployed: new Map([["a1", dep({ role: "battle-brother", station: "Muster" })]]) });
 		expect(titles(t)).toEqual(["SCOUTS"]);
 		expect(t).not.toContain("a1");
 	});
@@ -221,7 +231,7 @@ describe("view", () => {
 	test("a registry agent can open its box on its own, and a squad agent shows only through its squad line", () => {
 		const t = text({
 			phases: phases(["[captain] x", "in_progress"]),
-			deployed: new Map([["eval-apothecary-1", dep({ role: "apothecary", station: 0 })], ["b9", dep({ role: "battle-brother", squad: "a", station: 0 })]]),
+			deployed: new Map([["eval-apothecary-1", dep({ role: "apothecary" })], ["b9", dep({ role: "battle-brother", squad: "a" })]]),
 			slices: [{ id: "a" }],
 		});
 		expect(titles(t)).toEqual(["CAPTAIN", "BATTLE-BROTHERS", "APOTHECARIES"]);
@@ -284,6 +294,13 @@ describe("chronicle and jobs", () => {
 		];
 		expect(jobEnds(messages)).toEqual([{ id: "a1", status: "completed" }, { id: "a3", status: "failed" }]);
 		expect(jobEnds(undefined)).toEqual([]);
+	});
+
+	test("jobEnds reads eval cells: completed, failed and aborted agent events end their id; running and pending do not", () => {
+		const ev = (id: unknown, status: string) => ({ op: "agent", id, status });
+		const messages = [{ role: "toolResult", toolName: "eval", details: { cells: [{ statusEvents: [ev("A1", "completed"), ev("A2", "running"), ev("A3", "failed"), ev("A4", "aborted"), ev("A5", "pending"), { op: "read", path: "x" }, { op: "read", id: "A9", status: "completed" }, ev(7, "completed")] }, null, { statusEvents: "junk" }] } }];
+		expect(jobEnds(messages)).toEqual([{ id: "A1", status: "completed" }, { id: "A3", status: "failed" }, { id: "A4", status: "aborted" }]);
+		expect(jobEnds([{ details: { cells: "x" } }])).toEqual([]);
 	});
 });
 
@@ -638,5 +655,58 @@ describe("glyphs", () => {
 		for (const g of ["\u{f18bc}", "\u{f0437}", "\u{f05da}", "\u{f18be}", "\u{f06ef}", "\u{f029b}", "\u{f0d9a}", "\u{f068c}", "\u{f0474}", "\u{f047a}"]) expect(t).toContain(`${g}  `);
 		expect(titles(t)).toHaveLength(10);
 		expect(t).not.toMatch(/[☩†‡◷]/);
+	});
+});
+
+describe("box line cap", () => {
+	const tasks = (spec: [string, string, number][]): Phase[] => [
+		{ name: "Auspex", tasks: spec.flatMap(([prefix, status, n]) => Array.from({ length: n }, (_, i) => ({ content: `[scout] ${prefix}${i + 1}`, status }))) },
+	];
+	// 4 active, 3 failed, 3 idle, 2 done: 12 lines in one box
+	const twelve = () => tasks([["d", "completed", 2], ["i", "pending", 3], ["a", "in_progress", 4], ["f", "failed", 3]]);
+	const draw = (p: Phase[], width = 100, height?: number, chronicle: Entry[] = []) => renderCockpit(cockpitView(input({ phases: p, chronicle })), width, 0, TRUE, height).map(plain);
+
+	test("box lines run active, failed, idle, then done", () => {
+		const out = draw(tasks([["d", "completed", 1], ["i", "pending", 1], ["f", "failed", 1], ["a", "in_progress", 1]])).join("\n");
+		const at = (s: string) => out.indexOf(s);
+		expect(at("▶ a1")).toBeGreaterThan(-1);
+		expect(at("▶ a1")).toBeLessThan(at("✗ f1"));
+		expect(at("✗ f1")).toBeLessThan(at("○ i1"));
+		expect(at("○ i1")).toBeLessThan(at("✓ d1"));
+	});
+
+	test("a box shows at most 8 lines, the last one +N more naming what it hides", () => {
+		const out = draw(twelve());
+		const rows = out.slice(out.findIndex(l => l.includes("┌")) + 1, out.findIndex(l => l.includes("└")));
+		expect(rows).toHaveLength(8);
+		const text = rows.join("\n");
+		for (const id of ["a1", "a2", "a3", "a4", "f1", "f2", "f3"]) expect(text).toContain(id);
+		expect(rows[7]).toContain("+5 more (2 done, 3 idle)");
+		expect(text).not.toContain("✓ d");
+	});
+
+	test.each([50, 100])("active and failed lines are never hidden while a done line shows at width %i", width => {
+		const p = tasks([["d", "completed", 4], ["i", "pending", 3], ["a", "in_progress", 4], ["f", "failed", 3]]);
+		for (let h = 8; h <= 45; h++) {
+			const text = draw(p, width, h).join("\n");
+			if (/✓ d/.test(text)) for (const id of ["a1", "a2", "a3", "a4", "f1", "f2", "f3"]) expect(text).toContain(id);
+		}
+	});
+
+	test("a station with 20 tasks at 140x45 still shows at least 5 chronicle rows", () => {
+		const states = ["in_progress", "failed", "pending", "completed"];
+		const p: Phase[] = [{ name: "Skirmish", tasks: Array.from({ length: 20 }, (_, i) => ({ content: `[battle-brother] Build squad s${i + 1}`, status: states[i % 4] })) }];
+		const slices = Array.from({ length: 20 }, (_, i) => ({ id: `s${i + 1}` }));
+		const out = renderCockpit(cockpitView(input({ phases: p, slices, chronicle: many(10) })), 140, 0, TRUE, 45);
+		expect(out).toHaveLength(45);
+		expect(eventLines(out).length).toBeGreaterThanOrEqual(5);
+	});
+
+	test.each([50, 100])("a short window gives the boxes fewer lines so the chronicle keeps 5 rows at width %i", width => {
+		const p = tasks([["t", "pending", 20]]);
+		const out = draw(p, width, 18, many(10));
+		expect(out).toHaveLength(18);
+		expect(eventLines(out)).toHaveLength(5);
+		expect(out.join("\n")).toContain("+15 more");
 	});
 });

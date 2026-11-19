@@ -68,6 +68,8 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 | `STRATEGIUM_STATE_DIR` | optional | leave unset (default `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | optional | `1` only if the user's terminal font is a Nerd Font (ask; show one glyph, e.g. U+F05DA, and ask whether it renders as a book); else leave unset and todo tags stay `[name]` |
 | `STRATEGIUM_NOTIFY` | recommended | `0` (off; sounds and desktop notifications on with `1`; per session `/strategium-config notify on` or `off`) |
+| `STRATEGIUM_SOUND` | optional | `1` (the alarm's sound, on by default; `0` turns it off; per session `/strategium-config sound on` or `off`) |
+| `STRATEGIUM_TOAST` | optional | `1` (the alarm's desktop notification, on by default; `0` turns it off; per session `/strategium-config toast on` or `off`) |
 | `STRATEGIUM_IDLE_MIN` | optional | `3` (minutes of idle before the run's clock pauses; `0` off; per session `/strategium-config idle <min>`) |
 | `STRATEGIUM_ARCHMAGOS` | optional | `0` (off; `1` lets runs mark the Archmagos Dominus in Muster; per session `/strategium-config archmagos on` or `off`) |
 | `STRATEGIUM_COCKPIT_KEY` | optional | `alt+c` (the key that opens the cockpit, e.g. `f8` or `ctrl+shift+k`; it needs `ctrl`, `alt` or `super`, or is `f1`-`f12`; `/strategium-config cockpit-key <key>` saves another for the next omp start and wins over it) |
