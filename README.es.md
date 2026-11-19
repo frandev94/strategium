@@ -260,7 +260,7 @@ bun alarm/vox.ts 100 "la reserva se ha agotado"
 
 Un teatro es una skill `strategium-<nombre>` que ata la run a tu organización: dónde están los tickets, cómo se reserva el tiempo, cómo se escriben las merge requests y qué registros se guardan. Sin teatro no se sube nada: la entrega es la rama con sus commits.
 
-El plugin trae el **teatro de GitHub** (`strategium-github`): la issue es el ticket (se crea en Muster cuando el objetivo es texto libre o un fichero), un Project da el estado y campos opcionales de minutos para la reserva, y la entrega es una pull request en borrador que cierra la issue al fusionarse. Es el teatro por defecto: cuando el repo de la run está en GitHub, la run lo usa salvo que se nombre otro teatro, `STRATEGIUM_THEATRE` nombre uno, o digas `none`.
+El plugin trae el **teatro de GitHub** (`strategium-github`): la issue es el ticket (se crea en Muster cuando el objetivo es texto libre o un fichero), un Project da el estado, y los campos de issue `Booked (min)` y `Spent (min)` (o los campos del Project con el mismo nombre cuando los campos de issue no existen) dan la reserva. La issue recibe un único comentario de la run, un resumen de la pull request. La entrega es una pull request en borrador que cierra la issue al fusionarse; no se añade al Project, porque aparece en la tarjeta de la issue. Pasar la tarjeta a Done al fusionar necesita el workflow "Item closed" del Project, y Muster avisa cuando está desactivado. Es el teatro por defecto: cuando el repo de la run está en GitHub, la run lo usa salvo que se nombre otro teatro, `STRATEGIUM_THEATRE` nombre uno, o digas `none`.
 
 ## Desarrollo
 
