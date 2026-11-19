@@ -1,5 +1,5 @@
 // Strategium vox-caster: synthesizes every sound from scratch (no samples) and plays it.
-// Usage: bun vox.ts [50|80|100|done|attention|idle|theme] ["message"]  (level: argv[2], else env STRATEGIUM_P, else done)
+// Usage: bun vox.ts [50|80|100|done|attention|idle|theme] ["message"]  (level: argv[2], else env STRATEGIUM_P, else done); env STRATEGIUM_SOUND=0 skips the sound
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -302,25 +302,33 @@ function toast(msg: string) {
 	} else run("notify-send", ["Strategium", msg]);
 }
 
+/** Which channels an alarm run uses: a toast needs a message; the sound plays unless STRATEGIUM_SOUND is 0, false, off or no. */
+export function channels(env: Record<string, string | undefined>, msg: string | undefined): { toast: boolean; sound: boolean } {
+	return { toast: !!msg, sound: !/^(0|false|off|no)$/i.test(env.STRATEGIUM_SOUND?.trim() ?? "") };
+}
+
 if (import.meta.main) {
 	const arg = process.argv[2] ?? process.env.STRATEGIUM_P ?? "done";
 	const level = (LEVELS as readonly string[]).includes(arg) ? (arg as Level) : "done";
 	const msg = process.argv[3] ?? process.env.STRATEGIUM_MSG;
+	const ch = channels(process.env, msg);
 	try {
-		if (msg) toast(msg);
-		const dir = join(tmpdir(), "strategium-vox");
-		// The name follows the synthesizer's source, so an edited sound never plays from a stale cache. ponytail: old WAVs stay in tmp; prune them if the folder ever grows.
-		const file = join(dir, `${level}-${createHash("sha256").update(readFileSync(import.meta.path)).digest("hex").slice(0, 12)}.wav`);
-		mkdirSync(dir, { recursive: true, mode: 0o700 });
-		if (!existsSync(file)) {
-			try {
-				// `wx`: never write through a symlink another user planted in the cache dir.
-				writeFileSync(file, synth(level), { flag: "wx", mode: 0o600 });
-			} catch {
-				// Another process wrote it first: use what is there.
+		if (ch.toast) toast(msg!);
+		if (ch.sound) {
+			const dir = join(tmpdir(), "strategium-vox");
+			// The name follows the synthesizer's source, so an edited sound never plays from a stale cache. ponytail: old WAVs stay in tmp; prune them if the folder ever grows.
+			const file = join(dir, `${level}-${createHash("sha256").update(readFileSync(import.meta.path)).digest("hex").slice(0, 12)}.wav`);
+			mkdirSync(dir, { recursive: true, mode: 0o700 });
+			if (!existsSync(file)) {
+				try {
+					// `wx`: never write through a symlink another user planted in the cache dir.
+					writeFileSync(file, synth(level), { flag: "wx", mode: 0o600 });
+				} catch {
+					// Another process wrote it first: use what is there.
+				}
 			}
+			play(file);
 		}
-		play(file);
 	} catch (e) {
 		console.error(`vox: ${(e as Error).message}`);
 	}
