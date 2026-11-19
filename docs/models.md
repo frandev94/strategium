@@ -56,16 +56,16 @@ Why, from Anthropic's [effort guide](https://platform.claude.com/docs/en/build-w
 | `confessor` | `openai-codex/gpt-6-astra`, else `@task` | high |
 | `security-reviewer` (omp) | the session's model | not set |
 
-Effort as listed holds only while the role has no suffix (see above). The confessor wants a different model family from the inquisitor; without a Codex credential `@task` keeps it at least a different model.
+Effort as listed holds only while the role resolves without a suffix (see above); an unset `slow` or `smol` inherits `default` together with its suffix. The confessor wants a different model family from the inquisitor; without a Codex credential `@task` keeps it at least a different model.
 
 ## When a role is unset
 
 | Role | omp falls back to |
 |---|---|
-| `slow` | your configured `default`; with neither, omp's slow list: `gpt-5.6-sol` with a Codex login, else Fable 5.2 before Opus 5.5 |
+| `slow` | your configured `default`, with its `:level` suffix (the recommended `default` would run the inquisitor at `medium`); with neither, omp's slow list: `gpt-5.6-sol` with a Codex login, else Fable 5.2 before Opus 5.5 |
 | `plan` | no list of its own; the session's model |
 | `task` | the session's model |
-| `smol` | your configured `default`; with neither, omp's fast list (Haiku 5.5 first) |
+| `smol` | your configured `default`, with its `:level` suffix (scout and sonic would run on Opus); with neither, omp's fast list (Haiku 5.5 first) |
 
 Set at least `plan`, `slow` and `task`, or Strategium may run on models you did not pick.
 
