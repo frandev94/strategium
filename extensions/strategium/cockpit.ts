@@ -31,6 +31,8 @@ const HEX: Palette = { gold: "#C9A227", parchment: "#E6D8B5", green: "#4CFF7A", 
 const SEAL_TAG = /^\s*(?:\[seal\]|\u{f047a}\s*seal\s*·)\s*(.+?)\s*$/u;
 const ROLE_TAG = /^\s*(?:\[([\w-]+)\]|[^\w\s[]+\s*([\w-]+)\s*·)\s*(.*?)\s*$/su;
 const BAR = 14;
+const BOX_CAP = 8; // most lines a box shows
+const CHRONICLE_MIN = 5; // chronicle rows a height keeps before the boxes give up lines
 const RESET = "\x1b[39m";
 
 export function colorDepth(env: Record<string, string | undefined> = process.env): Depth {
@@ -137,6 +139,8 @@ const label = (icon: string, text: string) => (icon ? `${icon} ${text}` : text);
 
 const ROLE_LINE: Record<string, Kind> = { in_progress: "active", completed: "done", pending: "idle" };
 const MARK: Record<Kind, string> = { active: "▶", done: "✓", failed: "✗", idle: "○" };
+const RANK: Record<Kind, number> = { active: 0, failed: 1, idle: 2, done: 3 };
+const HIDE: Kind[] = ["done", "idle", "failed", "active"]; // the order a +N more line names what it hides
 
 export function cockpitView(input: ViewInput) {
 	const ic = icons(!!input.glyphs);
@@ -186,7 +190,7 @@ export function cockpitView(input: ViewInput) {
 			}),
 			...(brothers ? squads : []),
 			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ kind: d.state, mark: MARK[d.state], text: who(d.role, id) })),
-		];
+		].sort((a, b) => RANK[a.kind] - RANK[b.kind]);
 		const tone = def.tone ?? (lines.some(l => l.kind === "failed") ? "red" : lines.some(l => l.kind !== "idle") ? "green" : "iron");
 		return [{ title: label(ic[def.icon], def.title), tone, lines }];
 	});
@@ -297,11 +301,24 @@ function withHeight(body: string[], entries: string[], blank: string, close: str
 	return [...body, ...shown, ...Array(spare - shown.length).fill(blank)].slice(0, Math.max(0, height - 1)).concat(close);
 }
 
+// shortcut: a box keeps at least 1 line, so a window too short for every box at 1 line still cuts the chronicle; upgrade with the navigable cockpit (#13).
+/** Lines a box may show: BOX_CAP, fewer when `height` must keep CHRONICLE_MIN chronicle rows after `fixed` rows and `blocks` rows of boxes that each add `chrome` rows; never under 1. */
+const boxCap = (height: number | undefined, fixed: number, blocks: number, chrome: number) =>
+	height === undefined || !blocks ? BOX_CAP : Math.max(1, Math.min(BOX_CAP, Math.floor((height - fixed - CHRONICLE_MIN) / blocks) - chrome));
+
+/** A box's lines drawn, at most cap: past it the first cap - 1 and an iron "+k more (…)" line counting the hidden states in HIDE order. */
+function boxLines(lines: View["boxes"][number]["lines"], cap: number, pal: Palette, frame: number): string[] {
+	const drawn = lines.map(l => markText(l.kind, l.mark, l.text, pal, frame));
+	if (lines.length <= cap) return drawn;
+	const hidden = lines.slice(cap - 1);
+	const parts = HIDE.map(k => [k, hidden.filter(l => l.kind === k).length] as const).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k}`);
+	return [...drawn.slice(0, cap - 1), paint(pal.iron, `+${hidden.length} more (${parts.join(", ")})`)];
+}
+
 export function renderCockpit(view: View, width: number, frame: number, pal: Palette, height?: number): string[] {
 	const s = view.station;
 	const station = markText(s.kind, s.mark, s.name, pal, frame) + (s.note ? ` · ${paint(pal.gold, s.note)}` : "");
-	// shortcut: no line cap per box; a station with many tasks pushes the chronicle down; cap lines when a real run hits it.
-	const boxes: Box[] = view.boxes.map(b => ({ title: b.title, lines: b.lines.map(l => markText(l.kind, l.mark, l.text, pal, frame)), tone: b.tone }));
+	const boxes = (cap: number): Box[] => view.boxes.map(b => ({ title: b.title, lines: boxLines(b.lines, cap, pal, frame), tone: b.tone }));
 
 	if (width < 72) {
 		const body = [
@@ -310,7 +327,7 @@ export function renderCockpit(view: View, width: number, frame: number, pal: Pal
 			...statusText(view.status, pal, frame),
 			`${paint(pal.gold, "SEALS")} ${sealsText(view.seals, pal, view.ic)}`,
 			station,
-			...boxes.flatMap(b => [paint(pal.gold, b.title), ...b.lines.map(l => `  ${l}`)]),
+			...boxes(boxCap(height, 6 + statusText(view.status, pal, frame).length, view.boxes.length, 1)).flatMap(b => [paint(pal.gold, b.title), ...b.lines.map(l => `  ${l}`)]),
 			paint(pal.gold, "CHRONICLE"),
 		];
 		return withHeight(body, view.chronicle.map(e => entryLine(e, pal)), "", paint(pal.iron, "esc/q close"), height).map(l => fit(l, width));
@@ -327,10 +344,10 @@ export function renderCockpit(view: View, width: number, frame: number, pal: Pal
 	const key = fit(view.key, Math.max(1, width - Bun.stringWidth(lead) - 5));
 	const top = `${lead}${"═".repeat(Math.max(0, width - Bun.stringWidth(lead) - Bun.stringWidth(key) - 4))} ${key} ═╗`;
 	const title = fit(station, inner - 4); // keeps at least one cell of rule
-	const cols = Math.max(1, Math.min(boxes.length, Math.floor((inner - 1) / 27)));
+	const cols = Math.max(1, Math.min(view.boxes.length, Math.floor((inner - 1) / 27)));
 
 	return withHeight(
-		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...grid(boxes, cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
+		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...grid(boxes(boxCap(height, head.length + 4, Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
 		view.chronicle.map(e => row(` ${entryLine(e, pal)}`)),
 		row(""),
 		g(`╚═ esc/q close ${"═".repeat(inner - 14)}╝`),
