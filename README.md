@@ -128,8 +128,21 @@ The Captain plans and delegates; every other role is an agent it starts. Each on
 | <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | mutates the squad's changed lines and fuzzes untrusted input, to show where the tests do not protect the code | edits the tests under audit, or leaves the tree changed | `@task` / medium |
 | <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | reviews the diff against the Merge bar; a PASS needs file:line or command evidence | edits, commits or pushes | `@slow` / high |
 | <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | a second, independent review by another model family, when the plan flags the diff as large or risky | reads the inquisitor's report | gpt-6-astra (else `@task`) / high |
-| <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | joins when the diff touches auth, external input, secrets or the network | edits | bundled, `@slow` |
+| <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | joins when the diff touches auth, external input, secrets or the network | edits | bundled, your session's model |
 | <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | runs the repo's checks: the baseline first, the full checks at the end | fixes what fails | `@smol` / medium |
+
+#### Models
+
+Agents pick their model through omp's role aliases, so you choose the models once in `~/.omp/agent/config.yml` and Strategium follows. Set the three roles it uses; a role you leave unset falls back to omp's built-ins (an unset `slow` can land on the costliest model omp knows, an unset `task` on your session's model):
+
+```yaml
+modelRoles:
+  plan: anthropic/claude-opus-5-5   # librarian, archmagos
+  slow: anthropic/claude-opus-5-5   # inquisitor
+  task: anthropic/claude-sonnet-5-5 # battle-brother, veteran, apothecary, confessor without Codex
+```
+
+The effort each agent asks for is in the table above. To move a single agent to another model, use `task.agentModelOverrides`, e.g. `inquisitor: anthropic/claude-sonnet-5-5`.
 
 ## Install
 

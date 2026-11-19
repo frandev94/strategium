@@ -128,8 +128,21 @@ El Capitán planifica y delega; cada uno de los demás papeles es un agente que 
 | <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | muta las líneas cambiadas del squad y hace fuzzing de la entrada no fiable, para enseñar dónde los tests no protegen el código | edita los tests que audita, o deja el árbol cambiado | `@task` / medium |
 | <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | revisa el diff contra el Merge bar; un PASS necesita evidencia con fichero:línea o un comando | edita, hace commits o push | `@slow` / high |
 | <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | una segunda revisión, independiente y de otra familia de modelos, cuando el plan marca el diff como grande o arriesgado | lee el informe del inquisitor | gpt-6-astra (si no, `@task`) / high |
-| <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | entra cuando el diff toca auth, entrada externa, secretos o la red | edita | incluido en omp, `@slow` |
+| <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | entra cuando el diff toca auth, entrada externa, secretos o la red | edita | incluido en omp, el modelo de tu sesión |
 | <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | ejecuta los checks del repo: primero la línea base, al final los checks completos | arregla lo que falla | `@smol` / medium |
+
+#### Modelos
+
+Los agentes eligen modelo con los alias de rol de omp: eliges los modelos una vez en `~/.omp/agent/config.yml` y Strategium los sigue. Configura los tres roles que usa; un rol sin configurar cae en lo que trae omp (un `slow` sin configurar puede acabar en el modelo más caro que conoce omp, un `task` sin configurar en el modelo de tu sesión):
+
+```yaml
+modelRoles:
+  plan: anthropic/claude-opus-5-5   # librarian, archmagos
+  slow: anthropic/claude-opus-5-5   # inquisitor
+  task: anthropic/claude-sonnet-5-5 # battle-brother, veteran, apothecary, confessor sin Codex
+```
+
+El effort que pide cada agente está en la tabla de arriba. Para llevar un solo agente a otro modelo, usa `task.agentModelOverrides`, p. ej. `inquisitor: anthropic/claude-sonnet-5-5`.
 
 ## Instalación
 

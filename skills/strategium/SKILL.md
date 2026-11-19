@@ -97,7 +97,7 @@ The kickoff may say `no theatre was named`: naming no theatre is not the same as
   | Apothecary | `apothecary` | `@task` / medium |
   | Inquisitor | `inquisitor` | `@slow` / high |
   | Confessor | `confessor` | gpt-6-astra / high (else `@task`); read-only; only when the plan flags it |
-  | Sentinel | `security-reviewer` | bundled, `@slow` unless overridden |
+  | Sentinel | `security-reviewer` | bundled, the session's model unless overridden |
   | Servitor | `sonic` | `@smol` / medium |
   | Adept | `task` | `@task` / auto |
 
