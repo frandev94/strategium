@@ -91,12 +91,12 @@ The kickoff may say `no theatre was named`: naming no theatre is not the same as
   |---|---|---|
   | Scouts | `scout` | `@smol` / medium (read-only, no bash, cannot write files) |
   | Librarian | `librarian` | claude-opus-5-5 / high (`@plan`) |
-  | Archmagos Dominus | `archmagos` | claude-fable-5-2 / max (claude-opus-5-5, then `@slow`); read-only, no spawns, only when marked in Muster |
+  | Archmagos Dominus | `archmagos` | claude-opus-5-5 / xhigh (then `@slow`); read-only, no spawns, only when marked in Muster |
   | Battle-Brother | `battle-brother` | claude-sonnet-5-5 / medium (`@task`) |
   | Veteran | `veteran` | claude-sonnet-5-5 / high (`@task`); escalation only |
   | Apothecary | `apothecary` | claude-sonnet-5-5 / medium (`@task`) |
   | Inquisitor | `inquisitor` | claude-opus-5-5 / high (gpt-6-astra, then `@slow`) |
-  | Confessor | `confessor` | gpt-6-astra / high (claude-opus-5-5, then `@slow`); read-only; only when the plan flags it |
+  | Confessor | `confessor` | gpt-6-astra / high (claude-sonnet-5-5, then `@slow`); read-only; only when the plan flags it |
   | Sentinel | `security-reviewer` | bundled, `@slow` unless overridden |
   | Servitor | `sonic` | `@smol` / medium |
   | Adept | `task` | `@task` / auto |
