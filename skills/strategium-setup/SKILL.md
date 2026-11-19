@@ -53,6 +53,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 - `git --version` (worktrees, commits).
 - `git-cliff --version`: only needed to cut plugin releases by hand (`strategium-release`; CI releases on merge); optional, report if missing.
 - `gh --version` (`strategium-github` theatre). Then `gh auth status` (exit code only) and `gh project list --owner @me --limit 1 --format json`: output containing `missing required scopes` → report "project scope missing" and offer `gh auth refresh -s project` in the final table as the user's call (it opens the browser); setup never runs it.
+- Issue-fields probe (optional): `gh api -H "X-GitHub-Api-Version: 2026-03-10" user/issue-fields`. A failure with a missing-scope error → report "read:user scope missing (issue fields)" and offer `gh auth refresh -s read:user` in the final table as the user's call; setup never runs it. It is needed only where the booking lives in account issue fields; the install is still OK without it.
 - Theatre-specific CLIs named in the theatre skill (e.g. an issue-tracker or forge CLI): check `--version` and report.
 
 ## 4b. omp isolation
