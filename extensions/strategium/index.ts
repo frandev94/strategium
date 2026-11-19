@@ -1562,7 +1562,7 @@ export default function (pi: ExtensionAPI) {
 		drawCockpit({ ...run, phases });
 	});
 
-	// An agent deployed: the host allocates its id in the task result. An agent spawned by eval agent() has no id and shows only here.
+	// An agent deployed: the host allocates its id in the task result. An agent spawned by eval agent() is registered by its spawn hook (below).
 	pi.on("tool_result", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager || e.toolName.replace(/^_+/, "") !== "task") return;
 		const run = ownRun(sidOf(ctx));
@@ -1593,7 +1593,7 @@ export default function (pi: ExtensionAPI) {
 		drawCockpit(run);
 	});
 
-	// An agent returned or failed: its job ends in a message to the model. An id ends once.
+	// An agent returned or failed: its job ends, or its eval cell reports its end, in a message to the model. An id ends once.
 	pi.on("context", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager) return;
 		const ends = jobEnds(asObj(e).messages).filter(j => cockpit.deployed.get(j.id)?.state === "active");
@@ -1609,8 +1609,11 @@ export default function (pi: ExtensionAPI) {
 		const agent = agentName(String(asObj(e).agent ?? "task"));
 		if (!run || !ROSTER.includes(agent)) return;
 		log(run.key, agent.toUpperCase(), "deployed");
-		// shortcut: eval spawns never report an end (no host id), so they stay ▶ until the run key changes; upgrade when omp gives eval agents an id and an end event.
-		cockpit.deployed.set(`eval-${agent}-${cockpit.deployed.size + 1}`, { who: agent.toUpperCase(), role: agent, station: activeStation(run.phases ?? []), state: "active" });
+		const spawnKey = asObj(e).spawnKey;
+		const id = typeof spawnKey === "string" && spawnKey ? spawnKey : `eval-${agent}-${cockpit.deployed.size + 1}`;
+		// The spawnKey is the agent's id: its job label and its eval status events, so the context hook above ends it.
+		// shortcut: an eval spawn without spawnKey has nothing to match its end, so it stays ▶ until the run key changes; upgrade if a host omits spawnKey.
+		cockpit.deployed.set(id, { who: agent.toUpperCase(), role: agent, station: activeStation(run.phases ?? []), state: "active" });
 		drawCockpit(run);
 	});
 

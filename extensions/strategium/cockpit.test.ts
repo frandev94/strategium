@@ -295,6 +295,13 @@ describe("chronicle and jobs", () => {
 		expect(jobEnds(messages)).toEqual([{ id: "a1", status: "completed" }, { id: "a3", status: "failed" }]);
 		expect(jobEnds(undefined)).toEqual([]);
 	});
+
+	test("jobEnds reads eval cells: completed, failed and aborted agent events end their id; running and pending do not", () => {
+		const ev = (id: unknown, status: string) => ({ op: "agent", id, status });
+		const messages = [{ role: "toolResult", toolName: "eval", details: { cells: [{ statusEvents: [ev("A1", "completed"), ev("A2", "running"), ev("A3", "failed"), ev("A4", "aborted"), ev("A5", "pending"), { op: "read", path: "x" }, { op: "read", id: "A9", status: "completed" }, ev(7, "completed")] }, null, { statusEvents: "junk" }] } }];
+		expect(jobEnds(messages)).toEqual([{ id: "A1", status: "completed" }, { id: "A3", status: "failed" }, { id: "A4", status: "aborted" }]);
+		expect(jobEnds([{ details: { cells: "x" } }])).toEqual([]);
+	});
 });
 
 describe("keys", () => {

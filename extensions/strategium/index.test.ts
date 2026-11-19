@@ -3377,5 +3377,59 @@ describe("cockpit", () => {
 			expect(overlay).toContain("APOTHECARIES");
 			expect(overlay).toMatch(/│ ▶ eval-apothecary-1 +│/);
 		});
+
+		test.each([["an empty string", ""], ["a number", 7]])("an eval spawn whose spawnKey is %s keeps the eval-<agent>-<n> key", async (_name, spawnKey) => {
+			const { s, ui } = await running();
+			s.todo([{ name: "Muster", tasks: [{ content: "[captain] Plan", status: "completed" }] }, { name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
+			spawn(s, { invocationKind: "eval", agent: "apothecary", spawnKey });
+			expect(await peek(s, ui)).toMatch(/│ ▶ eval-apothecary-1 +│/);
+		});
+
+		const cell = (id: string, status: string) => ({ role: "toolResult", toolCallId: "c1", toolName: "eval", isError: false, content: [], details: { cells: [{ statusEvents: [{ op: "agent", id, status }] }] } });
+		const delivery = (id: string, status: string) => ({ role: "custom", customType: "async-result", details: { jobs: [{ jobId: id, type: "task", status, agentId: id, label: id }] } });
+		const ctxMsg = (s: ReturnType<typeof setup>, ...messages: unknown[]) => s.handlers.context.forEach(h => h({ type: "context", messages }, s.ctx));
+		async function skirmish() {
+			const r = await running();
+			r.s.todo([{ name: "Muster", tasks: [{ content: "[captain] Plan", status: "completed" }] }, { name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
+			spawn(r.s, { invocationKind: "eval", agent: "apothecary", spawnKey: "TestB" });
+			return r;
+		}
+
+		test("an eval agent is registered under its spawnKey and shows ▶ while it runs", async () => {
+			const { s, ui } = await skirmish();
+			expect(await peek(s, ui)).toMatch(/│ ▶ TestB +│/);
+		});
+
+		test("an eval agent awaited by its cell ends with the cell, logged once", async () => {
+			const { s, ui } = await skirmish();
+			ctxMsg(s, cell("TestB", "completed"));
+			ctxMsg(s, cell("TestB", "completed"));
+			ctxMsg(s, delivery("TestB", "completed"));
+			expect(await peek(s, ui)).toMatch(/│ ✓ TestB +│/);
+			expect((await chron(s, ui)).split("returned")).toHaveLength(2);
+		});
+
+		test("an eval agent that fails in its cell shows ✗ and logs the failure", async () => {
+			const { s, ui } = await skirmish();
+			ctxMsg(s, cell("TestB", "failed"));
+			expect(await peek(s, ui)).toMatch(/│ ✗ TestB +│/);
+			expect(await chron(s, ui)).toContain("✗ failed");
+		});
+
+		test("an eval agent still running after its cell returns stays ▶, then ends with its async-result", async () => {
+			const { s, ui } = await skirmish();
+			ctxMsg(s, cell("TestB", "running"));
+			expect(await peek(s, ui)).toMatch(/│ ▶ TestB +│/);
+			ctxMsg(s, delivery("TestB", "completed"));
+			expect(await peek(s, ui)).toMatch(/│ ✓ TestB +│/);
+		});
+
+		test("an eval spawn without spawnKey keeps the eval-<agent>-<n> key and stays ▶", async () => {
+			const { s, ui } = await running();
+			s.todo([{ name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
+			spawn(s, { invocationKind: "eval", agent: "apothecary" });
+			ctxMsg(s, cell("other", "completed"));
+			expect(await peek(s, ui)).toMatch(/│ ▶ eval-apothecary-1 +│/);
+		});
 	});
 });
