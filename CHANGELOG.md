@@ -1,3 +1,23 @@
+## [0.2.2] - 2026-11-19
+
+### 🐛 Bug Fixes
+
+- *(agents)* Drop Fable from archmagos, give confessor a distinct fallback
+
+### 📚 Documentation
+
+- Explain the model roles Strategium uses; fix security-reviewer's model
+- Recommended model config, checked by strategium-setup
+- *(models)* Role suffixes override agent effort; fix review findings
+- *(models)* Unset slow/smol inherit default with its effort suffix
+
+### 🚜 Refactor
+
+- *(agents)* Route every agent through omp role aliases
+
+### ⚙️ Miscellaneous Tasks
+
+- Move actions/checkout to v7.0.1 (Node 24)
 ## [0.2.1] - 2026-11-19
 
 ### 🚀 Features
