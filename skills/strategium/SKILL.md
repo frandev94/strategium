@@ -90,13 +90,13 @@ The kickoff may say `no theatre was named`: naming no theatre is not the same as
   | Role | `agent:` | Preferred model / effort (fallback) |
   |---|---|---|
   | Scouts | `scout` | `@smol` / medium (read-only, no bash, cannot write files) |
-  | Librarian | `librarian` | claude-opus-5-5 / high (`@plan`) |
-  | Archmagos Dominus | `archmagos` | claude-opus-5-5 / xhigh (then `@slow`); read-only, no spawns, only when marked in Muster |
-  | Battle-Brother | `battle-brother` | claude-sonnet-5-5 / medium (`@task`) |
-  | Veteran | `veteran` | claude-sonnet-5-5 / high (`@task`); escalation only |
-  | Apothecary | `apothecary` | claude-sonnet-5-5 / medium (`@task`) |
-  | Inquisitor | `inquisitor` | claude-opus-5-5 / high (gpt-6-astra, then `@slow`) |
-  | Confessor | `confessor` | gpt-6-astra / high (claude-sonnet-5-5, then `@slow`); read-only; only when the plan flags it |
+  | Librarian | `librarian` | `@plan` / high |
+  | Archmagos Dominus | `archmagos` | `@plan` / xhigh; read-only, no spawns, only when marked in Muster |
+  | Battle-Brother | `battle-brother` | `@task` / medium |
+  | Veteran | `veteran` | `@task` / high; escalation only |
+  | Apothecary | `apothecary` | `@task` / medium |
+  | Inquisitor | `inquisitor` | `@slow` / high |
+  | Confessor | `confessor` | gpt-6-astra / high (else `@task`); read-only; only when the plan flags it |
   | Sentinel | `security-reviewer` | bundled, `@slow` unless overridden |
   | Servitor | `sonic` | `@smol` / medium |
   | Adept | `task` | `@task` / auto |

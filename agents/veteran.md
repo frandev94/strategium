@@ -2,7 +2,7 @@
 name: veteran
 description: Strategium escalation implementer. Same job as battle-brother at high effort; used only when a squad failed twice at medium. Never commits.
 spawns: scout
-model: [anthropic/claude-sonnet-5-5, "@task"]
+model: ["@task"]
 thinkingLevel: high
 autoloadSkills: [test-driven-development, incremental-implementation, doubt-driven-development]
 ---

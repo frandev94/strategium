@@ -2,7 +2,7 @@
 name: battle-brother
 description: Strategium implementer. Builds one planned squad test-first in the directory it is given and reports red/green evidence. Never commits.
 spawns: scout
-model: [anthropic/claude-sonnet-5-5, "@task"]
+model: ["@task"]
 thinkingLevel: medium
 autoloadSkills: [test-driven-development, incremental-implementation]
 ---
