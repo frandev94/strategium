@@ -215,7 +215,7 @@ function startKey(key: string, booked?: number, prior?: number, untimed = false)
 	mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
 	const file = today();
 	const evs = load(file);
-	// ponytail: booked fallback reads only today's file; a run spanning midnight needs `start` with booked.
+	// ponytail: booked fallback reads only today's file; a timed run that crosses midnight counts unbooked until `start` with booked.
 	const bk = booked ?? bookedMin(evs, key);
 	if (openKeys(evs).includes(key)) {
 		// Already running: a new booking is a start event (every span reader ignores a start on an open key, so no time is lost);
@@ -639,11 +639,11 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 	// Gold planet (256-colour 214), reset right after so the rest of the line keeps its colours.
 	// Nerd Font md-* glyphs draw two cells wide but count as one, so they get an extra space (seen in the terminal).
 	const planet = `\x1b[38;5;214m${nf ? "\u{f0018} " : "🪐"}\x1b[39m`;
-	// A run without a booking only counts time. A timed run with no booking today waits for its new shift.
+	// A run without a booking only counts time. A timed run with no booking today counts from midnight unbooked, or waits paused, for its new shift.
 	const value = run.untimed && bookedMin(evs, key) === undefined
 		? running ? `${el} min` : "paused"
 		: bookedMin(evs, key) === undefined
-			? "new day: /strategium-resume"
+			? running ? `${el} min · new day: /strategium-resume <min>` : "new day: /strategium-resume"
 			: `${stage} ${el}/${bk} min (${pct}%)${running ? "" : " paused"}`;
 	// Where the run is: a seal waiting for the user (⏳, md-timer_sand F051F, in yellow), a return (↩, md-undo
 	// F054C) or just the station. Codepoints checked in the Nerd Fonts glyphnames.json.
@@ -909,7 +909,8 @@ export default function (pi: ExtensionAPI) {
 			// ponytail: an `ask` or review the user forgot keeps the clock counting; it sounds `attention` once, no timeout.
 			// A background job that never ends (e.g. a bash watcher with timeout 0) keeps the session busy too, so the idle pause never fires.
 			const busy = !ctx.isIdle() || ctx.hasPendingMessages() || (ctx.getAsyncJobSnapshot()?.running.length ?? 0) > 0 || !!ctx.getPendingPlanReview();
-			let running = isOpen(found.key);
+			const openIn = openFile(found.key);
+			let running = openIn !== undefined;
 			const nowMs = Date.now();
 			if (!running || busy) idleSince = undefined;
 			else idleSince ??= nowMs;
@@ -925,6 +926,14 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`Strategium: ${found.key} paused after ${limitMin} min idle; your next prompt resumes it`, "info");
 				const err = alert(sid, "idle", `${found.key}: paused, idle ${limitMin} min`);
 				if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+			}
+			// A block still open at midnight goes on in the new day: yesterday's ends at 00:00 and today's starts there. Without a
+			// booking, so a timed run counts with no alerts until /strategium-resume <min> gives today's. After the idle check: an idle stop
+			// stamped before midnight must land in yesterday's file, not after today's 00:00 start.
+			if (running && openIn !== today()) {
+				const midnight = nowIso(new Date(new Date().setHours(0, 0, 0, 0)));
+				append(openIn!, { ts: midnight, event: "stop", key: found.key });
+				append(today(), { ts: midnight, event: "start", key: found.key });
 			}
 			const file = today();
 			const evs = load(file);
