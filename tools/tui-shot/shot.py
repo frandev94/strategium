@@ -8,10 +8,10 @@ Default mode writes screen<sfx>.* (the footer the seeded run draws, before Alt+C
 --ponytail[=DIR]: also load the ponytail omp plugin (second -e), default dir found under ~/.omp/plugins; suffix defaults to -ponytail.
 --replay=NAME runs one regression scenario (REPLAYS below): keys, resizes and waits in the real omp, text checks on the screen xterm.js holds at each
 checkpoint; prints PASS/FAIL and exits 0/1 (unknown name: 2). --all runs every scenario and prints a table. --keep-work keeps the work dir (replay.log).
-Outputs (default %TEMP%\\strategium-tui-shot): <name>.raw (VT bytes), <name>.html (xterm.js 5.5 from a CDN), <name>.png (headless Edge).
+Outputs (default %TEMP%\\strategium-tui-shot): <name>.raw (VT bytes), <name>.html (xterm.js 5.5 vendored in tools/tui-shot/vendor, no network), <name>.png (headless Edge).
 The run is seeded on disk and omp resumes a hand-written session with the same id, so no model call is spent (the replays that need a model use the fake provider in replay-ext.ts).
 """
-import argparse, base64, datetime, glob, hashlib, html, json, os, re, shutil, subprocess, sys, tempfile, threading, time
+import argparse, base64, datetime, glob, hashlib, html, json, os, pathlib, re, shutil, subprocess, sys, tempfile, threading, time
 import ctypes, ctypes.wintypes as w
 
 COLS, ROWS = 140, 45
@@ -201,13 +201,26 @@ class Run:
         if not os.path.exists(self.log): return []
         return [json.loads(l) for l in open(self.log, encoding="utf8") if l.strip()]
 
-# --- rendering: xterm.js 5.5 in headless Edge. One page replays the stream with the logged resizes; it dumps every snapshot or is photographed. ---
+# --- rendering: xterm.js 5.5 (vendored, checked against vendor/SHA256SUMS) in headless Edge. One page replays the stream with the logged resizes; it dumps every snapshot or is photographed. ---
+VENDOR = os.path.join(ROOT, "tools", "tui-shot", "vendor")  # the harness's own copy, like EXT
+XTERM = ("xterm-5.5.0/xterm.css", "xterm-5.5.0/xterm.js", "addon-unicode11-0.8.0/addon-unicode11.js")
+def vendored():
+    """file:// URLs of XTERM, each checked against its SHA256SUMS line first; exits on a missing or changed file."""
+    sums = {}
+    for l in open(os.path.join(VENDOR, "SHA256SUMS"), encoding="utf8"):
+        if l.strip(): h, p = l.split(maxsplit=1); sums[p.strip().lstrip("*")] = h.lower()  # "*": sha256sum's binary-mode marker
+    for rel in XTERM:
+        p = os.path.join(VENDOR, rel)
+        got = hashlib.sha256(open(p, "rb").read()).hexdigest() if os.path.exists(p) else "missing"
+        if got != sums.get(rel):
+            sys.exit(f"vendored file tools/tui-shot/vendor/{rel} does not match vendor/SHA256SUMS (sha256 {got}, expected {sums.get(rel, 'no entry')}); restore it with: git checkout -- tools/tui-shot/vendor")
+    return [pathlib.Path(VENDOR, rel).as_uri() for rel in XTERM]
 PAGE = """<!doctype html><meta charset=utf8>
-<link rel=stylesheet href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<link rel=stylesheet href="@CSS@">
 <style>body{margin:0;background:#000;overflow:hidden}.xterm-viewport{overflow:hidden!important}#term{display:inline-block;padding:8px;background:#000}</style>
 <div id=term></div><pre id=dump></pre>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.8.0/lib/addon-unicode11.js"></script>
+<script src="@XTERM@"></script>
+<script src="@U11@"></script>
 <script>
 const t=new Terminal({cols:@COLS@,rows:@ROWS@,fontFamily:'CaskaydiaCove Nerd Font Mono',fontSize:14,allowProposedApi:true,scrollback:0});
 t.loadAddon(new Unicode11Addon.Unicode11Addon());t.unicode.activeVersion='11';  // emoji are 2 cells wide, as in Windows Terminal
@@ -224,6 +237,7 @@ function next(){
   const e=EV[i++];t.write(bytes.subarray(pos,e[1]),()=>{pos=e[1];if(e[0]=='r')t.resize(e[2],e[3]);else snaps.push(dump(e[2]));next();});}
 document.fonts.load('14px "CaskaydiaCove Nerd Font Mono"').finally(next);
 </script>"""
+css, js, u11 = vendored(); PAGE = PAGE.replace("@CSS@", css).replace("@XTERM@", js).replace("@U11@", u11)
 
 def page(name, data, events, cols=COLS, rows=ROWS):
     """Write <name>.raw and <name>.html for the stream `data` (events: ("r", offset, cols, rows) / ("s", offset, name))."""
@@ -243,7 +257,7 @@ def shoot(prof, name):
     png = os.path.join(OUT, name + ".png")
     if os.path.exists(png): os.remove(png)
     edge_run(prof, ["--screenshot=" + png, "file:///" + os.path.join(OUT, name + ".html").replace("\\", "/")])
-    if not os.path.exists(png): sys.exit(f"edge produced no {png} (the xterm.js CDN needs network)")
+    if not os.path.exists(png): sys.exit(f"edge produced no {png}")
 
 # --- default mode: the two shots ---
 def capture():
@@ -543,7 +557,7 @@ def replay(name):
             page(f"{name}-all", data, pev(len(data)))
             dom = edge_run(prof, ["--dump-dom", "file:///" + os.path.join(OUT, f"{name}-all.html").replace("\\", "/")], True).decode("utf8", "replace")
             snaps = parse_snaps(dom); want = sum(1 for e in R.events if e[0] == "s")
-            if len(snaps) != want: err = f"edge returned {len(snaps)} snapshots of {want} (the xterm.js CDN needs network)"
+            if len(snaps) != want: err = f"edge returned {len(snaps)} snapshots of {want}"
             for e in R.events:
                 if e[0] == "s" and e[3] and not A.no_png and err is None: shoot(prof, f"{name}-{e[1]}")
         C = Ctx(R, snaps)
