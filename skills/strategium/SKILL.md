@@ -43,7 +43,7 @@ The kickoff may say `no theatre was named`: naming no theatre is not the same as
 
 - Plugin `agent-skills@addy-agent-skills`, which provides the skills the agents autoload and the briefs name. Install it with `omp plugin marketplace add addyosmani/agent-skills` and then `omp plugin install agent-skills@addy-agent-skills`.
 - Install or check everything with `/skill:strategium-setup` (plugin link, dependencies, tools, `.env`).
-- Agents name a Claude model first, then fall back (another vendor where it helps, then the role aliases `@plan`, `@task`, `@slow`; the bundled agents use `@smol`), so each machine's `modelRoles` decides when the preferred provider is missing. The `confessor` is the exception: it names `gpt-6-astra` first on purpose, so the second review comes from another model family when available.
+- Agents pick their model through the omp role aliases `@plan`, `@task` and `@slow` (the bundled `scout` and `sonic` use `@smol`), so each machine's `modelRoles` decides the models; each agent sets its own effort, which a `:level` suffix on its role overrides. The `confessor` is the exception: it names `gpt-6-astra` first on purpose, so the second review comes from another model family when available. See `docs/models.md`.
 - Optional: env `STRATEGIUM_THEATRE` (default theatre for `/strategium`; empty → the GitHub theatre when the run's repo is on GitHub) and env `STRATEGIUM_ALARM` (a command to run as the alarm sound); env `STRATEGIUM_NOTIFY` is off by default (`1` turns the sounds and desktop notifications on); env `STRATEGIUM_SOUND` and env `STRATEGIUM_TOAST` are on by default (`0` turns off the alarm's sound or its desktop notification; the user sets them per session with `/strategium-config sound on|off` and `toast on|off`); env `STRATEGIUM_ARCHMAGOS` is off by default (`1` lets a run mark the Archmagos Dominus in Muster; the user sets it per session with `/strategium-config archmagos on|off`); env `STRATEGIUM_IDLE_MIN` (whole minutes, default 3, `0` off) pauses the run's clock after that many idle minutes. Env `STRATEGIUM_COCKPIT_KEY` (default `alt+c`, e.g. `f8`) sets the key that opens the cockpit; `/strategium-config cockpit-key <key>` saves another for the next omp start.
 
 ## Captain's rules
@@ -87,17 +87,17 @@ The kickoff may say `no theatre was named`: naming no theatre is not the same as
   `todo.ts` uses glyph tags (`<glyph> librarian · Plan…` instead of `[librarian] Plan…`) when `STRATEGIUM_GLYPHS=1`, the same switch as the footer. `--append` prints one `append` call per station instead of one `init`: Seals uses it for the chosen seals and the archmagos task, and squads, penances and returns use it for their items. Never put glyphs in tickets, MRs, commits or code.
 - Agents:
 
-  | Role | `agent:` | Preferred model / effort (fallback) |
+  | Role | `agent:` | Model / effort |
   |---|---|---|
   | Scouts | `scout` | `@smol` / medium (read-only, no bash, cannot write files) |
-  | Librarian | `librarian` | claude-opus-5-5 / high (`@plan`) |
-  | Archmagos Dominus | `archmagos` | claude-fable-5-2 / max (claude-opus-5-5, then `@slow`); read-only, no spawns, only when marked in Muster |
-  | Battle-Brother | `battle-brother` | claude-sonnet-5-5 / medium (`@task`) |
-  | Veteran | `veteran` | claude-sonnet-5-5 / high (`@task`); escalation only |
-  | Apothecary | `apothecary` | claude-sonnet-5-5 / medium (`@task`) |
-  | Inquisitor | `inquisitor` | claude-opus-5-5 / high (gpt-6-astra, then `@slow`) |
-  | Confessor | `confessor` | gpt-6-astra / high (claude-opus-5-5, then `@slow`); read-only; only when the plan flags it |
-  | Sentinel | `security-reviewer` | bundled, `@slow` unless overridden |
+  | Librarian | `librarian` | `@plan` / high |
+  | Archmagos Dominus | `archmagos` | `@plan` / xhigh; read-only, no spawns, only when marked in Muster |
+  | Battle-Brother | `battle-brother` | `@task` / medium |
+  | Veteran | `veteran` | `@task` / high; escalation only |
+  | Apothecary | `apothecary` | `@task` / medium |
+  | Inquisitor | `inquisitor` | `@slow` / high |
+  | Confessor | `confessor` | gpt-6-astra / high (else `@task`); read-only; only when the plan flags it |
+  | Sentinel | `security-reviewer` | bundled, the session's model unless overridden |
   | Servitor | `sonic` | `@smol` / medium |
   | Adept | `task` | `@task` / auto |
 

@@ -3,7 +3,7 @@ name: confessor
 description: Strategium second reviewer, of another model family when available. Reviews a run's branch against its Merge bar independently of the inquisitor; did not build it and never edits.
 tools: read, grep, find, glob, lsp, ast_grep, bash
 spawns: scout
-model: [openai-codex/gpt-6-astra, anthropic/claude-opus-5-5, "@slow"]
+model: [openai-codex/gpt-6-astra, "@task"]
 thinkingLevel: high
 autoloadSkills: [code-review-and-quality, code-simplification]
 ---

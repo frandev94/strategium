@@ -3,7 +3,7 @@ name: librarian
 description: Strategium planner. Turns an objective (a ticket, a spec or plan file, or free text) plus the scout map into a spec, 1-5 squads per plan or per area and a Merge bar in the local:// plan file it is given. With an area and its own output file it plans only that area; as lead it merges the area parts into one plan. Never edits repository files.
 tools: read, grep, find, glob, lsp, ast_grep, web_search, write
 spawns: scout
-model: [anthropic/claude-opus-5-5, "@plan"]
+model: ["@plan"]
 thinkingLevel: high
 autoloadSkills: [spec-driven-development, planning-and-task-breakdown]
 ---

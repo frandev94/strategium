@@ -121,15 +121,28 @@ El Capitán planifica y delega; cada uno de los demás papeles es un agente que 
 |---|---|---|---|---|
 | <img src="docs/icons/shield-crown.svg" width="18" alt=""> **Capitán** (sesión principal) | todas | planifica, delega, guarda los sellos, hace los commits | edita código del producto | el modelo de tu sesión |
 | <img src="docs/icons/radar.svg" width="18" alt=""> `scout` | Auspex | mapea el código que toca el objetivo; de 1 a 3 a la vez, cada uno con su foco | escribe ficheros o ejecuta bash | `@smol` / medium |
-| <img src="docs/icons/book-open-page-variant.svg" width="18" alt=""> `librarian` | Scriptorium | escribe la spec, los squads y el Merge bar; uno por área cuando el objetivo se divide, y luego un líder une las partes | edita ficheros del repositorio | claude-opus-5-5 / high |
-| <img src="docs/icons/head-cog.svg" width="18" alt=""> `archmagos` | Scriptorium | integra los planes de cada área en uno, comprobando cada supuesto contra el código; solo si se marcó en Muster | edita, escribe o lanza agentes | claude-fable-5-2 / max |
-| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | construye un squad con los tests primero y reporta la evidencia rojo/verde | hace commits o toca ficheros fuera de su squad | claude-sonnet-5-5 / medium |
-| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rehace un squad que falló dos veces, después de averiguar por qué | hace commits | claude-sonnet-5-5 / high |
-| <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | muta las líneas cambiadas del squad y hace fuzzing de la entrada no fiable, para enseñar dónde los tests no protegen el código | edita los tests que audita, o deja el árbol cambiado | claude-sonnet-5-5 / medium |
-| <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | revisa el diff contra el Merge bar; un PASS necesita evidencia con fichero:línea o un comando | edita, hace commits o push | claude-opus-5-5 / high |
-| <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | una segunda revisión, independiente y de otra familia de modelos, cuando el plan marca el diff como grande o arriesgado | lee el informe del inquisitor | gpt-6-astra / high |
-| <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | entra cuando el diff toca auth, entrada externa, secretos o la red | edita | incluido en omp, `@slow` |
+| <img src="docs/icons/book-open-page-variant.svg" width="18" alt=""> `librarian` | Scriptorium | escribe la spec, los squads y el Merge bar; uno por área cuando el objetivo se divide, y luego un líder une las partes | edita ficheros del repositorio | `@plan` / high |
+| <img src="docs/icons/head-cog.svg" width="18" alt=""> `archmagos` | Scriptorium | integra los planes de cada área en uno, comprobando cada supuesto contra el código; solo si se marcó en Muster | edita, escribe o lanza agentes | `@plan` / xhigh |
+| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | construye un squad con los tests primero y reporta la evidencia rojo/verde | hace commits o toca ficheros fuera de su squad | `@task` / medium |
+| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rehace un squad que falló dos veces, después de averiguar por qué | hace commits | `@task` / high |
+| <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | muta las líneas cambiadas del squad y hace fuzzing de la entrada no fiable, para enseñar dónde los tests no protegen el código | edita los tests que audita, o deja el árbol cambiado | `@task` / medium |
+| <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | revisa el diff contra el Merge bar; un PASS necesita evidencia con fichero:línea o un comando | edita, hace commits o push | `@slow` / high |
+| <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | una segunda revisión, independiente y de otra familia de modelos, cuando el plan marca el diff como grande o arriesgado | lee el informe del inquisitor | gpt-6-astra (si no, `@task`) / high |
+| <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | entra cuando el diff toca auth, entrada externa, secretos o la red | edita | incluido en omp, el modelo de tu sesión |
 | <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | ejecuta los checks del repo: primero la línea base, al final los checks completos | arregla lo que falla | `@smol` / medium |
+
+#### Modelos
+
+Los agentes eligen modelo con los alias de rol de omp: eliges los modelos una vez en `~/.omp/agent/config.yml` y Strategium los sigue. Configura los tres roles que usa, sin sufijo `:nivel` (un sufijo pisa el effort de todos los agentes de ese rol). Un rol sin configurar cae en lo que trae omp: `plan` y `task` en el modelo de tu sesión, `slow` en tu `default` (si tampoco está, en la lista de omp, que puede acabar en el modelo más caro que conoce):
+
+```yaml
+modelRoles:
+  plan: anthropic/claude-opus-5-5   # librarian, archmagos
+  slow: anthropic/claude-opus-5-5   # inquisitor
+  task: anthropic/claude-sonnet-5-5 # battle-brother, veteran, apothecary, confessor sin Codex
+```
+
+El effort que pide cada agente está en la tabla de arriba. Para llevar un solo agente a otro modelo, usa `task.agentModelOverrides`, p. ej. `inquisitor: anthropic/claude-sonnet-5-5`. La config recomendada completa y sus motivos: [docs/models.md](docs/models.md) (en inglés); `/skill:strategium-setup` compara tus roles con ella.
 
 ## Instalación
 
