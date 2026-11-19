@@ -266,6 +266,8 @@ skills/                           the skills
 
 The extension is plain TypeScript with no runtime dependencies; `bun` is only needed to run it and to run the tests.
 
+Releases are automatic: a merge to `main` that changes `extensions/`, `skills/`, `agents/`, `alarm/` or `.omp-plugin/` (test files excluded) runs `.github/workflows/release.yml`. Conventional commits set the version (while 0.x, a breaking change, marked with `!` or a `BREAKING CHANGE:` footer, bumps the minor and any other conventional commit the patch; non-conventional commits bump nothing and stay out of the changelog). Merges that only touch docs, tests or dev tooling release nothing; their commits ride along in the next release's changelog. To release by hand, use the `strategium-release` skill.
+
 ## License
 
 MIT
