@@ -1,3 +1,15 @@
+## [0.2.4] - 2026-11-20
+
+### 🚀 Features
+
+- *(cockpit)* Themeable cockpit with blood-angels default
+
+### 📚 Documentation
+
+- Give the README a grimdark banner, badges and callouts
+- Adopt a Blood Angels palette for the README assets
+- Address the README review notes
+- Describe the cockpit-theme setting
 ## [0.2.3] - 2026-11-19
 
 ### 🚀 Features
