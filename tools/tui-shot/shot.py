@@ -391,8 +391,8 @@ def checks_archmagos(C): C.ck("Merge the plan ([archmagos]) is in the cockpit", 
 def steps_agent_status(R): open_snap(R)
 def checks_agent_status(C):
     o = C.s["open"]; end = next((y for y in range(1, o.rows) if o.row(y).startswith("╟─")), o.rows)
-    head = "\n".join(o.row(y) for y in range(1, end)); y = o.where("AWAITING YOUR ORDERS")
-    C.ck("header has AWAITING YOUR ORDERS", "AWAITING YOUR ORDERS" in head, head, None, o)
+    head = "\n".join(o.row(y) for y in range(1, end)); y = o.where("VOX OPEN")
+    C.ck("header has VOX OPEN · esc to give orders", "○ VOX OPEN · esc to give orders" in head, head, None, o)
     C.ck("header has no AGENT AT WORK / PLAN REVIEW PENDING", "AGENT AT WORK" not in head and "PLAN REVIEW PENDING" not in head, head, None, o)
     C.ck(f"status row ends with ║ at col {o.cols - 1}", y >= 0 and o.at(y, o.cols - 1) == "║", o.row(y), None, o)
 

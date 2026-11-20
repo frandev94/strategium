@@ -799,8 +799,9 @@ export default function (pi: ExtensionAPI) {
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
 		log(key, job.who, ok ? "✓ returned" : "✗ failed", ok ? "ok" : "fail");
 	};
-	/** Idle for the host with nothing queued: the prompt waits for the user. */
-	const agentStatus = (ctx: SessionCtx) => (ctx.isIdle() && !ctx.hasPendingMessages() ? "awaiting" : "working");
+	/** Idle for the host with nothing queued and no background job running: the prompt is free for the user's orders. */
+	const agentStatus = (ctx: SessionCtx) =>
+		ctx.isIdle() && !ctx.hasPendingMessages() && !ctx.getAsyncJobSnapshot()?.running.length ? "awaiting" : "working";
 	/** An open cockpit shows the agent's state at once, without rebuilding the run. The host's state decides (it already streams before agent_start). */
 	const setAgentStatus = (ctx: SessionCtx) => {
 		cockpit.status = agentStatus(ctx);
@@ -846,7 +847,7 @@ export default function (pi: ExtensionAPI) {
 					let frame = 0;
 					const timer = setInterval(() => {
 						frame++;
-						if (live) setAgentStatus(live); // the host's idle flag lags agent_end
+						if (live) setAgentStatus(live); // the host's idle flag lags agent_end, and the last job ending sends no event
 						tui.requestRender();
 					}, 500);
 					const close = () => {

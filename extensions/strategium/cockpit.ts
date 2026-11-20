@@ -22,7 +22,7 @@ export type ViewInput = {
 	clock?: { running: boolean; el: number; bk?: number }; // bk undefined: untimed, or no booking today
 	chronicle: Entry[];
 	glyphs?: boolean; // Nerd Font glyphs (STRATEGIUM_GLYPHS=1) instead of plain symbols; never emoji
-	status?: "working" | "awaiting"; // what the main agent is doing: a turn runs, or the prompt waits for the user
+	status?: "working" | "awaiting"; // what the main agent is doing: a turn runs, or the prompt is free for the user's orders
 };
 export type View = ReturnType<typeof cockpitView>;
 
@@ -267,7 +267,7 @@ function clockText(clock: View["clock"], pal: Palette, bar: boolean): string {
 
 // The agent's state under the clock: green and animated while a turn runs, gold (the most visible tone) when the user's turn comes. No line without a status.
 const statusText = (status: View["status"], pal: Palette, frame: number): string[] =>
-	status === "working" ? [markText("active", "▶", "AGENT AT WORK", pal, frame)] : status === "awaiting" ? [paint(pal.gold, "○ AWAITING YOUR ORDERS")] : [];
+	status === "working" ? [markText("active", "▶", "AGENT AT WORK", pal, frame)] : status === "awaiting" ? [paint(pal.gold, "○ VOX OPEN · esc to give orders")] : [];
 
 const entryLine = (e: Entry, pal: Palette) => {
 	const tone: Tone = e.tone === "ok" ? "green" : e.tone === "fail" ? "red" : e.tone === "seal" ? "gold" : "parchment";

@@ -640,13 +640,13 @@ describe("agent status line", () => {
 		expect(lines("working", width, 1).some(l => l.includes("▷ AGENT AT WORK"))).toBe(true);
 	});
 
-	test.each([100, 50])("awaiting shows ○ AWAITING YOUR ORDERS in gold at width %i", width => {
-		expect(lines("awaiting", width).some(l => l.includes("○ AWAITING YOUR ORDERS"))).toBe(true);
-		expect(renderCockpit(cockpitView(input({ status: "awaiting" })), width, 0, TRUE).some(l => l.includes(`${GOLD}○ AWAITING YOUR ORDERS`))).toBe(true);
+	test.each([100, 50])("awaiting shows ○ VOX OPEN · esc to give orders in gold at width %i", width => {
+		expect(lines("awaiting", width).some(l => l.includes("○ VOX OPEN · esc to give orders"))).toBe(true);
+		expect(renderCockpit(cockpitView(input({ status: "awaiting" })), width, 0, TRUE).some(l => l.includes(`${GOLD}○ VOX OPEN · esc to give orders`))).toBe(true);
 	});
 
 	test("no status draws no status line and the layout keeps its rows", () => {
-		expect(text()).not.toMatch(/AGENT AT WORK|AWAITING YOUR ORDERS/);
+		expect(text()).not.toMatch(/AGENT AT WORK|VOX OPEN/);
 		for (const w of [100, 50]) expect(lines("working", w)).toHaveLength(lines(undefined, w).length + 1);
 	});
 
