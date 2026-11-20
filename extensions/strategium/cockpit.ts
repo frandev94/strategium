@@ -1,5 +1,6 @@
 // The cockpit: a pure view of the run (boxes, seals, clock, chronicle) and its renderers. No fs, no ctx, no index.ts.
 import { AGENTS } from "../../skills/strategium/todo";
+import { DEFAULT_THEME, THEMES, type Theme, type Tone } from "./themes";
 
 export type Phase = { name: string; tasks: { content: string; status: string }[] };
 export type Seal = { id: string; name: string; state: "granted" | "waiting" | "pending" };
@@ -7,7 +8,8 @@ export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail
 export type Note = { veteran?: true; failed?: true };
 export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed" }; // station: its name at spawn; undefined with no phases
 export type Depth = "truecolor" | "256";
-export type Palette = Record<"gold" | "parchment" | "green" | "red" | "purple" | "iron", string>;
+type Ansi = `\x1b[${string}`; // an escape sequence, not a hex: keeps a Theme out of renderCockpit
+export type Palette = Record<Tone, Ansi> & { bg?: Ansi }; // a foreground sequence per tone, bg a background one
 export type ViewInput = {
 	key: string;
 	untimed?: true;
@@ -25,9 +27,8 @@ export type ViewInput = {
 export type View = ReturnType<typeof cockpitView>;
 
 type Kind = "active" | "done" | "failed" | "idle";
-type Tone = keyof Palette;
 
-const HEX: Palette = { gold: "#C9A227", parchment: "#E6D8B5", green: "#4CFF7A", red: "#A4161A", purple: "#7B2CBF", iron: "#5A5A5A" };
+const BG_RESET = "\x1b[49m";
 const SEAL_TAG = /^\s*(?:\[seal\]|\u{f047a}\s*seal\s*·)\s*(.+?)\s*$/u;
 const ROLE_TAG = /^\s*(?:\[([\w-]+)\]|[^\w\s[]+\s*([\w-]+)\s*·)\s*(.*?)\s*$/su;
 const BAR = 14;
@@ -40,9 +41,12 @@ export function colorDepth(env: Record<string, string | undefined> = process.env
 	return ct === "truecolor" || ct === "24bit" || env.WT_SESSION ? "truecolor" : "256";
 }
 
-export function palette(depth: Depth): Palette {
+/** The theme's colours as ANSI sequences at `depth`; bg turns Bun.color's foreground sequence into a background one. */
+export function palette(depth: Depth, theme: Theme = THEMES[DEFAULT_THEME]): Palette {
 	const fmt = depth === "truecolor" ? "ansi-16m" : "ansi-256";
-	return Object.fromEntries(Object.entries(HEX).map(([k, hex]) => [k, Bun.color(hex, fmt)!])) as Palette;
+	const { bg, ...tones } = theme;
+	const pal = Object.fromEntries(Object.entries(tones).map(([k, hex]) => [k, Bun.color(hex, fmt)!])) as Palette;
+	return bg ? { ...pal, bg: Bun.color(bg, fmt)!.replace("[38;", "[48;") as Ansi } : pal;
 }
 
 export function sealsFrom(phases: Phase[]): Seal[] {
@@ -320,6 +324,12 @@ function boxLines(lines: View["boxes"][number]["lines"], cap: number, pal: Palet
 }
 
 export function renderCockpit(view: View, width: number, frame: number, pal: Palette, height?: number): string[] {
+	const lines = cockpitLines(view, width, frame, pal, height);
+	// A themed background fills every line to the full width, so the overlay reads as one panel.
+	return pal.bg ? lines.map(l => pal.bg + pad(l, width) + BG_RESET) : lines;
+}
+
+function cockpitLines(view: View, width: number, frame: number, pal: Palette, height?: number): string[] {
 	const s = view.station;
 	const station = markText(s.kind, s.mark, s.name, pal, frame) + (s.note ? ` · ${paint(pal.gold, s.note)}` : "");
 	const boxes = (cap: number): Box[] => view.boxes.map(b => ({ title: b.title, lines: boxLines(b.lines, cap, pal, frame), tone: b.tone }));
