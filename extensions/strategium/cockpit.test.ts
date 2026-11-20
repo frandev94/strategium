@@ -138,9 +138,9 @@ describe("view", () => {
 		expect(titles(t)).toEqual(["SCOUTS"]);
 	});
 
-	test("no phases: awaiting orders and no box", () => {
+	test("no phases: no station yet and no box", () => {
 		const t = text();
-		expect(t).toMatch(/╟─ ○ awaiting orders /);
+		expect(t).toMatch(/╟─ ○ no station yet /);
 		expect(titles(t)).toEqual([]);
 	});
 
@@ -510,7 +510,7 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 		["station", phases(["[captain] build", "in_progress"]), /^▶ Plan$/m],
 		["return", [{ name: "Forge", tasks: [{ content: "[captain] redo", status: "in_progress" }] }, { name: "Later", tasks: [{ content: "[captain] x", status: "completed" }] }], /^↶ Forge$/m],
 		["seal", phases(["[seal] Plan", "in_progress"]), /^▶ Plan · ◷ seal Plan awaits you$/m],
-		["none", undefined, /^○ awaiting orders$/m],
+		["none", undefined, /^○ no station yet$/m],
 	])("stacked station line: %s", (_n, phs, expected) => {
 		expect(text({ phases: phs }, 50)).toMatch(expected);
 	});
