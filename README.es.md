@@ -1,9 +1,9 @@
-<p align="center">
+<h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.svg">
-    <img src="docs/banner-light.svg" alt="Strategium: un workflow orquestador para omp" width="100%">
+    <img src="docs/banner-light.svg" alt="Strategium: un workflow orquestador para omp. El Capitán planifica, los squads construyen, tú conservas los sellos." width="100%">
   </picture>
-</p>
+</h1>
 
 <p align="center">
   <a href="https://github.com/frandev94/strategium/releases"><img alt="Última versión" src="https://img.shields.io/github/v/release/frandev94/strategium?style=for-the-badge&label=release&color=791E29&labelColor=180D10&logo=data:image%2Fsvg%2Bxml;base64,PHN2ZyBmaWxsPSIjQzVBMTVBIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGlkPSJtZGktc2t1bGwiIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZD0iTTEyLDJBOSw5IDAgMCwwIDMsMTFDMywxNC4wMyA0LjUzLDE2LjgyIDcsMTguNDdWMjJIOVYxOUgxMVYyMkgxM1YxOUgxNVYyMkgxN1YxOC40NkMxOS40NywxNi44MSAyMSwxNCAyMSwxMUE5LDkgMCAwLDAgMTIsMk04LDExQTIsMiAwIDAsMSAxMCwxM0EyLDIgMCAwLDEgOCwxNUEyLDIgMCAwLDEgNiwxM0EyLDIgMCAwLDEgOCwxMU0xNiwxMUEyLDIgMCAwLDEgMTgsMTNBMiwyIDAgMCwxIDE2LDE1QTIsMiAwIDAsMSAxNCwxM0EyLDIgMCAwLDEgMTYsMTFNMTIsMTRMMTMuNSwxN0gxMC41TDEyLDE0WiIgLz48L3N2Zz4NCg%3D%3D"></a>
@@ -309,3 +309,5 @@ Las versiones son automáticas: un merge a `main` que cambie `extensions/`, `ski
 ## Licencia
 
 MIT
+
+Strategium es una obra de fans no oficial inspirada en Warhammer 40,000. Warhammer 40,000, Blood Angels y los nombres relacionados son marcas de Games Workshop Limited; este proyecto no está afiliado a Games Workshop ni cuenta con su respaldo.

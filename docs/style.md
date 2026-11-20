@@ -1,6 +1,6 @@
 # Visual style: Blood Angels
 
-Strategium's README assets follow a Blood Angels palette: dark crimson, deep night, gold and bone. This file is the single source for those colours; change a colour here first, then in every place listed under [Where it lives](#where-it-lives).
+Strategium's README assets follow a Blood Angels palette: dark crimson, deep night, gold and bone. This file is the single source for those colours; change a colour here first, then in every place listed under [Where it lives](#where-it-lives). "Blood Angels" only names the palette: the project is unofficial and uses no Games Workshop artwork, logos or fonts (see the trademark note at the end of the README).
 
 ## Palette
 
@@ -22,7 +22,7 @@ Only where the base palette cannot work; derive new values from it, never pick u
 | Vellum | `#DCCBA8` | Bone darkened: inner panel of the light banner |
 | Old gold | `#8C6D2E` | Gold darkened: gold on Bone needs contrast in the light banner |
 
-The light banner swaps the roles: Bone background, Vellum panel, Blood title, Old gold rules, Surface subtitle.
+The light banner swaps the roles: Bone background, Vellum panel, Blood title, Old gold rules, Surface subtitle and motto (Old gold on Vellum is only 3:1, too low for 13 px text).
 
 ## Type and marks
 
@@ -41,5 +41,6 @@ Station names, agent names and alerts carry the theme. Section headings, tickets
 | `tools/banner/banner.py` (`THEMES`) | `docs/banner-dark.svg`, `docs/banner-light.svg` |
 | `README.md`, `README.es.md` | badge colours, the mermaid `init`, `classDef` and `linkStyle` lines |
 | `docs/icons/*.svg` | the `fill` attribute |
+| `README.md`, `README.es.md` (release badge `logo=`) | `docs/icons/skull.svg` URL-encoded in base64; a grep for the hex does not find it. After changing Gold, re-encode: `python -c "import base64,urllib.parse;print(urllib.parse.quote('data:image/svg+xml;base64,'+base64.b64encode(open('docs/icons/skull.svg','rb').read()).decode(),safe=':;,'))"` |
 
 The cockpit (`extensions/strategium/cockpit.ts`, `HEX`) has its own terminal palette and does not follow this file.
