@@ -1,3 +1,8 @@
+## [0.2.8] - 2026-11-20
+
+### 🚀 Features
+
+- *(setup)* Warn when plan, slow or task model roles are unset
 ## [0.2.7] - 2026-11-20
 
 ### 🐛 Bug Fixes
