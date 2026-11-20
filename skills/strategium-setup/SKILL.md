@@ -62,6 +62,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 
 ## 4c. Model roles
 The recommended config and its reasons are in `<R>/docs/models.md`; read it before advising.
+- Run `bun "<R>/skills/strategium-setup/roles.ts"` first and report every `WARN` line in the setup table. The bullets below are the advice that follows.
 - `omp config get modelRoles` and `omp config get task.agentModelOverrides`. Strategium agents need `plan` (librarian, archmagos), `slow` (inquisitor) and `task` (battle-brother, veteran, apothecary, confessor without Codex); the bundled `scout` and `sonic` use `smol`.
 - Unset `plan` or `task` → report that they run on the session's model. Unset `slow` or `smol` → they use the configured `default` with its `:level` suffix (e.g. `default: …:medium` runs the inquisitor at `medium`, and scout and sonic on the main model); only with `default` unset too does `slow` fall to omp's slow list (`gpt-5.6-sol` with a Codex login, else Fable 5.2, the costliest model).
 - A `:level` suffix on `plan`, `task` or `smol` overrides the effort of every agent on that role (e.g. `plan: …:xhigh` runs the librarian at `xhigh`, `smol: …:low` runs scout and sonic at `low`): report it and recommend the role without a suffix.
