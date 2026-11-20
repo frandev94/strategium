@@ -1909,6 +1909,13 @@ describe("the Captain's hooks never throw and keep their wording", () => {
 		expect(spawn("OMP:Sonic")).toBeUndefined();
 	});
 
+	test("the Review & merge reviewers pass during a run and reviewer is refused", async () => {
+		const { spawn } = await run(disjoint);
+		expect(spawn("inquisitor")).toBeUndefined();
+		expect(spawn("confessor")).toBeUndefined();
+		expect(spawn("reviewer")?.reason).toContain("during a run only these agents may be spawned");
+	});
+
 	test("the whole roster passes, anything else is refused with the roster in the reason", async () => {
 		const { spawn } = await run(disjoint);
 		// The archmagos has its own guards (setting, mark, librarians, budget): see "the archmagos guard".

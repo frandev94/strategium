@@ -29,7 +29,7 @@ The plugin ships three things:
 
 ## How a run works
 
-The main session is the **Captain**: it never edits product code. It plans, delegates and guards the seals. You are the **Chapter Master**: only you grant a seal (Plan, UI, MR, Commit).
+The main session is the **Captain**: it never edits product code. It plans, delegates and guards the seals. You are the **Chapter Master**: only you grant a seal (Plan, UI, MR, Commit, Review & merge).
 
 ```
 Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition → Extraction
@@ -41,7 +41,7 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 4. **Deployment** — one branch for the run, the squads declared with their files; each isolated agent works in its own omp checkout.
 5. **Skirmish** — a `battle-brother` implements each squad test-first; an `apothecary` tries to break the new tests, only on squads with new logic and within a fixed budget.
 6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar, and a `confessor` of another model family (when available) joins when the plan flags the diff as large or risky; a `sonic` runs the repo's checks.
-7. **Extraction** — the commit and the merge request, after your seal.
+7. **Extraction** — the commit and the merge request, after your seal. With the optional `Review & merge` seal, a fresh inquisitor and confessor review the PR once CI is green, for at most 2 rounds, and a clean review ends in the merge.
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"lineColor": "#C5A15A", "edgeLabelBackground": "#281216", "textColor": "#E8DDC5", "fontFamily": "Georgia, serif"}}}%%
@@ -286,7 +286,7 @@ bun alarm/vox.ts 100 "the booking is over"
 
 A theatre is a `strategium-<name>` skill that binds the run to your organisation: where the tickets live, how the time is booked, how the merge requests are written, which records are kept. Without a theatre nothing is pushed: the delivery is the branch with its commits.
 
-The plugin ships the **GitHub theatre** (`strategium-github`): the issue is the ticket (created in Muster when the objective is free text or a file), a Project gives the status, and the issue fields `Booked (min)` and `Spent (min)` (or Project fields of the same name when the issue fields do not exist) give the booking. The issue gets one comment from the run, a summary of the pull request. The delivery is a draft pull request that closes the issue on merge; it is not added to the Project, because it shows on the issue's card. Moving the card to Done on merge needs the Project's "Item closed" workflow, and Muster warns when it is off. It is the default: when the run's repo is on GitHub, the run uses it unless another theatre is named, `STRATEGIUM_THEATRE` names one, or you say `none`.
+The plugin ships the **GitHub theatre** (`strategium-github`): the issue is the ticket (created in Muster when the objective is free text or a file), a Project gives the status, and the issue fields `Booked (min)` and `Spent (min)` (or Project fields of the same name when the issue fields do not exist) give the booking. The issue gets one comment from the run, a summary of the pull request. The delivery is a draft pull request that closes the issue on merge (with `Review & merge`, the theatre merges it after a clean review); it is not added to the Project, because it shows on the issue's card. Moving the card to Done on merge needs the Project's "Item closed" workflow, and Muster warns when it is off. It is the default: when the run's repo is on GitHub, the run uses it unless another theatre is named, `STRATEGIUM_THEATRE` names one, or you say `none`.
 
 ## Development
 
