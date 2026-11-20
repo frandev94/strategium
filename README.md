@@ -29,7 +29,7 @@ The plugin ships three things:
 
 ## How a run works
 
-The main session is the **Captain**: it never edits product code. It plans, delegates and guards the seals. You are the **Chapter Master**: only you grant a seal (Plan, UI, MR, Commit).
+The main session is the **Captain**: it never edits product code. It plans, delegates and guards the seals. You are the **Chapter Master**: only you grant a seal (Plan, UI, MR, Commit, Review & merge).
 
 ```
 Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition → Extraction
@@ -40,8 +40,8 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 3. **Scriptorium** — one librarian writes a spec, 1–5 squads and a Merge bar; when the objective splits into areas, one librarian per area, then a lead merges the parts (with the Archmagos Dominus marked in Muster, an `archmagos` integrates the parts instead of the lead).
 4. **Deployment** — one branch for the run, the squads declared with their files; each isolated agent works in its own omp checkout.
 5. **Skirmish** — a `battle-brother` implements each squad test-first; an `apothecary` tries to break the new tests, only on squads with new logic and within a fixed budget.
-6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar, and a `confessor` of another model family (when available) joins when the plan flags the diff as large or risky; a `sonic` runs the repo's checks.
-7. **Extraction** — the commit and the merge request, after your seal.
+6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar, and a `confessor` of another model family (when available) joins when the plan flags the diff as large or risky, or in the Review & merge loop; a `sonic` runs the repo's checks.
+7. **Extraction** — the commit and the merge request, after your seal. With the optional `Review & merge` seal, a fresh inquisitor and confessor review the PR once CI is green, for at most 2 rounds, and a clean review ends in the merge.
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"lineColor": "#C5A15A", "edgeLabelBackground": "#281216", "textColor": "#E8DDC5", "fontFamily": "Georgia, serif"}}}%%
@@ -124,7 +124,7 @@ A run goes back instead of forward, and every return has a trigger, a target and
 | **Retrial** | the fixed code needs a new look | the `inquisitor` again (the `confessor` re-checks its own IDs) on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item |
 | **Stand down** | the budget is spent, or the failure is not in the code | you, with the open items | — |
 
-If the code can satisfy the squad's check as written, it is a penance; if it cannot, the squad was cut wrong and it is a redraft. A return past a granted seal breaks the seal, and it is asked for again. What already passed stays passed.
+If the code can satisfy the squad's check as written, it is a penance; if it cannot, the squad was cut wrong and it is a redraft. A return past a granted seal breaks the seal (except the Review & merge loop), and it is asked for again. What already passed stays passed.
 
 ### The agents
 
@@ -140,7 +140,7 @@ The Captain plans and delegates; every other role is an agent it starts. Each on
 | <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rebuilds a squad that failed twice, after finding why | commits | `@task` / high |
 | <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | mutates the squad's changed lines and fuzzes untrusted input, to show where the tests do not protect the code | edits the tests under audit, or leaves the tree changed | `@task` / medium |
 | <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | reviews the diff against the Merge bar; a PASS needs file:line or command evidence | edits, commits or pushes | `@slow` / high |
-| <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | a second, independent review by another model family, when the plan flags the diff as large or risky | reads the inquisitor's report | gpt-6-astra (else `@task`) / high |
+| <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | a second, independent review by another model family, when the plan flags the diff as large or risky, or in the Review & merge loop | reads the inquisitor's report | gpt-6-astra (else `@task`) / high |
 | <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | joins when the diff touches auth, external input, secrets or the network | edits | bundled, your session's model |
 | <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | runs the repo's checks: the baseline first, the full checks at the end | fixes what fails | `@smol` / medium |
 
@@ -286,7 +286,7 @@ bun alarm/vox.ts 100 "the booking is over"
 
 A theatre is a `strategium-<name>` skill that binds the run to your organisation: where the tickets live, how the time is booked, how the merge requests are written, which records are kept. Without a theatre nothing is pushed: the delivery is the branch with its commits.
 
-The plugin ships the **GitHub theatre** (`strategium-github`): the issue is the ticket (created in Muster when the objective is free text or a file), a Project gives the status, and the issue fields `Booked (min)` and `Spent (min)` (or Project fields of the same name when the issue fields do not exist) give the booking. The issue gets one comment from the run, a summary of the pull request. The delivery is a draft pull request that closes the issue on merge; it is not added to the Project, because it shows on the issue's card. Moving the card to Done on merge needs the Project's "Item closed" workflow, and Muster warns when it is off. It is the default: when the run's repo is on GitHub, the run uses it unless another theatre is named, `STRATEGIUM_THEATRE` names one, or you say `none`.
+The plugin ships the **GitHub theatre** (`strategium-github`): the issue is the ticket (created in Muster when the objective is free text or a file), a Project gives the status, and the issue fields `Booked (min)` and `Spent (min)` (or Project fields of the same name when the issue fields do not exist) give the booking. The issue gets one comment from the run, a summary of the pull request. The delivery is a draft pull request that closes the issue on merge (with `Review & merge`, the theatre merges it after a clean review); it is not added to the Project, because it shows on the issue's card. Moving the card to Done on merge needs the Project's "Item closed" workflow, and Muster warns when it is off. It is the default: when the run's repo is on GitHub, the run uses it unless another theatre is named, `STRATEGIUM_THEATRE` names one, or you say `none`.
 
 ## Development
 
