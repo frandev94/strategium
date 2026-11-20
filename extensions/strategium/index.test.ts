@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { keyOf, whereFrom } from "./index";
+import { cockpitView } from "./cockpit";
 import { claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
 
 // The extension registers itself on a host. A fake one is enough: it hands back the tool it
@@ -604,6 +605,17 @@ describe("the station in the footer", () => {
 		expect(shown()).toContain("dark-mode · Muster › Begin run and theatre status · ");
 		todo(backToScriptorium);
 		expect(shown()).toContain("dark-mode · ↩ Scriptorium › Redraft squad 2 · ");
+	});
+
+	test("a user task appended to Debrief shows in the footer and in the CAPTAIN box", async () => {
+		const { call, todo, start, shown } = setup();
+		await call({ action: "begin", key: "dark-mode" });
+		const debrief = [phase("Debrief", ["[captain] End the run and records", "completed"], ["[captain] Email the summary", "in_progress"])];
+		todo(debrief);
+		start();
+		expect(shown()).toContain("dark-mode · Debrief › Email the summary · ");
+		const captain = cockpitView({ key: "dark-mode", notes: {}, chronicle: [], phases: debrief }).boxes.find(x => x.title.includes("CAPTAIN"));
+		expect(captain?.lines.map(l => l.text)).toContain("Email the summary");
 	});
 
 	test("the footer shows the station next to the time", async () => {
