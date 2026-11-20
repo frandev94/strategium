@@ -5,7 +5,7 @@ description: Use when a long task, build, run or timer finishes or needs the use
 
 # Strategium alarm (vox-caster)
 
-`bun <plugin>/alarm/vox.ts [50|80|100|done|attention|idle|theme] ["message"]` plays a synthesized sound (no audio files, no dependencies) and exits 0 when playback ends. The level is argv[2], else env `STRATEGIUM_P`, else `done`. With a message (argv[3], else env `STRATEGIUM_MSG`) it also shows a desktop notification titled "Strategium" (Windows toast, macOS notification, Linux `notify-send`), so the user sees it with the terminal hidden. A missing audio player prints one line to stderr; it never fails. `STRATEGIUM_SOUND=0` skips the sound.
+`bun <plugin>/alarm/vox.ts [50|80|100|done|attention|idle|theme] ["message"]` plays a synthesized sound (no audio files, no dependencies) and exits 0 when playback ends. The level is argv[2], else env `STRATEGIUM_P`, else `done`. With a message (argv[3], else env `STRATEGIUM_MSG`) it also shows a desktop notification titled "Strategium" (Windows toast, macOS notification, Linux `notify-send`), so the user sees it with the terminal hidden. A missing audio player prints one line to stderr; it never fails. `STRATEGIUM_SOUND=0` skips the sound; `STRATEGIUM_VOLUME` (`0`-`100`, default `20`) sets its volume.
 
 | Level | Sound |
 |---|---|
@@ -19,12 +19,12 @@ description: Use when a long task, build, run or timer finishes or needs the use
 
 ## Booking alarm and attention
 
-Set env `STRATEGIUM_ALARM` to `bun <plugin>/alarm/vox.ts`. The Strategium extension runs it with `STRATEGIUM_P` and `STRATEGIUM_SOUND`, and with `STRATEGIUM_MSG` only when toasts are on:
+Set env `STRATEGIUM_ALARM` to `bun <plugin>/alarm/vox.ts`. The Strategium extension runs it with `STRATEGIUM_P` and `STRATEGIUM_SOUND`, with `STRATEGIUM_VOLUME` when the user set it, and with `STRATEGIUM_MSG` only when toasts are on:
 - at 50/80/100 % of the booking (timer sound + notification);
 - with `attention` when the main session calls the `ask` tool during a run, when a plan review waits for the user, or when the Captain calls `strategium` with action `attention` and a message.
 - with `idle` when the run's clock pauses after N idle minutes (`STRATEGIUM_IDLE_MIN`, default 3).
 
-They run only while notifications are on: env `STRATEGIUM_NOTIFY=1`, or `/strategium-config notify on` / the `strategium` tool's `notify` action for the session. They are off by default. Under `notify`, `/strategium-config sound on|off` and `toast on|off` (env `STRATEGIUM_SOUND`, `STRATEGIUM_TOAST`, on by default) pick the sound and the desktop notification; with both off no alarm runs.
+They run only while notifications are on: env `STRATEGIUM_NOTIFY=1`, or `/strategium-config notify on` / the `strategium` tool's `notify` action for the session. They are off by default. Under `notify`, `/strategium-config sound on|off` and `toast on|off` (env `STRATEGIUM_SOUND`, `STRATEGIUM_TOAST`, on by default) pick the sound and the desktop notification; with both off no alarm runs. `/strategium-config volume <0-100>` (env `STRATEGIUM_VOLUME`, default 20) sets the volume for the session; add `preview` to hear it at once, even with notify off.
 
 ## End-of-task signal
 

@@ -222,7 +222,7 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 /strategium-resume [booked]           continúa (una run con reserva pasa los minutos de hoy en un día nuevo)
 /strategium-add <min>                 corrección manual, en negativo para restar
 /strategium-status                    todas las runs y su tiempo
-/strategium-config [notify on|off | sound on|off | toast on|off | idle <min> | archmagos on|off | cockpit-key <key> | cockpit-theme <name>|default]    ajustes; notify, sound o toast on|off, los minutos de inactividad o archmagos on|off para esta sesión; cockpit-key <key> fija la tecla del cockpit desde el próximo arranque de omp; cockpit-theme <name> fija el tema del cockpit y lo aplica al instante
+/strategium-config [notify on|off | sound on|off | toast on|off | volume <0-100> [preview] | idle <min> | archmagos on|off | cockpit-key <key> | cockpit-theme <name>|default]    ajustes; notify, sound o toast on|off, el volumen de la alarma (preview la reproduce a ese volumen), los minutos de inactividad o archmagos on|off para esta sesión; cockpit-key <key> fija la tecla del cockpit desde el próximo arranque de omp; cockpit-theme <name> fija el tema del cockpit y lo aplica al instante
 /strategium-cockpit                   abre el cockpit (también Alt+C, o la tecla fijada con cockpit-key)
 /strategium-end                       cierra la run
 ```
@@ -264,19 +264,20 @@ Una run **sin temporizador** sigue contando su tiempo (`status`, `report`), sin 
 | `STRATEGIUM_GLYPHS` | `1` para usar glifos de Nerd Font en lugar de emoji |
 | `STRATEGIUM_NOTIFY` | `1` activa la alarma (su sonido y sus notificaciones de escritorio, cada uno con su interruptor); apagado por defecto, y apagado significa ninguno; `/strategium-config notify on` u `off` lo cambia para la sesión |
 | `STRATEGIUM_SOUND` | el sonido de la alarma; activo por defecto, `0` lo apaga (un aviso solo con notificación no necesita reproductor de audio); `/strategium-config sound on` u `off` lo cambia para la sesión |
+| `STRATEGIUM_VOLUME` | el volumen de la alarma, de `0` a `100`; por defecto `20`; `/strategium-config volume <n>` lo cambia para la sesión, `volume <n> preview` (o `volume preview`) además lo reproduce |
 | `STRATEGIUM_TOAST` | la notificación de escritorio (toast de Windows, notificación de macOS, `notify-send`); activa por defecto, `0` la apaga; `/strategium-config toast on` u `off` la cambia para la sesión |
 | `STRATEGIUM_IDLE_MIN` | minutos enteros sin trabajo antes de pausar el reloj de la run; por defecto `3`, `0` lo desactiva; `/strategium-config idle <min>` lo cambia para la sesión |
 | `STRATEGIUM_ARCHMAGOS` | `1` deja que una run marque al Archmagos Dominus en Muster; apagado por defecto; `/strategium-config archmagos on` u `off` lo cambia para la sesión |
 | `STRATEGIUM_COCKPIT_KEY` | la tecla que abre el cockpit, p. ej. `ctrl+shift+k` o `f8`; necesita `ctrl`, `alt` o `super`, o ser `f1`-`f12`, así que una letra suelta nunca se come lo que escribes; por defecto `alt+c`; `/strategium-config cockpit-key <key>` guarda otra para el próximo arranque de omp y gana a esta, `cockpit-key default` la quita |
 | `STRATEGIUM_COCKPIT_THEME` | el tema del cockpit: `blood-angels` (por defecto), `ultramarines`, `dark-angels` o `cogitator`; solo rige si no hay un tema guardado: `/strategium-config cockpit-theme <name>` guarda uno, lo aplica al instante y gana a esta, `cockpit-theme default` lo quita; un valor desconocido se avisa al iniciar la sesión y se ignora |
 
-`/strategium-config` muestra los valores efectivos: los ajustes notify, sound y toast, los minutos de inactividad, el ajuste del archmagos, la tecla del cockpit y el tema del cockpit (`cockpit-theme: <name> (<origen>)`), cada uno con su origen, el teatro, la alarma, los glifos y el directorio de estado.
+`/strategium-config` muestra los valores efectivos: los ajustes notify, sound, volume y toast, los minutos de inactividad, el ajuste del archmagos, la tecla del cockpit y el tema del cockpit (`cockpit-theme: <name> (<origen>)`), cada uno con su origen, el teatro, la alarma, los glifos y el directorio de estado.
 
 El estado (un JSONL por día más las reservas de las runs) vive fuera del repositorio, así que nunca se commitean datos de sesión.
 
 ### La alarma
 
-`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras, sin dependencias, todo original y bajo la licencia MIT del proyecto. Comparten un kit grimdark a 100 bpm en do menor (tambores de guerra, bajo distorsionado, coro, metales, campana). Los niveles son `50`, `80`, `100`, `done` (también el sonido de un sello concedido en el cockpit), `attention`, `idle` (un sonido de espera más bajo cuando el reloj se pausa por inactividad) y `theme` (cuatro compases, 9,6 s, que se repiten sin costura; suena cuando termina la run de la sesión, o a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux); `STRATEGIUM_SOUND=0` omite el sonido.
+`alarm/vox.ts` sintetiza cada sonido desde cero: sin muestras, sin dependencias, todo original y bajo la licencia MIT del proyecto. Comparten un kit grimdark a 100 bpm en do menor (tambores de guerra con doble bombo, guitarra y bajo en drop C, coro, metales, campana). Los niveles son `50`, `80`, `100` (los golpes de guitarra se aprietan de uno a otro), `done` (también el sonido de un sello concedido en el cockpit), `attention`, `idle` (un sonido de espera más bajo cuando el reloj se pausa por inactividad) y `theme` (cuatro compases, 9,6 s, que se repiten sin costura: un riff de guitarra con el bajo y el doble bombo pegados a él, bajo el coro; suena cuando termina la run de la sesión, o a mano: `bun alarm/vox.ts theme`); con mensaje, además, levanta una notificación de escritorio (toast de Windows, notificación de macOS, `notify-send` en Linux); `STRATEGIUM_SOUND=0` omite el sonido y `STRATEGIUM_VOLUME` (de `0` a `100`, por defecto `50`) fija su volumen.
 
 ```
 bun alarm/vox.ts 100 "la reserva se ha agotado"

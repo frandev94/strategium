@@ -101,6 +101,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_IDLE_MIN;
 	delete process.env.STRATEGIUM_ARCHMAGOS;
 	delete process.env.STRATEGIUM_SOUND;
+	delete process.env.STRATEGIUM_VOLUME;
 	delete process.env.STRATEGIUM_TOAST;
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -466,11 +467,11 @@ describe("notifications", () => {
 		expect(s.notes[0]).toContain("config takes notify on|off");
 	});
 
-	// The alarm command appends "<level>|<STRATEGIUM_SOUND>|<STRATEGIUM_MSG>" to a file; the spawn is asynchronous, so poll.
+	// The alarm command appends "<level>|<STRATEGIUM_SOUND>|<STRATEGIUM_MSG>|<STRATEGIUM_VOLUME>" to a file; the spawn is asynchronous, so poll.
 	const recorder = (dir: string) => {
 		const out = join(dir, "alarm.log");
 		const script = join(dir, "rec.ts");
-		writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_SOUND}|${process.env.STRATEGIUM_MSG}\\n`);\n');
+		writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_SOUND}|${process.env.STRATEGIUM_MSG}|${process.env.STRATEGIUM_VOLUME}\\n`);\n');
 		process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
 		return async () => {
 			for (let i = 0; i < 100 && !existsSync(out); i++) await Bun.sleep(50);
@@ -479,9 +480,9 @@ describe("notifications", () => {
 	};
 
 	test.each([
-		["defaults", [], "attention|1|seal ready"],
-		["toast off", ["toast off"], "attention|1|undefined"],
-		["sound off", ["sound off"], "attention|0|seal ready"],
+		["defaults", [], "attention|1|seal ready|undefined"],
+		["toast off", ["toast off"], "attention|1|undefined|undefined"],
+		["sound off", ["sound off"], "attention|0|seal ready|undefined"],
 	])("the alarm gets STRATEGIUM_SOUND and STRATEGIUM_MSG by channel: %s", async (_n, cmds, want) => {
 		const s = setup();
 		process.env.STRATEGIUM_NOTIFY = "1";
@@ -489,6 +490,41 @@ describe("notifications", () => {
 		for (const c of cmds) await s.sub("config", c);
 		await s.call({ action: "attention", message: "seal ready" });
 		expect(await lines()).toEqual([want]);
+	});
+
+	test("the alarm gets STRATEGIUM_VOLUME", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_NOTIFY = "1";
+		process.env.STRATEGIUM_VOLUME = "30";
+		const lines = recorder(s.dir);
+		await s.call({ action: "attention", message: "seal ready" });
+		expect(await lines()).toEqual(["attention|1|seal ready|30"]);
+	});
+
+	test("/strategium-config volume wins over STRATEGIUM_VOLUME for this session", async () => {
+		const s = setup();
+		process.env.STRATEGIUM_NOTIFY = "1";
+		process.env.STRATEGIUM_VOLUME = "30";
+		await s.sub("config", "volume 70");
+		expect(s.notes.at(-1)).toContain("volume: 70 (this session)");
+		const lines = recorder(s.dir);
+		await s.call({ action: "attention", message: "seal ready" });
+		expect(await lines()).toEqual(["attention|1|seal ready|70"]);
+	});
+
+	test("config volume <n> preview plays done at that volume even with notify off", async () => {
+		const s = setup();
+		const lines = recorder(s.dir);
+		await s.sub("config", "volume 35 preview");
+		expect(await lines()).toEqual(["done|1|undefined|35"]);
+	});
+
+	test("config volume refuses more than 100 and shows the default 20 when unset", async () => {
+		const s = setup();
+		await s.sub("config", "volume 101");
+		expect(s.notes.at(-1)).toContain("volume takes 0 to 100");
+		await s.sub("config");
+		expect(s.notes.at(-1)).toContain("volume: 20 (default)");
 	});
 
 	test("sound off and toast off run no alarm and attention says silent", async () => {
@@ -2922,7 +2958,7 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
