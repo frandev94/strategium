@@ -1,3 +1,12 @@
+## [0.2.10] - 2026-11-20
+
+### 🚀 Features
+
+- *(skills)* Review-and-merge loop after the PR as a Muster option
+
+### 🐛 Bug Fixes
+
+- *(skills)* Review & merge loop as a captain task, retrial routing, merge refusal
 ## [0.2.9] - 2026-11-20
 
 ### 📚 Documentation
