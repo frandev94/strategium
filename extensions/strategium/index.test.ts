@@ -3166,10 +3166,10 @@ describe("cockpit", () => {
 			const view = (ui: ReturnType<typeof uiCtx>) => plain(ui.opened.at(-1)!.component.render(100).join("\n"));
 			const emit = (s: ReturnType<typeof setup>, event: string, ctx: unknown = s.ctx) => s.handlers[event].forEach(h => h({}, ctx));
 
-			test("opened while the session is idle it awaits orders; opened mid-turn the agent is at work", async () => {
+			test("opened while the session is idle the vox is open; opened mid-turn the agent is at work", async () => {
 				const { s, ui } = await running();
 				host(s).idle = true;
-				expect(await peek(s, ui)).toContain("○ AWAITING YOUR ORDERS");
+				expect(await peek(s, ui)).toContain("○ VOX OPEN · esc to give orders");
 				host(s).idle = false;
 				expect(await peek(s, ui)).toContain("AGENT AT WORK");
 			});
@@ -3184,7 +3184,7 @@ describe("cockpit", () => {
 				const { s, ui } = await running();
 				host(s).idle = true;
 				await s.sub("cockpit");
-				expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+				expect(view(ui)).toContain("○ VOX OPEN · esc to give orders");
 				let n = ui.draws.n;
 				host(s).idle = false;
 				emit(s, "agent_start");
@@ -3193,7 +3193,7 @@ describe("cockpit", () => {
 				n = ui.draws.n;
 				Object.assign(host(s), { idle: true });
 				emit(s, "agent_end");
-				expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+				expect(view(ui)).toContain("○ VOX OPEN · esc to give orders");
 				expect(ui.draws.n).toBe(n + 1);
 				ui.opened[0].component.handleInput!("q");
 			});
@@ -3214,7 +3214,7 @@ describe("cockpit", () => {
 				const n = ui.draws.n;
 				emit(s, "agent_start", { ...(s.ctx as object), agent: { kind: "sub" } });
 				emit(s, "agent_end", { ...(s.ctx as object), agent: { kind: "sub" } });
-				expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+				expect(view(ui)).toContain("○ VOX OPEN · esc to give orders");
 				expect(ui.draws.n).toBe(n);
 				ui.opened[0].component.handleInput!("q");
 			});
@@ -3230,7 +3230,27 @@ describe("cockpit", () => {
 					expect(view(ui)).toContain("AGENT AT WORK");
 					host(s).idle = true;
 					timers[0].fn();
-					expect(view(ui)).toContain("AWAITING YOUR ORDERS");
+					expect(view(ui)).toContain("○ VOX OPEN · esc to give orders");
+					ui.opened[0].component.handleInput!("q");
+				} finally {
+					globalThis.setInterval = real;
+				}
+			});
+
+			test("an async job keeps the agent at work while the session is idle, and its end flips the open cockpit to awaiting", async () => {
+				const timers: { fn: () => void; ms: number }[] = [];
+				const real = globalThis.setInterval;
+				const { s, ui } = await running();
+				Object.assign(host(s), { idle: true, jobs: { running: [{}] } });
+				globalThis.setInterval = ((fn: () => void, ms: number) => timers.push({ fn, ms })) as never;
+				try {
+					await s.sub("cockpit");
+					expect(view(ui)).toContain("▶ AGENT AT WORK");
+					emit(s, "agent_end"); // the turn ended, the job did not
+					expect(view(ui)).toContain("AGENT AT WORK");
+					Object.assign(host(s), { jobs: { running: [] } });
+					timers[0].fn();
+					expect(view(ui)).toContain("○ VOX OPEN · esc to give orders");
 					ui.opened[0].component.handleInput!("q");
 				} finally {
 					globalThis.setInterval = real;

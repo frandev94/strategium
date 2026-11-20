@@ -57,7 +57,7 @@ Kinds: `FIXED` (PASS = the fix holds), `KNOWN` (PASS = an omp limit shows up exa
 | `glyph-width` | R2 | FIXED | no `⚔ ☠ ⏳`; no wide cell in the footer run line or in the cockpit |
 | `seal-row` | R3 | FIXED | the SEALS row has U+F047A/U+F051F glyphs 1 cell wide, each followed by a space, and no `✠` |
 | `archmagos` | R13 | FIXED | the `[archmagos]` task (`Merge the plan`) is in the cockpit |
-| `agent-status` | F11 | FIXED | idle session: the header has `AWAITING YOUR ORDERS`, not `AGENT AT WORK`/`PLAN REVIEW PENDING`, and the row still ends with `║` |
+| `agent-status` | F11 | FIXED | idle session: the header has `VOX OPEN · esc to give orders`, not `AGENT AT WORK`/`PLAN REVIEW PENDING`, and the row still ends with `║` |
 | `first-tick-clock` | R6 | FIXED | `timed` seed, cockpit opened right after the first heartbeat: the clock row has `/240 min`, not `⧗ …` |
 | `resume-booking` | R7 | FIXED | after `/strategium-pause` and `/strategium-resume 240` on an untimed run, footer and cockpit clock show `/240 min` and the cockpit has a bar |
 | `no-widget` | R8 | FIXED | nothing of the cockpit above the editor; the footer run line is there |
