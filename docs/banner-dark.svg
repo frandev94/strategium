@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 240" width="1000" height="240" role="img" aria-labelledby="t">
-<title id="t">Strategium: an orchestrator workflow for omp</title>
+<title id="t">Strategium: an orchestrator workflow for omp. The Captain plans, the squads build, you keep the seals.</title>
 <style>
 .scan{animation:sweep 6s linear infinite}
 @keyframes sweep{from{transform:translateX(-160px)}to{transform:translateX(1160px)}}

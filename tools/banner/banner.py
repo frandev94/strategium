@@ -34,8 +34,9 @@ sub, _ = text_path(reg, "AN ORCHESTRATOR WORKFLOW FOR OMP", 19, W / 2, 175, trac
 motto, _ = text_path(reg, "THE CAPTAIN PLANS · THE SQUADS BUILD · YOU KEEP THE SEALS", 13, W / 2, 199, tracking=3)
 
 THEMES = {
-    "dark": dict(bg="#180D10", panel="#281216", gold="#C5A15A", rule="#C5A15A", text="#C5A15A", sub="#E8DDC5", red="#791E29", scan="#C5A15A", beam=".10"),
-    "light": dict(bg="#E8DDC5", panel="#DCCBA8", gold="#8C6D2E", rule="#8C6D2E", text="#791E29", sub="#281216", red="#791E29", scan="#791E29", beam=".05"),
+    "dark": dict(bg="#180D10", panel="#281216", gold="#C5A15A", rule="#C5A15A", text="#C5A15A", sub="#E8DDC5", motto="#C5A15A", red="#791E29", scan="#C5A15A", beam=".10"),
+    # Light motto uses Surface: Old gold on Vellum is only 3:1 at 13 px.
+    "light": dict(bg="#E8DDC5", panel="#DCCBA8", gold="#8C6D2E", rule="#8C6D2E", text="#791E29", sub="#281216", motto="#281216", red="#791E29", scan="#791E29", beam=".05"),
 }
 
 
@@ -53,7 +54,7 @@ def svg(t):
         for x in (22, W - 22) for y in (22, H - 22)
     )
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img" aria-labelledby="t">
-<title id="t">Strategium: an orchestrator workflow for omp</title>
+<title id="t">Strategium: an orchestrator workflow for omp. The Captain plans, the squads build, you keep the seals.</title>
 <style>
 .scan{{animation:sweep 6s linear infinite}}
 @keyframes sweep{{from{{transform:translateX(-160px)}}to{{transform:translateX({W + 160}px)}}}}
@@ -75,7 +76,7 @@ def svg(t):
 <path fill="{t["text"]}" d="{title}"/>
 {rules}
 <path fill="{t["sub"]}" d="{sub}"/>
-<path fill="{t["rule"]}" d="{motto}"/>
+<path fill="{t["motto"]}" d="{motto}"/>
 </svg>
 '''
 
