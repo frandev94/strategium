@@ -1,6 +1,19 @@
-# strategium
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.svg">
+    <img src="docs/banner-light.svg" alt="Strategium: an orchestrator workflow for omp" width="100%">
+  </picture>
+</p>
 
-> Español: [README.es.md](README.es.md)
+<p align="center">
+  <a href="https://github.com/frandev94/strategium/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/frandev94/strategium?style=for-the-badge&label=release&color=7a1212&labelColor=1e1b16&logo=data:image%2Fsvg%2Bxml;base64,PHN2ZyBmaWxsPSIjZTBiODRhIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGlkPSJtZGktc2t1bGwiIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZD0iTTEyLDJBOSw5IDAgMCwwIDMsMTFDMywxNC4wMyA0LjUzLDE2LjgyIDcsMTguNDdWMjJIOVYxOUgxMVYyMkgxM1YxOUgxNVYyMkgxN1YxOC40NkMxOS40NywxNi44MSAyMSwxNCAyMSwxMUE5LDkgMCAwLDAgMTIsMk04LDExQTIsMiAwIDAsMSAxMCwxM0EyLDIgMCAwLDEgOCwxNUEyLDIgMCAwLDEgNiwxM0EyLDIgMCAwLDEgOCwxMU0xNiwxMUEyLDIgMCAwLDEgMTgsMTNBMiwyIDAgMCwxIDE2LDE1QTIsMiAwIDAsMSAxNCwxM0EyLDIgMCAwLDEgMTYsMTFNMTIsMTRMMTMuNSwxN0gxMC41TDEyLDE0WiIgLz48L3N2Zz4NCg%3D%3D"></a>
+  <a href="https://omp.sh/"><img alt="omp plugin" src="https://img.shields.io/badge/omp-plugin-b8963e?style=for-the-badge&labelColor=1e1b16"></a>
+  <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/github/license/frandev94/strategium?style=for-the-badge&color=2a2620&labelColor=1e1b16"></a>
+</p>
+
+<p align="center"><em>“A seal granted is a seal defended.”</em><br><sub>— thought for the day</sub></p>
+
+<p align="center">Español: <a href="README.es.md">README.es.md</a></p>
 
 **Strategium** is an orchestrator workflow for omp. The main session plans and delegates, specialised agents build and review, and you keep the seals. It works any objective: free text, a spec or plan file, or a ticket. **Ticketing is optional**, and with it comes a booking timer.
 
@@ -184,7 +197,10 @@ From the shell: `omp plugin marketplace add frandev94/strategium` and `omp plugi
 omp plugin link /path/to/strategium
 ```
 
-Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, its dependencies, the tools and the configuration, and prints a table of what it did. Restart omp afterwards: a plugin reload inside a running session does not mount the `strategium` tool.
+Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, its dependencies, the tools and the configuration, and prints a table of what it did.
+
+> [!IMPORTANT]
+> Restart omp afterwards: a plugin reload inside a running session does not mount the `strategium` tool.
 
 ### Requirements
 
@@ -215,13 +231,22 @@ Free text needs the quotes, so it never clashes with a subcommand. Without a tic
 
 Every session owns one run, claimed atomically, so several omp sessions can work on different objectives at the same time. Closing a session pauses its run and releases the claim; reopening that session takes it back and resumes it on its own, unless you had paused it (`/strategium-pause`, action `stop`, the stand down). A timed run on a new day stays paused until today's booking is given. A run still counting at midnight goes on: its block ends at 00:00 in yesterday's day file and a new one starts at 00:00 today, so `status`, `report` and the footer keep counting; a timed run counts there without a booking and without the 50/80/100 alerts (footer `<elapsed> min · new day: /strategium-resume <min>`) until `/strategium-resume <min>` gives today's. The Captain cannot edit the run's repository: while the run is open `edit` and `ast_edit` are hidden from the main session, `write` is blocked inside the run's repo and its `<repo>-worktrees` folder, bash test and build runners and bash file writes are blocked (only redirects into `$TEMP` and `local://` pass), agents outside the Strategium roster are refused, and battle-brothers are refused until the plan's squads are declared (`strategium` `slices`; parallel squads must not share a file). When the plan is approved in omp's plan mode, "Approve and execute" opens a fresh session and the run moves with it; a plain `/new` leaves the run with its own session.
 
+<details>
+<summary><strong>Idle pause, footer and cockpit</strong></summary>
+
 Idle pause: when no agent works and nothing waits to run, the run's clock pauses after `STRATEGIUM_IDLE_MIN` idle minutes (default 3), the `idle` sound plays (with notifications on) and the footer shows it paused. The next turn resumes it on its own; the Captain does not call `start`. A run you paused by hand (`/strategium-pause`, action `stop`, the stand down) never resumes by itself. A question or a plan review waiting for you counts as busy: the clock keeps running and the `attention` alarm calls you (with notifications on). A timed run on a new day stays paused until today's booking is given.
 
 Footer: the station shows as `<station> › <task>`, where `<task>` is the active todo task without its agent tag, cut to 32 characters with `…`. A seal keeps `⏳ seal <name>`; a return shows `↩ <station> › <task>`. The footer appears as soon as `/strategium` begins the run (`strategium: <KEY> · <elapsed> min`); once the skeleton's first task is started it shows e.g. `Muster › Objective`, then `⏳ seal Seals`. When the terminal is wide enough (the footer text plus two spaces and the hint fit the width) the line ends, flush right, with the hint that names the cockpit key (`ALT + C to enter cockpit` by default); narrower, or with an unknown width, there is no hint. The width is read on each footer draw (every minute and on each status change), not on resize.
 
 Cockpit: `/strategium-cockpit` (or Alt+C, or your cockpit key) opens the full-screen overlay (it covers the prompt, the todo list and the transcript until Esc or `q` closes it; it also closes by itself when the agent asks you something, asks to approve a tool or opens a plan review) while this session has a run open: the key, the clock and the seals on top, under them a status line (`▶ AGENT AT WORK` while a turn runs, `○ AWAITING YOUR ORDERS` in gold when the agent has stopped and the prompt waits for you; a dialog from another extension has no event, so it is not announced), then only the active station (the first phase with a running todo task; else the first with a waiting one) as a title (`▶` running, `↶` after a return, `○` waiting; a waiting seal adds `· seal <name> awaits you`), one box per agent type present in it, and the latest chronicle entries. The boxes, in this order, take the todo tasks with that tag and the agents deployed in that station: CAPTAIN, SCOUTS, LIBRARIANS (also `[archmagos]`), BATTLE-BROTHERS (also `[veteran]`), APOTHECARIES, INQUISITOR, SECURITY-REVIEWER, SONIC, ADEPTS (`[task]`) and SEAL. A box shows only when the station has a task or an agent of its type. Each line has its state mark: `▶` running, `✓` done, `○` waiting, `✗` failed; BATTLE-BROTHERS lines carry `†` (or `‡` for a veteran), and add one `squad <id> …` line per declared squad. Lines run `▶`, `✗`, `○`, then `✓`; a box shows at most 8 lines (fewer in a short window, so the chronicle keeps 5 rows) and its last line counts the rest, e.g. `+5 more (3 done, 2 idle)`. A granted seal turns ✠ and, with notifications on, plays the `done` sound. The chronicle and the list of deployed agents are kept in memory only, so an omp restart clears them; an agent launched from eval stays `▶` until the eval cell that waits for it returns, or until omp delivers its result, then turns `✓` or `✗`. Colours are truecolor when the terminal supports it and 256-colour otherwise. The cockpit cannot show test or mutant counts: the agents' events happen inside subagents, which the parent does not see. The cockpit draws Nerd Font glyphs with `STRATEGIUM_GLYPHS=1` and plain symbols otherwise, never emoji.
 
-A select or confirm dialog that another extension opens while the cockpit is up gets no keys and stays stuck, even after Esc or `q` (omp gives the focus back to the editor), so close the cockpit before running such a command. With Caps Lock on, Alt+C arrives as Alt+Shift+C (omp's copy prompt) and the cockpit does not open: use `/strategium-cockpit`, or set another key with `/strategium-config cockpit-key <key>` (or `STRATEGIUM_COCKPIT_KEY`), e.g. `f8`, which Caps Lock does not change; a key omp or another extension already holds is reported at start.
+</details>
+
+> [!WARNING]
+> A select or confirm dialog that another extension opens while the cockpit is up gets no keys and stays stuck, even after Esc or `q` (omp gives the focus back to the editor), so close the cockpit before running such a command.
+
+> [!TIP]
+> With Caps Lock on, Alt+C arrives as Alt+Shift+C (omp's copy prompt) and the cockpit does not open: use `/strategium-cockpit`, or set another key with `/strategium-config cockpit-key <key>` (or `STRATEGIUM_COCKPIT_KEY`), e.g. `f8`, which Caps Lock does not change; a key omp or another extension already holds is reported at start.
 
 ### Ticketing (optional)
 
