@@ -1,3 +1,8 @@
+## [0.2.6] - 2026-11-20
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* No-phase station title reads "no station yet"
 ## [0.2.5] - 2026-11-20
 
 ### 🐛 Bug Fixes
