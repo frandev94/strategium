@@ -1,4 +1,5 @@
 # Builds docs/banner-dark.svg and docs/banner-light.svg: Cinzel (OFL) text converted to paths, no font needed at view time.
+# Colours: docs/style.md (Blood Angels palette).
 # Usage: pip install fonttools; download Cinzel[wght].ttf from https://github.com/google/fonts/tree/main/ofl/cinzel
 #        python tools/banner/banner.py path/to/Cinzel[wght].ttf docs
 import sys
@@ -33,8 +34,8 @@ sub, _ = text_path(reg, "AN ORCHESTRATOR WORKFLOW FOR OMP", 19, W / 2, 175, trac
 motto, _ = text_path(reg, "THE CAPTAIN PLANS · THE SQUADS BUILD · YOU KEEP THE SEALS", 13, W / 2, 199, tracking=3)
 
 THEMES = {
-    "dark": dict(bg="#1e1b16", panel="#2a2620", gold="#e0b84a", rule="#b8963e", text="#e0b84a", sub="#f3e9cf", red="#7a1212", scan="#e0b84a", beam=".10"),
-    "light": dict(bg="#f3e9cf", panel="#ead9b0", gold="#8a6a1f", rule="#8a6a1f", text="#5a0d0d", sub="#3a2f1e", red="#7a1212", scan="#7a1212", beam=".05"),
+    "dark": dict(bg="#180D10", panel="#281216", gold="#C5A15A", rule="#C5A15A", text="#C5A15A", sub="#E8DDC5", red="#791E29", scan="#C5A15A", beam=".10"),
+    "light": dict(bg="#E8DDC5", panel="#DCCBA8", gold="#8C6D2E", rule="#8C6D2E", text="#791E29", sub="#281216", red="#791E29", scan="#791E29", beam=".05"),
 }
 
 

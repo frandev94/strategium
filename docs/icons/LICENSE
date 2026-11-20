@@ -21,4 +21,4 @@ The MIT license applies to all non-font and non-icon files.
 
 ---
 
-The SVG files in this folder come from Material Design Icons (@mdi/svg 7.4.47) by Pictogrammers, the same icons Nerd Fonts ships as `nf-md-*`. Change made here: `fill="#e0b84a"` (Strategium gold) on the `<svg>` element; the paths are unchanged.
+The SVG files in this folder come from Material Design Icons (@mdi/svg 7.4.47) by Pictogrammers, the same icons Nerd Fonts ships as `nf-md-*`. Change made here: `fill="#C5A15A"` (Strategium gold, see `docs/style.md`) on the `<svg>` element; the paths are unchanged.

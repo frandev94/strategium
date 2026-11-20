@@ -6,9 +6,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/frandev94/strategium/releases"><img alt="Última versión" src="https://img.shields.io/github/v/release/frandev94/strategium?style=for-the-badge&label=release&color=7a1212&labelColor=1e1b16&logo=data:image%2Fsvg%2Bxml;base64,PHN2ZyBmaWxsPSIjZTBiODRhIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGlkPSJtZGktc2t1bGwiIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZD0iTTEyLDJBOSw5IDAgMCwwIDMsMTFDMywxNC4wMyA0LjUzLDE2LjgyIDcsMTguNDdWMjJIOVYxOUgxMVYyMkgxM1YxOUgxNVYyMkgxN1YxOC40NkMxOS40NywxNi44MSAyMSwxNCAyMSwxMUE5LDkgMCAwLDAgMTIsMk04LDExQTIsMiAwIDAsMSAxMCwxM0EyLDIgMCAwLDEgOCwxNUEyLDIgMCAwLDEgNiwxM0EyLDIgMCAwLDEgOCwxMU0xNiwxMUEyLDIgMCAwLDEgMTgsMTNBMiwyIDAgMCwxIDE2LDE1QTIsMiAwIDAsMSAxNCwxM0EyLDIgMCAwLDEgMTYsMTFNMTIsMTRMMTMuNSwxN0gxMC41TDEyLDE0WiIgLz48L3N2Zz4NCg%3D%3D"></a>
-  <a href="https://omp.sh/"><img alt="plugin de omp" src="https://img.shields.io/badge/omp-plugin-b8963e?style=for-the-badge&labelColor=1e1b16"></a>
-  <a href="LICENSE"><img alt="Licencia MIT" src="https://img.shields.io/github/license/frandev94/strategium?style=for-the-badge&color=2a2620&labelColor=1e1b16"></a>
+  <a href="https://github.com/frandev94/strategium/releases"><img alt="Última versión" src="https://img.shields.io/github/v/release/frandev94/strategium?style=for-the-badge&label=release&color=791E29&labelColor=180D10&logo=data:image%2Fsvg%2Bxml;base64,PHN2ZyBmaWxsPSIjQzVBMTVBIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGlkPSJtZGktc2t1bGwiIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZD0iTTEyLDJBOSw5IDAgMCwwIDMsMTFDMywxNC4wMyA0LjUzLDE2LjgyIDcsMTguNDdWMjJIOVYxOUgxMVYyMkgxM1YxOUgxNVYyMkgxN1YxOC40NkMxOS40NywxNi44MSAyMSwxNCAyMSwxMUE5LDkgMCAwLDAgMTIsMk04LDExQTIsMiAwIDAsMSAxMCwxM0EyLDIgMCAwLDEgOCwxNUEyLDIgMCAwLDEgNiwxM0EyLDIgMCAwLDEgOCwxMU0xNiwxMUEyLDIgMCAwLDEgMTgsMTNBMiwyIDAgMCwxIDE2LDE1QTIsMiAwIDAsMSAxNCwxM0EyLDIgMCAwLDEgMTYsMTFNMTIsMTRMMTMuNSwxN0gxMC41TDEyLDE0WiIgLz48L3N2Zz4NCg%3D%3D"></a>
+  <a href="https://omp.sh/"><img alt="plugin de omp" src="https://img.shields.io/badge/omp-plugin-C5A15A?style=for-the-badge&labelColor=180D10"></a>
+  <a href="LICENSE"><img alt="Licencia MIT" src="https://img.shields.io/github/license/frandev94/strategium?style=for-the-badge&color=281216&labelColor=180D10"></a>
 </p>
 
 <p align="center"><em>«Un sello concedido es un sello que se defiende.»</em><br><sub>— pensamiento del día</sub></p>
@@ -44,7 +44,7 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 7. **Extraction** — el commit y la merge request, después de tu sello.
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"lineColor": "#b8963e", "edgeLabelBackground": "#2a2620", "textColor": "#f3e9cf", "fontFamily": "Georgia, serif"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"lineColor": "#C5A15A", "edgeLabelBackground": "#281216", "textColor": "#E8DDC5", "fontFamily": "Georgia, serif"}}}%%
 flowchart TB
   U(["Maestro de Capítulo · tú"]) -->|"/strategium"| muster
 
@@ -96,18 +96,18 @@ flowchart TB
   skirmish <-.->|"Penance · 2/squad · Retrial · 2/item"| inquisition
   inquisition -.->|"Stand down"| Y(["tú"])
 
-  classDef agent fill:#1e1b16,stroke:#b8963e,color:#f3e9cf
-  classDef seal fill:#7a1212,stroke:#e0b84a,stroke-width:2px,color:#fff4d6
-  classDef you fill:#e0b84a,stroke:#7a1212,stroke-width:2px,color:#1e1b16
-  classDef station fill:#2a2620,stroke:#b8963e,color:#e0b84a
+  classDef agent fill:#180D10,stroke:#C5A15A,color:#E8DDC5
+  classDef seal fill:#791E29,stroke:#C5A15A,stroke-width:2px,color:#E8DDC5
+  classDef you fill:#C5A15A,stroke:#791E29,stroke-width:2px,color:#180D10
+  classDef station fill:#281216,stroke:#C5A15A,color:#C5A15A
   class M,A1,A2,L1,L2,D,B1,B2,B3,Q1,Q2,Q3,Q4,X,F agent
   class S0,SP,SU,SM seal
   class BF,QF,QS agent
   class U,E,Y you
   class muster,auspex,scriptorium,deployment,skirmish,inquisition,extraction,debrief station
-  linkStyle 0 stroke:#b8963e,color:#f3e9cf
-  linkStyle 6,10,12,13,15 color:#f3e9cf
-  linkStyle 7,26,27,28,29 stroke:#d0452f,stroke-width:2px,color:#f3e9cf
+  linkStyle 0 stroke:#C5A15A,color:#E8DDC5
+  linkStyle 6,10,12,13,15 color:#E8DDC5
+  linkStyle 7,26,27,28,29 stroke:#B8323F,stroke-width:2px,color:#E8DDC5
 ```
 
 Los nombres de estación, los nombres de agente y las alertas tienen su propia voz; el `archmagos` la usa solo en el chat y el todo, nunca en el fichero del plan. Los tickets, los mensajes de commit y las merge requests se quedan planos y profesionales.
@@ -302,7 +302,7 @@ agents/                           definiciones de agente
 skills/                           las skills
 ```
 
-La extensión es TypeScript puro y sin dependencias en tiempo de ejecución; `bun` solo hace falta para ejecutarla y para correr los tests.
+La extensión es TypeScript puro y sin dependencias en tiempo de ejecución; `bun` solo hace falta para ejecutarla y para correr los tests. El banner, los badges, el diagrama y los iconos del README siguen una paleta Blood Angels: [docs/style.md](docs/style.md).
 
 Las versiones son automáticas: un merge a `main` que cambie `extensions/`, `skills/`, `agents/`, `alarm/` o `.omp-plugin/` (sin contar los ficheros de test) ejecuta `.github/workflows/release.yml`. Los commits convencionales fijan la versión (mientras sea 0.x, un cambio incompatible, marcado con `!` o con un pie `BREAKING CHANGE:`, sube la minor y cualquier otro commit convencional la patch; los commits no convencionales no suben nada y no entran en el changelog). Los merges que solo tocan docs, tests o herramientas de desarrollo no publican nada; sus commits entran en el changelog de la siguiente versión. Para publicar a mano, usa la skill `strategium-release`.
 
