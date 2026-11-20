@@ -160,7 +160,7 @@ export function cockpitView(input: ViewInput) {
 	const sealName = doing && sealsFrom([{ name: phase!.name, tasks: [doing] }])[0]?.name;
 	const back = !!doing && phases.slice(at + 1).some(p => p.tasks.some(t => t.status === "completed"));
 	const station: { kind: Kind; mark: string; name: string; note?: string } = !phase
-		? { kind: "idle", mark: "○", name: "awaiting orders" }
+		? { kind: "idle", mark: "○", name: "no station yet" }
 		: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: phase.name, ...(sealName ? { note: label(ic.seal, `seal ${sealName} awaits you`) } : {}) };
 
 	const ids = [...new Set([...(input.slices ?? []), ...(input.stopped ?? [])].map(s => s.id))];

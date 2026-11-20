@@ -3032,7 +3032,7 @@ describe("cockpit", () => {
 				overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true, mouseTracking: false },
 			});
 			const lines = ui.opened[0].component.render(100).join("\n");
-			expect(lines).toContain("awaiting orders");
+			expect(lines).toContain("no station yet");
 			expect(lines).toContain("CHRONICLE");
 			await s.sub("cockpit");
 			expect(ui.opened.length).toBe(1);
