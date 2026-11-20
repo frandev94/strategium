@@ -1,3 +1,9 @@
+## [0.2.7] - 2026-11-20
+
+### 🐛 Bug Fixes
+
+- *(github-theatre)* See PRs already linked to the issue at Muster
+- *(github-theatre)* Wire build on into branch and push, default by link kind
 ## [0.2.6] - 2026-11-20
 
 ### 🐛 Bug Fixes
