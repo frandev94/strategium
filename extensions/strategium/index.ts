@@ -21,6 +21,7 @@ import {
 } from "./timer";
 import { childEnv } from "./env";
 import { activeStation, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
+import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
 // Several sessions can run different tickets at the same time; the day file holds them all.
@@ -746,10 +747,27 @@ export default function (pi: ExtensionAPI) {
 		return ch.length ? signal(level, ch.includes("toast") ? msg : undefined, ch.includes("sound")) : undefined;
 	};
 
+	// The cockpit theme: /strategium-config cockpit-theme saves one in the state dir, which wins over STRATEGIUM_COCKPIT_THEME;
+	// unknown names fall through to the default. Unlike the key it applies at once: the palette is only read when drawing.
+	const themeFile = () => path.join(stateDir(), "cockpit-theme");
+	const themeSetting = (): { name: ThemeName; from: string } => {
+		let saved = "";
+		try {
+			saved = readFileSync(themeFile(), "utf8").trim().toLowerCase();
+		} catch {
+			// no saved theme: fall through to the env and the default
+		}
+		const fromEnv = process.env.STRATEGIUM_COCKPIT_THEME?.trim().toLowerCase() ?? "";
+		if (isTheme(saved)) return { name: saved, from: "/strategium-config" };
+		if (isTheme(fromEnv)) return { name: fromEnv, from: "STRATEGIUM_COCKPIT_THEME" };
+		return { name: DEFAULT_THEME, from: "default" };
+	};
+	let theme = themeSetting();
+	let pal = palette(colorDepth(), THEMES[theme.name]);
+
 	// The cockpit: an overlay on demand while this session has a run. Everything it
 	// shows beyond the run file (chronicle, squad notes, agent ids) is in memory, keyed by run key, so the plan-approval
 	// move to a new session keeps it and an omp restart loses it.
-	const pal = palette(colorDepth());
 	const cockpit = {
 		key: undefined as string | undefined,
 		chronicle: [] as Entry[],
@@ -1184,7 +1202,7 @@ export default function (pi: ExtensionAPI) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; cockpit-key <key> sets the cockpit key from the next omp start", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
 		if (arg !== undefined) {
 			const m = arg.match(/^notify\s+(on|off)$/);
@@ -1193,12 +1211,23 @@ export default function (pi: ExtensionAPI) {
 			const i = arg.match(/^idle\s+(\d+)$/);
 			const a = arg.match(/^archmagos\s+(on|off)$/);
 			const k = arg.match(/^cockpit-key\s+(\S+)$/);
-			if (!m && !so && !to && !i && !a && !k) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or cockpit-key <key>; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			const th = arg.match(/^cockpit-theme\s+(\S+)$/);
+			if (!m && !so && !to && !i && !a && !k && !th) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
 			else if (to) toastBySession.set(sid, to[1] === "on");
 			else if (a) archmagosBySession.set(sid, a[1] === "on");
-			else if (k) {
+			else if (th) {
+				const v = th[1].toLowerCase();
+				if (v === "default") rmSync(themeFile(), { force: true });
+				else {
+					if (!isTheme(v)) throw new Error(`cockpit-theme takes ${Object.keys(THEMES).join(", ")} or default`);
+					mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
+					writeFileSync(themeFile(), v);
+				}
+				theme = themeSetting();
+				pal = palette(colorDepth(), THEMES[theme.name]);
+			} else if (k) {
 				const v = k[1].toLowerCase();
 				if (v === "default") rmSync(keyFile(), { force: true });
 				else {
@@ -1222,6 +1251,7 @@ export default function (pi: ExtensionAPI) {
 				`idle: ${idleState(sid)}`,
 				`archmagos: ${archmagosState(sid)}`,
 				`cockpit-key: ${cockpitKey.key} (${cockpitKey.from})${next.key !== cockpitKey.key || next.from !== cockpitKey.from ? `; next omp start: ${next.key} (${next.from})` : ""}`,
+				`cockpit-theme: ${theme.name} (${theme.from})`,
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`alarm: ${env("STRATEGIUM_ALARM")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
@@ -1402,6 +1432,8 @@ export default function (pi: ExtensionAPI) {
 		if (c) ctx.ui.notify(keyConflict(cockpitKey.key, c), "warning");
 		const rawKey = process.env.STRATEGIUM_COCKPIT_KEY?.trim();
 		if (rawKey && !usableKey(rawKey.toLowerCase())) ctx.ui.notify(`Strategium: STRATEGIUM_COCKPIT_KEY "${rawKey}" is not a key such as alt+c, ctrl+shift+k or f8; ignored`, "warning");
+		const rawTheme = process.env.STRATEGIUM_COCKPIT_THEME?.trim();
+		if (rawTheme && !isTheme(rawTheme.toLowerCase())) ctx.ui.notify(`Strategium: STRATEGIUM_COCKPIT_THEME "${rawTheme}" is not a theme (${Object.keys(THEMES).join(", ")}); ignored`, "warning");
 	});
 
 	// Closing the session pauses its ticket and releases the claim; the run file stays so a resumed session

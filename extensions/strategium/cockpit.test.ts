@@ -16,8 +16,10 @@ import {
 	type ViewInput,
 } from "./cockpit";
 import { AGENTS } from "../../skills/strategium/todo";
+import { DEFAULT_THEME, THEMES, type Theme } from "./themes";
 
-const TRUE = palette("truecolor");
+// The rendering tests pin the cogitator theme: its colours are the ones the GOLD, PURPLE and RED sequences name.
+const TRUE = palette("truecolor", THEMES.cogitator);
 const GOLD = "\x1b[38;2;201;162;39m";
 const PURPLE = "38;2;123;44;191";
 const RED = "38;2;164;22;26";
@@ -331,9 +333,34 @@ describe("colour depth", () => {
 	});
 
 	test("palette uses Bun.color at the chosen depth", () => {
-		expect(palette("truecolor").gold).toBe(GOLD);
+		expect(palette("truecolor", THEMES.cogitator).gold).toBe(GOLD);
 		expect(palette("256").gold.startsWith("\x1b[38;5;")).toBe(true);
 		expect(palette("256").gold).not.toContain("38;2;");
+	});
+
+	test("the default palette is blood-angels, with its background as a 48; sequence", () => {
+		expect(DEFAULT_THEME).toBe("blood-angels");
+		expect(palette("truecolor").bg).toBe("\x1b[48;2;24;13;16m");
+		expect(palette("256").bg).toMatch(/^\x1b\[48;5;\d+m$/);
+		expect(palette("truecolor", THEMES.cogitator).bg).toBeUndefined();
+	});
+
+	// WCAG relative luminance and contrast ratio.
+	const luminance = (hex: string) => {
+		const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(c => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+		return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+	};
+	const contrast = (a: string, b: string) => {
+		const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+		return (hi + 0.05) / (lo + 0.05);
+	};
+	test.each(Object.entries(THEMES))("theme %s: every colour is a #RRGGBB Bun.color reads, every text tone ≥ 4.5:1 on its background", (_name, theme: Theme) => {
+		const { bg, ...tones } = theme;
+		for (const hex of Object.values(theme)) {
+			expect(hex).toMatch(/^#[0-9A-Fa-f]{6}$/);
+			expect(Bun.color(hex, "ansi-16m")).toBeString();
+		}
+		if (bg) for (const [tone, hex] of Object.entries(tones)) expect([tone, contrast(hex, bg) >= 4.5]).toEqual([tone, true]);
 	});
 });
 
@@ -360,6 +387,17 @@ describe("rendering", () => {
 		expect(out.join("\n")).toContain(GOLD);
 		expect(out.find(l => l.includes("BATTLE-BROTHERS"))).toContain(RED);
 		expect(out.filter(l => l.includes("event")).length).toBeLessThanOrEqual(8);
+	});
+
+	test.each([100, 50])("a theme with a background paints every line at width %i edge to edge and closes it", width => {
+		const pal = palette("truecolor", THEMES["blood-angels"]);
+		const out = renderCockpit(cockpitView(busy()), width, 0, pal, 20);
+		expect(out).toHaveLength(20);
+		for (const l of out) {
+			expect(l.startsWith(pal.bg!)).toBe(true);
+			expect(l.endsWith("\x1b[49m")).toBe(true);
+			expect(Bun.stringWidth(plain(l))).toBe(width);
+		}
 	});
 
 	test("the 256 palette has no truecolor sequence but has gold's index", () => {

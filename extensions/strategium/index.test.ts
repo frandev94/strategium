@@ -94,6 +94,7 @@ afterEach(() => {
 	setSystemTime();
 	delete process.env.STRATEGIUM_STATE_DIR;
 	delete process.env.STRATEGIUM_COCKPIT_KEY;
+	delete process.env.STRATEGIUM_COCKPIT_THEME;
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
@@ -2909,9 +2910,76 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or cockpit-key <key>; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
+	});
+
+	describe("the cockpit theme", () => {
+		const BG = /\x1b\[48;(?:2;24;13;16|5;\d+)m/; // blood-angels Night, at either colour depth
+		const raw = (ui: ReturnType<typeof uiCtx>) => {
+			const comp = ui.opened.at(-1)!.component;
+			const out = comp.render(100).join("\n");
+			comp.handleInput!("q");
+			return out;
+		};
+
+		test("the default is blood-angels: config names it and the overlay is painted on Night", async () => {
+			const { s, ui } = await running();
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain("cockpit-theme: blood-angels (default)");
+			await s.sub("cockpit");
+			expect(raw(ui)).toMatch(BG);
+		});
+
+		test("cockpit-theme saves the theme and applies it at once; default drops the file", async () => {
+			const { s, ui } = await running();
+			await s.sub("config", "cockpit-theme Cogitator");
+			expect(readFileSync(join(s.dir, "cockpit-theme"), "utf8")).toBe("cogitator");
+			expect(s.notes.at(-1)).toContain("cockpit-theme: cogitator (/strategium-config)");
+			await s.sub("cockpit");
+			expect(raw(ui)).not.toMatch(/\x1b\[48;/); // cogitator keeps the terminal's background
+			await s.sub("config", "cockpit-theme default");
+			expect(existsSync(join(s.dir, "cockpit-theme"))).toBe(false);
+			expect(s.notes.at(-1)).toContain("cockpit-theme: blood-angels (default)");
+			await s.sub("cockpit");
+			expect(raw(ui)).toMatch(BG);
+		});
+
+		test("an open cockpit repaints with the new theme on its next render, without reopening", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			const comp = ui.opened.at(-1)!.component;
+			expect(comp.render(100).join("\n")).toMatch(BG);
+			await s.sub("config", "cockpit-theme cogitator");
+			expect(comp.render(100).join("\n")).not.toMatch(/\x1b\[48;/);
+			comp.handleInput!("q");
+		});
+
+		test("an unknown theme is refused with the list and writes no file", async () => {
+			const s = setup();
+			await s.sub("config", "cockpit-theme khorne");
+			expect(s.notes.at(-1)).toContain("cockpit-theme takes blood-angels, ultramarines, dark-angels, cogitator or default");
+			expect(existsSync(join(s.dir, "cockpit-theme"))).toBe(false);
+		});
+
+		test("STRATEGIUM_COCKPIT_THEME picks the theme, and a saved theme wins over it", async () => {
+			process.env.STRATEGIUM_COCKPIT_THEME = "Ultramarines";
+			const s = setup();
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain("cockpit-theme: ultramarines (STRATEGIUM_COCKPIT_THEME)");
+			await s.sub("config", "cockpit-theme dark-angels");
+			expect(s.notes.at(-1)).toContain("cockpit-theme: dark-angels (/strategium-config)");
+		});
+
+		test("an unknown STRATEGIUM_COCKPIT_THEME falls back to the default and is reported at start", async () => {
+			process.env.STRATEGIUM_COCKPIT_THEME = "khorne";
+			const s = setup();
+			for (const h of s.handlers.session_start) await h({}, s.ctx);
+			expect(s.notes).toContain('Strategium: STRATEGIUM_COCKPIT_THEME "khorne" is not a theme (blood-angels, ultramarines, dark-angels, cogitator); ignored');
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain("cockpit-theme: blood-angels (default)");
+		});
 	});
 
 	describe("the cockpit with a run", () => {
