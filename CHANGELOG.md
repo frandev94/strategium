@@ -1,3 +1,12 @@
+## [0.2.5] - 2026-11-20
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Count async jobs as agent at work; VOX OPEN when the prompt is free
+
+### 📚 Documentation
+
+- *(readme)* Cockpit status counts background jobs; VOX OPEN line
 ## [0.2.4] - 2026-11-20
 
 ### 🚀 Features
