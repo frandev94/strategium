@@ -1,3 +1,8 @@
+## [0.2.9] - 2026-11-20
+
+### 📚 Documentation
+
+- *(skills)* User tasks during a run go into the stations
 ## [0.2.8] - 2026-11-20
 
 ### 🚀 Features
