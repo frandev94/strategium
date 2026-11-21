@@ -492,13 +492,13 @@ describe("notifications", () => {
 		expect(await lines()).toEqual([want]);
 	});
 
-	test("the alarm gets STRATEGIUM_VOLUME", async () => {
+	test.each([["30", "30"], ["33.6", "34"], ["-5", "0"]])("the alarm gets STRATEGIUM_VOLUME=%p as vox reads it: %p", async (env, want) => {
 		const s = setup();
 		process.env.STRATEGIUM_NOTIFY = "1";
-		process.env.STRATEGIUM_VOLUME = "30";
+		process.env.STRATEGIUM_VOLUME = env;
 		const lines = recorder(s.dir);
 		await s.call({ action: "attention", message: "seal ready" });
-		expect(await lines()).toEqual(["attention|1|seal ready|30"]);
+		expect(await lines()).toEqual([`attention|1|seal ready|${want}`]);
 	});
 
 	test("/strategium-config volume wins over STRATEGIUM_VOLUME for this session", async () => {

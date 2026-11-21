@@ -19,6 +19,7 @@ import {
 	release,
 	type Ev,
 } from "./timer";
+import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
@@ -725,14 +726,12 @@ export default function (pi: ExtensionAPI) {
 		const n = idleMin(sid);
 		return `${n > 0 ? `${n} min` : "off"} (${idleBySession.has(sid) ? "this session" : "STRATEGIUM_IDLE_MIN"})`;
 	};
-	// The alarm's volume (0-100): /strategium-config volume <n> per session wins over STRATEGIUM_VOLUME; neither → vox's default (20).
+	// The alarm's volume (0-100): /strategium-config volume <n> per session wins over STRATEGIUM_VOLUME (parsed by vox, as the alarm would); neither → vox's default.
 	const volumeBySession = new Map<string, number>();
-	const volumeOf = (sid: string): number | undefined => {
-		const env = process.env.STRATEGIUM_VOLUME?.trim() ?? "";
-		return volumeBySession.get(sid) ?? (/^\d+$/.test(env) ? Math.min(100, Number(env)) : undefined);
-	};
+	const volumeOf = (sid: string): number | undefined =>
+		volumeBySession.get(sid) ?? (process.env.STRATEGIUM_VOLUME?.trim() ? volume(process.env) : undefined);
 	const volumeState = (sid: string) =>
-		`${volumeOf(sid) ?? 20} (${volumeBySession.has(sid) ? "this session" : volumeOf(sid) !== undefined ? "STRATEGIUM_VOLUME" : "default"})`;
+		`${volumeOf(sid) ?? volume({})} (${volumeBySession.has(sid) ? "this session" : volumeOf(sid) !== undefined ? "STRATEGIUM_VOLUME" : "default"})`;
 	// When the main session last went idle (ms); tick counts from here. In memory only: a restart starts the count again.
 	let idleSince: number | undefined;
 	// A stop or start by hand spends the idle mark, so a later turn never resumes a run the user stopped. The idle count
