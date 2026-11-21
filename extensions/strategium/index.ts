@@ -1337,7 +1337,8 @@ export default function (pi: ExtensionAPI) {
 				try {
 					claim(stateDir(), moved.key, sid, prevSid);
 					// omp cancelled the old session's background agents: none runs any more.
-					writeRun(settle({ ...moved, sid }, {}, Object.values(moved.agents ?? {})));
+					// The old session's station is not where the fresh one starts.
+					writeRun(settle({ ...moved, sid, where: undefined }, {}, Object.values(moved.agents ?? {})));
 					rmSync(runFile(prevSid), { force: true });
 					rmSync(beatFile(prevSid), { force: true });
 					beat(sid);
@@ -1486,8 +1487,11 @@ export default function (pi: ExtensionAPI) {
 	// The todo phases are the stations: keep where the run is, so the footer shows it at once and after a restart.
 	pi.on("tool_result", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || e.toolName.replace(/^_+/, "") !== "todo" || e.isError) return;
-		const phases = (e.details as { phases?: Phase[] } | undefined)?.phases;
+		const details = e.details as { op?: string; phases?: Phase[] } | undefined;
+		const phases = details?.phases;
 		const run = ownRun(sidOf(ctx));
+		// A rebuild's init is auto-started by omp at its first task, which is not where the run is.
+		if (details?.op === "init" && run?.phases?.length) return;
 		const where = phases && whereFrom(phases);
 		if (!run || !where) return;
 		writeRun({ ...run, where });
