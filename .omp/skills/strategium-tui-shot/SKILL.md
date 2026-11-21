@@ -15,7 +15,7 @@ python tools/tui-shot/shot.py --seed=scriptorium --ponytail   # also load ponyta
 python tools/tui-shot/shot.py --replay=NAME | --all     # regression replays, see below
 ```
 
-Output goes to `%TEMP%\strategium-tui-shot\` (`<name>.png`, `.html`, `.raw`), never into the repo. It takes about 15-40 s. Options: `--suffix=-x` names the outputs, `--plugin=DIR` another checkout, worktree or export (default: this repo), `--ponytail=DIR`, `--omp=EXE`, `--edge=EXE`, `--out=DIR`, `--no-png` (keep only `.html`/`.raw`), `--keep-work` (replays: keep the work dir). Edge, omp and ponytail are discovered; the script exits with the flag to pass if one is missing. Different `--suffix` values can run in parallel.
+Output goes to `%TEMP%\strategium-tui-shot\` (`<name>.png`, `.html`, `.raw`), never into the repo. It takes about 15-40 s. Options: `--suffix=-x` names the outputs, `--plugin=DIR` another checkout, worktree or export (default: this repo), `--ponytail=DIR`, `--omp=EXE`, `--edge=EXE`, `--out=DIR`, `--no-png` (keep only `.html`/`.raw`), `--all-png` (replays: PNG of every snapshot, not only the `png=True` ones), `--keep-work` (replays: keep the work dir). Edge, omp and ponytail are discovered; the script exits with the flag to pass if one is missing. Different `--suffix` values can run in parallel.
 
 Read the PNG with `read` (it decodes images inline) and describe what you see: footer text, overlay layout, truncation, colors, glyph vs emoji. Check the `.png` exists before claiming anything.
 
@@ -82,7 +82,7 @@ Not replayable on screen: R11 (the code path is gone; `no-widget` covers its rep
 
 ### In CI
 
-`.github/workflows/tui-shot.yml` runs `python tools/tui-shot/shot.py --all --no-png` on `windows-latest` for pull requests that touch `extensions/`, `tools/tui-shot/`, `package.json`, `bun.lock` or the workflow itself (and by hand with `workflow_dispatch`). omp is the devDependency's `node_modules\.bin\omp.exe`: bump the pin on purpose, the replays run on the bump. When the run fails, a step reruns each `FAIL` scenario with PNGs on. The artifact `tui-shot` holds the `.raw`/`.html`/PNGs and the log. No model is called.
+`.github/workflows/tui-shot.yml` runs `python tools/tui-shot/shot.py --all --no-png` on `windows-latest` for pull requests that touch `extensions/`, `tools/tui-shot/`, `package.json`, `bun.lock` or the workflow itself (and by hand with `workflow_dispatch`). omp is the devDependency's `node_modules\.bin\omp.exe`: bump the pin on purpose, the replays run on the bump. When the run fails, a step reruns each `FAIL` scenario with `--all-png` (a PNG of every snapshot) into `rerun/`, so the main run's `.raw`/`.html` stay intact. The artifact `tui-shot` holds the `.raw`/`.html`/PNGs and the log. No model is called.
 
 ### Add a scenario
 

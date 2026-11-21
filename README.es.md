@@ -309,7 +309,7 @@ bun run check                     # TypeScript estricto sobre la extensión
 bun test                          # temporizador, reservas entre procesos, la extensión con un host falso, WAV de la alarma
 ```
 
-En las pull requests que tocan `extensions/` o `tools/tui-shot/`, `.github/workflows/tui-shot.yml` ejecuta además en Windows los replays de tui-shot con el omp real (`python tools/tui-shot/shot.py --all --no-png`), con omp del devDependency fijado.
+En las pull requests que tocan `extensions/`, `tools/tui-shot/`, `package.json`/`bun.lock` (el pin de omp) o el propio workflow, `.github/workflows/tui-shot.yml` ejecuta además en Windows los replays de tui-shot con el omp real (`python tools/tui-shot/shot.py --all --no-png`), con omp del devDependency fijado.
 
 ```
 extensions/strategium/            la extensión (tool, comando, temporizador, bloqueo de edición)

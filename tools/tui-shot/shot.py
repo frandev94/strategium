@@ -2,12 +2,12 @@
 
   python tools/tui-shot/shot.py [--seed=scriptorium|skirmish|timed|restart] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
                                 [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png]
-  python tools/tui-shot/shot.py --replay=NAME | --all  [--plugin=DIR] [--suffix=-x] [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png] [--keep-work]
+  python tools/tui-shot/shot.py --replay=NAME | --all  [--plugin=DIR] [--suffix=-x] [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png] [--all-png] [--keep-work]
 
 Default mode writes screen<sfx>.* (the footer the seeded run draws, before Alt+C) and overlay<sfx>.* (after Alt+C).
 --ponytail[=DIR]: also load the ponytail omp plugin (second -e), default dir found under ~/.omp/plugins; suffix defaults to -ponytail.
 --replay=NAME runs one regression scenario (REPLAYS below): keys, resizes and waits in the real omp, text checks on the screen xterm.js holds at each
-checkpoint; prints PASS/FAIL and exits 0/1 (unknown name: 2). --all runs every scenario and prints a table. --keep-work keeps the work dir (replay.log).
+checkpoint; prints PASS/FAIL and exits 0/1 (unknown name: 2). --all runs every scenario and prints a table. --keep-work keeps the work dir (replay.log). --all-png (replays) shoots every snapshot, not only the png=True ones.
 Outputs (default %TEMP%\\strategium-tui-shot): <name>.raw (VT bytes), <name>.html (xterm.js 5.5 vendored in tools/tui-shot/vendor, no network), <name>.png (headless Edge).
 The run is seeded on disk and omp resumes a hand-written session with the same id, so no model call is spent (the replays that need a model use the fake provider in replay-ext.ts).
 """
@@ -75,6 +75,7 @@ ap.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "strategium
 ap.add_argument("--omp")
 ap.add_argument("--edge")
 ap.add_argument("--no-png", action="store_true")
+ap.add_argument("--all-png", action="store_true")
 ap.add_argument("--replay", metavar="NAME")
 ap.add_argument("--all", action="store_true")
 ap.add_argument("--keep-work", action="store_true")
@@ -651,7 +652,7 @@ def replay(name):
             snaps = parse_snaps(dom); want = sum(1 for e in R.events if e[0] == "s")
             if len(snaps) != want: err = f"edge returned {len(snaps)} snapshots of {want}"
             for e in R.events:
-                if e[0] == "s" and e[3] and not A.no_png and err is None: shoot(prof, f"{name}-{e[1]}")
+                if e[0] == "s" and (e[3] or A.all_png) and not A.no_png and err is None: shoot(prof, f"{name}-{e[1]}")
         C = Ctx(R, snaps)
         if err is None:
             try: sc["checks"](C)
