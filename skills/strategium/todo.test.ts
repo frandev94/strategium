@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { whereFrom } from "../../extensions/strategium/index";
 import { buildTodo, glyphsFromEnv } from "./todo";
@@ -132,4 +135,77 @@ test("the skill's todo example builds without errors", async () => {
 		"Debrief",
 	]);
 	expect(call.op === "init" && call.list[0].items).toEqual(["[captain] Objective", "[captain] Orders"]);
+});
+
+describe("station filters", () => {
+	const five = "A\n  captain: a\nB\n  captain: b\nC\n  captain: c\nD\n  captain: d\n";
+	const phases = (o: Parameters<typeof buildTodo>[1]) => {
+		const [call] = buildTodo(five, o);
+		return call.op === "init" ? call.list : [];
+	};
+	const names = (o: Parameters<typeof buildTodo>[1]) => phases(o).map(p => p.phase);
+
+	test("to keeps that station and the ones before it", () => expect(names({ to: "B" })).toEqual(["A", "B"]));
+	test("from keeps that station and the ones after it", () => expect(names({ from: "C" })).toEqual(["C", "D"]));
+	test("from and to together keep a contiguous slice", () => expect(names({ from: "B", to: "C" })).toEqual(["B", "C"]));
+
+	test("to S followed by from the next station give the whole list, same items", () => {
+		const all = phases({});
+		for (const [i, p] of all.entries()) {
+			if (i === all.length - 1) continue;
+			expect([...phases({ to: p.phase }), ...phases({ from: all[i + 1].phase })]).toEqual(all);
+		}
+	});
+
+	test("append with to drops the later stations", () =>
+		expect(buildTodo("Scriptorium\n  seal: Plan\nExtraction\n  seal: MR\n", { append: true, to: "Scriptorium" })).toEqual([
+			{ op: "append", phase: "Scriptorium", items: ["[seal] Plan"] },
+		]));
+
+	test("an unknown station is refused", () => {
+		expect(() => buildTodo(five, { from: "X" })).toThrow('station "X" is not in the list');
+		expect(() => buildTodo(five, { to: "X" })).toThrow('station "X" is not in the list');
+	});
+
+	test("from after to leaves nothing", () => expect(() => buildTodo(five, { from: "D", to: "A" })).toThrow("no stations in the list"));
+
+	test("validation still covers the stations a filter drops", () =>
+		expect(() => buildTodo("A\n  captain: a\nB\n", { to: "A" })).toThrow('station "B" has no tasks'));
+
+	test("the CLI reads the file after --from and prints only those stations", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "st-todo-"));
+		const file = join(dir, "list.txt");
+		await Bun.write(file, five);
+		try {
+			const r = Bun.spawnSync(["bun", `${import.meta.dir}/todo.ts`, "--from", "C", file]);
+			const call = JSON.parse(r.stdout.toString());
+			expect(call.list.map((p: { phase: string }) => p.phase)).toEqual(["C", "D"]);
+		} finally {
+			rmSync(dir, { recursive: true });
+		}
+	});
+
+	test.each(["from", "to"])("the CLI refuses --%s without a station", flag => {
+		const r = Bun.spawnSync(["bun", `${import.meta.dir}/todo.ts`, `--${flag}`], { stdin: Buffer.from(five) });
+		expect(r.exitCode).toBe(1);
+		expect(r.stderr.toString()).toContain(`--${flag} needs a station`);
+	});
+
+	test.each(["from", "to"])("the CLI treats --%s followed by another flag as missing its station", flag => {
+		const r = Bun.spawnSync(["bun", `${import.meta.dir}/todo.ts`, `--${flag}`, "--append"], { stdin: Buffer.from(five) });
+		expect(r.exitCode).toBe(1);
+		expect(r.stderr.toString()).toContain(`--${flag} needs a station`);
+	});
+
+	test("SKILL.md's skeleton splits into plan stations and the rest", async () => {
+		const skill = await Bun.file(`${import.meta.dir}/SKILL.md`).text();
+		const m = skill.replace(/\r\n/g, "\n").match(/\n( *)bun [^\n]*todo\.ts" <<'EOF'\n([\s\S]*?)\n\1EOF/);
+		const example = m![2].split("\n").map(l => l.slice(m![1].length)).join("\n");
+		const list = (o: Parameters<typeof buildTodo>[1]) => {
+			const [call] = buildTodo(example, o);
+			return call.op === "init" ? call.list.map(p => p.phase) : [];
+		};
+		expect(list({ to: "Scriptorium" })).toEqual(["Muster", "Auspex", "Scriptorium"]);
+		expect(list({ from: "Deployment" })).toEqual(["Deployment", "Skirmish", "Inquisition", "Extraction", "Debrief"]);
+	});
 });

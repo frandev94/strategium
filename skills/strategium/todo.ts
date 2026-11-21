@@ -1,7 +1,8 @@
 // Builds the `todo` payload of a Strategium run: one phase per station, each task tagged with its agent,
 // as plain tags (`[librarian] Plan`) or Nerd Font glyph tags (`<glyph> librarian · Plan`).
 //
-// Usage: bun todo.ts [--append] [file]   (the list comes from the file, else from stdin; glyph tags when STRATEGIUM_GLYPHS=1)
+// Usage: bun todo.ts [--append] [--from <station>] [--to <station>] [file]   (the list comes from the file, else from stdin; glyph tags when STRATEGIUM_GLYPHS=1)
+// --from keeps that station and every later one, --to that station and every earlier one; the whole list is validated first.
 //
 // The list: a station per unindented line, its tasks indented below as `agent: text` or `[agent] text`.
 // Blank lines and lines starting with # are skipped.
@@ -12,7 +13,9 @@
 //     librarian: Plan as squads → local://KEY-plan.md
 //     seal: Plan
 //
-// Prints one JSON object per todo call: `init` for the whole list, or with --append one `append` per station.
+// Prints one JSON object per todo call: `init` for the (filtered) list, or with --append one `append` per station.
+
+import { parseArgs } from "node:util";
 
 /** Glyph tags on or off: the same switch as the footer. */
 export const glyphsFromEnv = (env: Record<string, string | undefined> = process.env): boolean => env.STRATEGIUM_GLYPHS === "1";
@@ -37,7 +40,10 @@ export const AGENTS: Record<string, string> = {
 type Phase = { phase: string; items: string[] };
 export type TodoCall = { op: "init"; list: Phase[] } | { op: "append"; phase: string; items: string[] };
 
-export function buildTodo(text: string, { glyphs = false, append = false } = {}): TodoCall[] {
+export function buildTodo(
+	text: string,
+	{ glyphs = false, append = false, from, to }: { glyphs?: boolean; append?: boolean; from?: string; to?: string } = {},
+): TodoCall[] {
 	const list: Phase[] = [];
 	const seen = new Set<string>();
 	for (const [i, line] of text.split(/\r?\n/).entries()) {
@@ -65,15 +71,32 @@ export function buildTodo(text: string, { glyphs = false, append = false } = {})
 	if (!list.length) throw new Error("no stations in the list");
 	const empty = list.find(p => !p.items.length);
 	if (empty) throw new Error(`station "${empty.phase}" has no tasks`);
-	return append ? list.map(p => ({ op: "append", phase: p.phase, items: p.items })) : [{ op: "init", list }];
+	const at = (name: string) => {
+		const i = list.findIndex(p => p.phase === name);
+		if (i < 0) throw new Error(`station "${name}" is not in the list`);
+		return i;
+	};
+	const kept = list.slice(from === undefined ? 0 : at(from), to === undefined ? undefined : at(to) + 1);
+	if (!kept.length) throw new Error("no stations in the list");
+	return append ? kept.map(p => ({ op: "append", phase: p.phase, items: p.items })) : [{ op: "init", list: kept }];
 }
 
 if (import.meta.main) {
-	const args = process.argv.slice(2);
-	const file = args.find(a => !a.startsWith("--"));
+	const { values, positionals } = parseArgs({
+		args: process.argv.slice(2),
+		options: { append: { type: "boolean" }, from: { type: "string" }, to: { type: "string" } },
+		strict: false,
+		allowPositionals: true,
+	});
+	const [file] = positionals;
 	try {
+		for (const f of ["from", "to"] as const) {
+			const v = values[f];
+			if (v === true || (typeof v === "string" && v.startsWith("--"))) throw new Error(`--${f} needs a station`);
+		}
 		const text = file ? await Bun.file(file).text() : await Bun.stdin.text();
-		const calls = buildTodo(text, { glyphs: glyphsFromEnv(), append: args.includes("--append") });
+		const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+		const calls = buildTodo(text, { glyphs: glyphsFromEnv(), append: values.append === true, from: str(values.from), to: str(values.to) });
 		for (const call of calls) console.log(JSON.stringify(call));
 	} catch (err) {
 		console.error(`todo: ${err instanceof Error ? err.message : String(err)}`);
