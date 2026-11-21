@@ -1296,7 +1296,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			const key = keyOf(objective);
 			const sid = sidOf(ctx);
 			// Begin the run now, untimed, so the clock counts from the command; a key this session already holds is left as it is.
-			let note = `Strategium run ${key} has begun, untimed: first todo init the skeleton todo from the skill (in omp plan mode only the plan stations, --to Scriptorium).`;
+			let note = `Strategium run ${key} has begun, untimed: first todo init the skeleton todo from the skill (in omp plan mode only the plan stations, --to Scriptorium). Read rule://strategium-captain and the other strategium rules listed in the skill's Rules section.`;
 			if (ownRun(sid)?.key === key) note = `Strategium run ${key} is already this session's run.`;
 			else {
 				try {

@@ -366,6 +366,7 @@ describe("the /strategium command", () => {
 		expect(sent[0]).toContain("Strategium run add-a-dark-mode has begun, untimed");
 		expect(sent[0]).toContain("todo init the skeleton todo");
 		expect(sent[0]).toContain("--to Scriptorium");
+		expect(sent[0]).toContain("rule://strategium-captain");
 		start();
 		expect(shown()).toContain("strategium: add-a-dark-mode");
 		setSystemTime(new Date(2026, 10, 16, 9, 5, 0));
