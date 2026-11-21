@@ -3581,6 +3581,9 @@ describe("cockpit", () => {
 			expect(again).not.toContain("▸");
 			expect(again).not.toContain("viewing");
 			ui.opened.at(-1)!.component.handleInput!("q");
+			const saved = readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8");
+			expect(saved).not.toContain("nav");
+			expect(saved).not.toContain("cursor");
 		});
 
 		test("a key keeps the agent status the host reported since the last redraw", async () => {
