@@ -1310,7 +1310,7 @@ const NOT_KEYS = [
 	// releases, Alt/Ctrl/Shift chords, a zero modifier
 	"\x1b[1;1:3A", "\x1b[1;129:3B", "\x1b[1;3A", "\x1b[1;5A", "\x1b[1;2A", "\x1b[1;2H", "\x1b[1;0A", "\x1b[1;1;1A",
 	"\x1b[57420;1:3u", "\x1b[57420;5u", "\x1b[57420;3u", "\x1b[9;2u", "\x1b[57421u", "\x1b[57352u",
-	"\x1b[38;72;0;0;256;1_", "\x1b[38;72;0;1;258;1_", "\x1b[38;72;0;1;4;1_", "\x1b[38;72;0;1;16;1_", "\x1b[41;80;0;1;256;1_", "\x1b[38;72;0;1;256;1",
+	"\x1b[38;72;0;0;256;1_", "\x1b[38;72;0;1;258;1_", "\x1b[38;72;0;1;4;1_", "\x1b[38;72;0;1;16;1_", "\x1b[41;80;0;1;256;1_", "\x1b[38;72;0;1;256;1", "\x1b[38;72;0;1;4294967296;1_",
 	// a number too long for a modifier must not wrap around into "no modifier"
 	`\x1b[1;${"9".repeat(400)}A`, `\x1b[38;72;0;1;${"9".repeat(400)};1_`,
 ];
@@ -1629,5 +1629,38 @@ describe("the selected line renders inside the frame", () => {
 				expect(rows).toHaveLength(height);
 				expect(rows.some(l => l.includes("▸"))).toBe(true);
 			}
+	});
+});
+
+describe("selected rows are one even inverse block", () => {
+	const long: Entry[] = [{ at: "10:00", who: "SQUAD a", text: "x".repeat(300), tone: "ok" }];
+	test.each([100, 60])("a 300-char selected chronicle entry at %i columns has a single inverse span, closed before the frame", width => {
+		const raw = renderCockpit(press(input({ chronicle: long }), "down"), width, 0, TRUE);
+		const row = raw.find(l => l.includes("\x1b[7m"))!;
+		expect(row.split("\x1b[7m")).toHaveLength(2);
+		expect(row.lastIndexOf("\x1b[27m")).toBeGreaterThan(row.lastIndexOf("\x1b[7m"));
+		if (width >= 72) expect(row.lastIndexOf("║")).toBeGreaterThan(row.lastIndexOf("\x1b[27m"));
+		expect(Bun.stringWidth(row)).toBeLessThanOrEqual(width);
+		expect(Bun.stripANSI(row)).toContain("…");
+	});
+	test("a selected box line too long for its box is also one closed inverse span", () => {
+		const long2 = "[scout] " + "y".repeat(200);
+		for (const width of [100, 60]) {
+			const raw = renderCockpit(press(input({ phases: [{ name: "Auspex", tasks: [{ content: long2, status: "in_progress" }] }] }), "down"), width, 0, TRUE);
+			const row = raw.find(l => l.includes("\x1b[7m"))!;
+			expect(row.split("\x1b[7m")).toHaveLength(2);
+			expect(row.lastIndexOf("\x1b[27m")).toBeGreaterThan(row.lastIndexOf("\x1b[7m"));
+		}
+	});
+	test("at the minimum height a selected line with a detail row keeps its marker (cap 2 and cap 1)", () => {
+		const d = new Map(Array.from({ length: 6 }, (_, i) => [`agent-${i}`, dep({ role: "battle-brother", station: "Skirmish", at: 60_000 })] as const));
+		const base = input({ phases: [{ name: "Skirmish", tasks: [] }], deployed: d, now: 120_000, live: new Map() });
+		for (const height of [6, 8, 10, 12, 14, 16, 18]) {
+			const rows = renderCockpit(press(base, ...Array<NavKey>(6).fill("down")), 100, 0, TRUE, height).map(plain);
+			const hit = rows.find(l => l.includes("agent-5"));
+			if (hit) expect(hit).toContain("▸");
+		}
+		const rows = renderCockpit(press(base, ...Array<NavKey>(6).fill("down")), 100, 0, TRUE, 12).map(plain);
+		expect(rows.find(l => l.includes("agent-5"))).toContain("▸");
 	});
 });

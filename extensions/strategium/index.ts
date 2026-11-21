@@ -1200,6 +1200,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		if (!ctx.hasUI || typeof ctx.ui.custom !== "function") return ctx.ui.notify("Strategium: the cockpit needs the interactive UI", "warning");
 		if (cockpit.close) return;
 		cockpit.status = agentStatus(ctx);
+		cockpit.nav = {}; // a reopened cockpit starts clean
 		drawCockpit(run, ctx);
 		const closed = () => {
 			cockpit.close = undefined;
@@ -1237,7 +1238,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 							const key = navKey(data);
 							if (!key || !cockpit.view || !cockpit.input) return;
 							cockpit.nav = navigate(cockpit.view, key);
-							cockpit.view = cockpitView({ ...cockpit.input, nav: cockpit.nav });
+							cockpit.view = cockpitView({ ...cockpit.input, status: cockpit.status, nav: cockpit.nav });
 							cockpit.nav = cockpit.view.nav;
 							tui.requestRender();
 						},

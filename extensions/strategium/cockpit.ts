@@ -129,7 +129,7 @@ const NAV_U: Record<number, NavKey> = { 9: "tab", 57417: "left", 57418: "right",
 const NAV_PLAIN = /^\x1b[[O]([ABCDH])$/;
 const NAV_MOD = /^\x1b\[1;(\d{1,3})(?::(\d))?([ABCDH])$/;
 const NAV_CSI_U = /^\x1b\[(9|5741[789]|57420|57423)(?::\d*)*(?:;(\d{1,3})(?::(\d))?)?(?:;[\d:]*)?u$/;
-const NAV_WIN32 = /^\x1b\[(\d{1,5});\d{0,5};\d{0,5};(\d);(\d{0,10});\d{0,5}_$/;
+const NAV_WIN32 = /^\x1b\[(\d{1,5});\d{0,5};\d{0,5};(\d);(\d{0,5});\d{0,5}_$/;
 const plainMod = (m: string | undefined, ev: string | undefined) => ((Number(m ?? 1) - 1) & ~192) === 0 && (ev === undefined || ev === "1" || ev === "2");
 /** The cursor key `data` is, or undefined. Arrows and Home in VT, SS3, xterm/kitty modified (locks allowed, no other modifier, press or repeat), Home as `CSI 1~`/`CSI 7~`, kitty keypad CSI-u, Tab, and win32-input-mode records (key down, no Alt/Ctrl/Shift). Any other sequence, a release, Alt+arrow and Shift+Tab give undefined, and never a bare Esc: closes() is false for all of them. Every pattern is anchored with bounded numbers, so a hostile string costs linear time. */
 export const navKey = (data: string): NavKey | undefined => {
@@ -425,6 +425,8 @@ type Box = { title: string; lines: string[]; tone: Tone; sel?: number }; // sel:
 
 /** The selected line's text in inverse video; SGR 7/27 is zero width, so no column moves. */
 const inverse = (s: string) => `\x1b[7m${s}\x1b[27m`;
+/** A selected line as one even inverse block: fitted to `width` cells as plain text first (fit's reset would otherwise end the inverse early, and its colours would break the block). */
+const selected = (s: string, width: number) => inverse(fit(Bun.stripANSI(s), width));
 
 function drawBox(b: Box, w: number, pal: Palette): string[] {
 	const [tl, h, tr, v, bl, br] = "┌─┐│└┘";
@@ -432,7 +434,7 @@ function drawBox(b: Box, w: number, pal: Palette): string[] {
 	const title = fit(b.title, w - 5).replace(`…${RESET}`, "");
 	return [
 		c(`${tl}${h} ${title} ${h.repeat(w - Bun.stringWidth(title) - 5)}${tr}`),
-		...b.lines.map((l, r) => `${c(v)}${r === b.sel ? paint(pal.gold, "▸") : " "}${pad(r === b.sel ? inverse(fit(l, w - 4)) : fit(l, w - 4), w - 4)} ${c(v)}`),
+		...b.lines.map((l, r) => `${c(v)}${r === b.sel ? paint(pal.gold, "▸") : " "}${pad(r === b.sel ? selected(l, w - 4) : fit(l, w - 4), w - 4)} ${c(v)}`),
 		c(`${bl}${h.repeat(w - 2)}${br}`),
 	];
 }
@@ -510,7 +512,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	const box = view.panel && sealBox(view.panel, view.sealIds, pal, sel);
 
 	if (width < 72) {
-		const ind = (b: Box) => b.lines.map((l, i) => (i === b.sel ? `${paint(pal.gold, "▸")} ${inverse(l)}` : `  ${l}`));
+		const ind = (b: Box) => b.lines.map((l, i) => (i === b.sel ? `${paint(pal.gold, "▸")} ${selected(l, width - 2)}` : `  ${l}`));
 		const si = view.chronicle.findIndex(e => e.id === sel);
 		const body = [
 			`${paint(pal.gold, "✠ STRATEGIUM")} · ${paint(pal.parchment, view.key)}`,
@@ -522,7 +524,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 			...boxes(boxCap(height, 5 + (view.seals.length ? 1 : 0) + (box ? box.lines.length + 1 : 0) + statusText(view.status, pal, frame).length, view.boxes.length, 1)).flatMap(b => [paint(pal.gold, b.title), ...ind(b)]),
 			paint(pal.gold, "CHRONICLE"),
 		];
-		const entries = view.chronicle.map((e, i) => (i === si ? `${paint(pal.gold, "▸")} ${inverse(entryLine(e, pal))}` : entryLine(e, pal)));
+		const entries = view.chronicle.map((e, i) => (i === si ? `${paint(pal.gold, "▸")} ${selected(entryLine(e, pal), width - 2)}` : entryLine(e, pal)));
 		return withHeight(body, entries, "", paint(pal.iron, "esc/q close"), height, si).map(l => fit(l, width));
 	}
 
@@ -544,7 +546,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	const hint = "esc/q close · ↑↓ line · ←→ station · tab box · home";
 	return withHeight(
 		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...(box ? grid([box], 1, inner, pal).map(row) : []), ...grid(boxes(boxCap(height, head.length + 4 + (box ? box.lines.length + 2 : 0), Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
-		view.chronicle.map((e, i) => row(i === si ? `${g("▸")}${inverse(entryLine(e, pal))}` : ` ${entryLine(e, pal)}`)),
+		view.chronicle.map((e, i) => row(i === si ? `${g("▸")}${selected(entryLine(e, pal), inner - 1)}` : ` ${entryLine(e, pal)}`)),
 		row(""),
 		g(`╚═ ${hint} ${"═".repeat(inner - 3 - Bun.stringWidth(hint))}╝`),
 		height,

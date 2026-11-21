@@ -3570,12 +3570,41 @@ describe("cockpit", () => {
 			}
 		});
 
-		test("cursor keys do not repaint after a close, and the nav is not saved", async () => {
-			const { s, comp } = await open();
+		test("a reopened cockpit starts clean: no selection and no viewing note", async () => {
+			const { s, comp, ui } = await open();
 			comp.handleInput!("\x1b[B");
+			comp.handleInput!("\x1b[D");
+			expect(text(comp)).toContain("viewing");
 			comp.handleInput!("q");
-			const saved = readdirSync(join(s.dir, "runs")).filter(f => f.endsWith(".cockpit")).map(f => readFileSync(join(s.dir, "runs", f), "utf8")).join("");
-			expect(saved).not.toContain("cursor");
+			await s.sub("cockpit");
+			const again = text(ui.opened.at(-1)!.component);
+			expect(again).not.toContain("▸");
+			expect(again).not.toContain("viewing");
+			ui.opened.at(-1)!.component.handleInput!("q");
+		});
+
+		test("a key keeps the agent status the host reported since the last redraw", async () => {
+			const { s, comp } = await open();
+			const host: { idle: boolean } = Reflect.get(s.ctx, "host");
+			host.idle = false;
+			s.handlers.agent_start.forEach(f => f({}, s.ctx));
+			expect(text(comp)).toContain("AGENT AT WORK");
+			host.idle = true;
+			s.handlers.agent_end.forEach(f => f({}, s.ctx));
+			expect(text(comp)).toContain("VOX OPEN");
+			comp.handleInput!("\x1b[B");
+			expect(text(comp)).toContain("VOX OPEN");
+			comp.handleInput!("q");
+		});
+
+		test("browsing back to the station the run returns to does not leave a viewing note", async () => {
+			const { s, comp } = await open();
+			comp.handleInput!("\x1b[D"); // browse Muster while Auspex is active
+			expect(text(comp)).toContain("viewing");
+			s.todo(stations("completed", "completed", "in_progress")); // the run moves on to Deployment
+			s.todo(stations("completed", "in_progress", "pending")); // and back to Auspex
+			expect(text(comp)).not.toContain("viewing");
+			comp.handleInput!("q");
 		});
 	});
 
