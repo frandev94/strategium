@@ -1026,7 +1026,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			}
 			// shortcut: a block undone before the parent's next read (≤1 s with the cockpit open, ≤60 s closed) is never seen; upgrade if agents unblock themselves that fast.
 			if (row?.blocked === true) {
-				// Once per transition, and only when a ctx can sound it, so the transition is never used up without its alarm. A blocked row said why it waits: never stalled.
+				// Once per transition, and only when a ctx can sound it, so the transition is never used up without its alarm. A blocked row still falls through to the stall rule below.
 				if (ctx && !job.blocked) {
 					job.blocked = true;
 					const line = cap(oneLine(row.line));
@@ -1039,7 +1039,6 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 						if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 					}
 				}
-				continue;
 			}
 			// The idle period starts at the last tool call; an agent with no live row has nothing to count from (it may be an eval spawn or another process), so it is never stalled.
 			const start = row?.at ?? 0;
@@ -2118,8 +2117,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			return false;
 		}
 	};
-	// A tool starting means the agent is working again: a block clears on its own (a later signal in the same call may set it again), and is written at once like any change of blocked.
-	pi.on("tool_execution_start", (e, ctx) => void recordLive(ctx, 1, { tool: cap(bareName(e.toolName)), intent: typeof e.intent === "string" ? cap(e.intent) : undefined, blocked: undefined }, !!mine.row.blocked));
+	// A block clears only with a later signal without blocked (or when the agent is no longer active): an agent waiting on the Captain does so inside a tool call, so a tool start must not undo it.
+	pi.on("tool_execution_start", (e, ctx) => void recordLive(ctx, 1, { tool: cap(bareName(e.toolName)), intent: typeof e.intent === "string" ? cap(e.intent) : undefined }));
 	pi.on("tool_execution_end", (_e, ctx) => void recordLive(ctx, -1, {}));
 	pi.on("tool_result", (e, ctx) => {
 		const phases = (e.details as { phases?: unknown } | undefined)?.phases;

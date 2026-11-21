@@ -4808,25 +4808,27 @@ describe("cockpit", () => {
 				expect(existsSync(liveFile(s, "A"))).toBe(false);
 			});
 
-			test("a tool starting clears the block on its own, and the stall rule applies again", async () => {
+			test("a block survives the agent waiting in a tool call: one alarm, one entry, however the tool calls come and go", async () => {
 				const { s, ui, c } = await blockedChild();
+				c.start("strategium");
 				await c.call({ action: "signal", blocked: true, line: "need the API shape" });
-				expect(top(await peek(s, ui))).toContain("blocked · ");
-				c.start("read");
-				at(2000); // past the 1 s throttle, so the end is written
-				c.end("read");
-				expect(readLive(s).blocked).toBeUndefined();
-				at(2000 + 6 * MIN);
-				expect(top(await peek(s, ui))).not.toContain("blocked · ");
-				expect(await chron(s, ui)).toContain("stalled 6m");
+				c.end("strategium");
+				c.start("wait");
+				expect(readLive(s)).toMatchObject({ blocked: true, line: "need the API shape" });
+				await peek(s, ui);
+				expect(alarmLines()).toEqual(["attention|K-1: SQUAD a is blocked: need the API shape"]);
+				expect((await chron(s, ui)).match(/blocked: /g)).toHaveLength(1);
 			});
 
-			test("a signal in the same call as the tool start can block again", async () => {
-				const { s, c } = await blockedChild();
-				await c.call({ action: "signal", blocked: true, line: "one" });
-				c.start("strategium");
-				await c.call({ action: "signal", blocked: true, line: "two" });
-				expect(readLive(s)).toMatchObject({ blocked: true, line: "two" });
+			test("a blocked row with a tool call in flight is not stalled", async () => {
+				const { s, ui, c } = await blockedChild();
+				await c.call({ action: "signal", blocked: true, line: "need the API shape" });
+				at(2000); // past the 1 s throttle, so the tool start is written
+				c.start("wait");
+				at(20 * MIN);
+				const t = top(await peek(s, ui));
+				expect(t).toContain("blocked · ");
+				expect(t).not.toContain("stalled");
 			});
 
 			test("block, unblock, block within 60 s rings once and logs twice; after 60 s it rings again", async () => {
@@ -4930,13 +4932,13 @@ describe("cockpit", () => {
 				expect(t.match(/blocked: need/g)).toHaveLength(2);
 			});
 
-			test("a blocked row 6 minutes old with no tool call in flight is never stalled", async () => {
+			test("a blocked row idle 6 minutes with no tool call in flight shows stalled and logs it once", async () => {
 				const { s, ui, c } = await blockedChild();
 				await c.call({ action: "signal", blocked: true, line: "need the API shape" });
 				at(6 * MIN);
-				const t = await peek(s, ui);
-				expect(t).not.toContain("stalled");
-				expect(t).toContain("blocked · 6m");
+				expect(top(await peek(s, ui))).toContain("blocked · stalled 6m");
+				await peek(s, ui);
+				expect((await chron(s, ui)).match(/stalled 6m/g)).toHaveLength(1);
 			});
 
 			test("a second signal within a second reaches the file after the trailing write", async () => {
