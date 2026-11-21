@@ -1,4 +1,4 @@
-// Dev-only test extension for tools/tui-shot (see .omp/skills/strategium-tui-shot). Never shipped: not in package.json, not in tsconfig.
+// Dev-only test extension for tools/tui-shot (see .omp/skills/strategium-tui-shot). Never shipped: not in package.json (tsconfig type-checks it).
 // Inert unless STRATEGIUM_REPLAY_DIR is set. A fake model provider makes the real agent loop call the real `ask` tool: no network, no cost.
 // Log: <dir>/replay.log, JSONL {ev: input|tool_call|tool_result|stream|select, ...}.
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -28,7 +28,7 @@ export default function (pi: ExtensionAPI) {
 			yield* events;
 		},
 		result: async () => final,
-	}) as never;
+	}) as never; // duck-typed stream: the real AssistantMessageEventStream class is not constructible here
 
 	pi.registerProvider("replay", {
 		api: "strategium-replay",

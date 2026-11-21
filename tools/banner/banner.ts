@@ -5,6 +5,9 @@
 //       file sha256 f4d83d34d1f6c741193e4acf4b3dff9531e5a67b6aa65228d00a7db72a4e0f34
 // opentype.js only parses the tables; the variable-font instancing and the path emission replicate fontTools,
 // so the output is byte-identical to the former banner.py (LF line endings).
+// opentype.js is pinned exactly: its own instancer differs from fontTools, so a bump can change the output.
+// normalizeWght assumes a single wght axis. The instancing mirrors fontTools 4.68.0.
+// Oracle: regenerate into docs/ and `git diff --exit-code docs/banner-*.svg` must stay clean.
 import * as ot from "opentype.js";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -212,6 +215,7 @@ const inst = (buf: Buffer, wght: number) => {
   const v = normalizeWght(f, wght);
   const glyph = (ch: string) => {
     const gi = f.charToGlyphIndex(ch);
+    if (gi === 0) throw new Error(`no glyph for ${ch}`);
     const adv = f.variation.getTransform(f.glyphs.get(gi), { wght }).advanceWidth as number;
     return { advanceWidth: adv, points: instancePoints(f, gi, v) };
   };

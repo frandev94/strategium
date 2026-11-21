@@ -50,38 +50,59 @@ export class Pty {
 		private readonly sink: (b: Buffer) => void,
 	) {}
 
+	// CreateProcessW reads these through raw pointers: keep them on the instance so the GC cannot free them mid-call.
+	private keep: Buffer[] = [];
+
 	start(cmdline: string, cwd: string, env: Record<string, string>) {
 		k ??= load();
+		// bun:ffi has no use_last_error: GetLastError is read as the very next FFI call after the failing one, which is best effort.
 		const h = Buffer.alloc(32); // inR, inW, outR, outW
 		if (!k.CreatePipe(ptr(h, 0), ptr(h, 8), null, 0)) throw new Error(`CreatePipe in: ${k.GetLastError()}`);
-		if (!k.CreatePipe(ptr(h, 16), ptr(h, 24), null, 0)) throw new Error(`CreatePipe out: ${k.GetLastError()}`);
+		if (!k.CreatePipe(ptr(h, 16), ptr(h, 24), null, 0)) {
+			const e = k.GetLastError();
+			for (const o of [0, 8]) k.CloseHandle(h.readBigUInt64LE(o));
+			throw new Error(`CreatePipe out: ${e}`);
+		}
 		const inR = h.readBigUInt64LE(0), outW = h.readBigUInt64LE(24);
 		this.inW = h.readBigUInt64LE(8);
 		this.outR = h.readBigUInt64LE(16);
+		const closePipes = () => {
+			for (const x of [inR, outW, this.inW, this.outR]) k!.CloseHandle(x);
+		};
 		const hpc = Buffer.alloc(8);
 		const hr = k.CreatePseudoConsole(coord(this.cols, this.rows), inR, outW, 0, ptr(hpc));
-		if (hr !== 0) throw new Error(`CreatePseudoConsole: hr 0x${(hr >>> 0).toString(16)}`);
+		if (hr !== 0) {
+			closePipes();
+			throw new Error(`CreatePseudoConsole: hr 0x${(hr >>> 0).toString(16)}`);
+		}
 		this.hpc = hpc.readBigUInt64LE(0);
 		k.CloseHandle(inR); // the pseudo console holds its own copies of these two ends
 		k.CloseHandle(outW);
+		const fail = (what: string, cmd?: string): never => {
+			const e = k!.GetLastError();
+			k!.ClosePseudoConsole(this.hpc);
+			k!.CloseHandle(this.inW);
+			k!.CloseHandle(this.outR);
+			throw new Error(`${what}${cmd ? ` (${cmd.slice(0, 200)})` : ""}: ${e}`);
+		};
 
 		const sz = Buffer.alloc(8);
 		k.InitializeProcThreadAttributeList(null, 1, 0, ptr(sz)); // fails by design: fills in the size
 		const attr = Buffer.alloc(Number(sz.readBigUInt64LE(0)));
-		if (!k.InitializeProcThreadAttributeList(ptr(attr), 1, 0, ptr(sz))) throw new Error(`InitializeProcThreadAttributeList: ${k.GetLastError()}`);
+		if (!k.InitializeProcThreadAttributeList(ptr(attr), 1, 0, ptr(sz))) fail("InitializeProcThreadAttributeList");
 		// PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: lpValue is the HPCON value itself, cbSize = sizeof(HPCON)
-		if (!k.UpdateProcThreadAttribute(ptr(attr), 0, 0x20016n, this.hpc, 8n, null, null)) throw new Error(`UpdateProcThreadAttribute: ${k.GetLastError()}`);
+		if (!k.UpdateProcThreadAttribute(ptr(attr), 0, 0x20016n, this.hpc, 8n, null, null)) fail("UpdateProcThreadAttribute");
 		const si = Buffer.alloc(112); // STARTUPINFOEXW (x64): cb@0, dwFlags@60, lpAttributeList@104
 		si.writeUInt32LE(112, 0);
 		si.writeUInt32LE(0x100, 60); // STARTF_USESTDHANDLES, null std handles
 		si.writeBigUInt64LE(BigInt(ptr(attr)), 104);
 		const pi = Buffer.alloc(24); // PROCESS_INFORMATION (x64): hProcess@0, hThread@8, pid@16
-		// NUL-terminated UTF-16; the command line must be writable (CreateProcessW may write into it), and a Buffer is
+		// NUL-terminated UTF-16; the command line must be writable (CreateProcessW may write into it), and a Buffer is.
 		const cmd = Buffer.from(cmdline + "\0", "utf16le"), dir = Buffer.from(cwd + "\0", "utf16le");
 		const envBlock = Buffer.from(Object.entries(env).map(([a, b]) => `${a}=${b}`).join("\0") + "\0\0", "utf16le");
-		// EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT; attr, si, cmd, dir and envBlock stay referenced until it returns
-		if (!k.CreateProcessW(null, ptr(cmd), null, null, 0, 0x80000 | 0x400, ptr(envBlock), ptr(dir), ptr(si), ptr(pi)))
-			throw new Error(`CreateProcessW: ${k.GetLastError()}`);
+		this.keep = [attr, si, cmd, dir, envBlock];
+		// EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT
+		if (!k.CreateProcessW(null, ptr(cmd), null, null, 0, 0x80000 | 0x400, ptr(envBlock), ptr(dir), ptr(si), ptr(pi))) fail("CreateProcessW", cmdline);
 		this.hProcess = pi.readBigUInt64LE(0);
 		this.hThread = pi.readBigUInt64LE(8);
 		this.pid = pi.readUInt32LE(16);

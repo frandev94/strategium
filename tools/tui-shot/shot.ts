@@ -121,7 +121,8 @@ let SFX = "", OUT = "", PLUGIN = "", omp = "", edge: string | null = null, PAGE 
 const EXT = join(ROOT, "tools", "tui-shot", "replay-ext.ts"); // dev-only fake provider, always the harness's own copy
 
 function find(opt: string | null, name: string, cands: string[]): string {
-	return opt || cands.find(c => existsSync(c)) || Bun.which(name) || die(`${name} not found: pass --${name}=PATH`);
+	if (opt) return existsSync(opt) ? opt : die(`${name} not found: ${opt}`);
+	return cands.find(c => existsSync(c)) || Bun.which(name) || die(`${name} not found: pass --${name}=PATH`);
 }
 function findPony(): string | null {
 	const dir = join(homedir(), ".omp", "plugins", "cache", "plugins");
