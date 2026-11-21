@@ -14,3 +14,4 @@ These rules apply while a Strategium run is open.
   - MR: the diff summary.
   - A refusal (plan mode) is not an error: the panel then shows its default line.
 - When the user says they are in a meeting or wants silence, call `strategium` `notify` with `on: false` (and `on: true` when they ask back). Never change it on your own.
+- Your agents report milestones with `signal` on their own cockpit rows; a row that turns `blocked` rings the `attention` alarm once: read that agent's question and answer it (IRC or a new brief). Never call `signal` yourself.

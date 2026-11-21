@@ -15,3 +15,4 @@ Output:
 3. Findings: BLOCKING (B1, B2…) / NON-BLOCKING (N1, N2…), each with its ID, file:line, what breaks and the smallest fix.
 4. Over-engineering seen (code-simplification), non-blocking unless it breaks a Merge bar item.
 Retrial: when the task gives finding IDs and a fix range, re-check only those IDs on that range and answer each one FIXED, OPEN or REGRESSION with evidence. Report nothing else except a regression on the fixed lines.
+When the `strategium` tool is available (top-level, or mounted: `write xd://strategium`), call it with `action: "signal"` at once your Merge bar table is done, before the findings (review halfway): `line` names the step in a few words, `pct` your share done, `eta_min` your estimate of the minutes left; `blocked: true` with the reason in `line` only when you cannot go on without an answer. It updates only your own cockpit row; an `ERROR`, `ignored` or a missing tool is not a failure: go on.
