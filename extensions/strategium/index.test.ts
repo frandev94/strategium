@@ -641,6 +641,9 @@ describe("the station in the footer", () => {
 		expect(shown()).toContain("dark-mode · Muster › Begin run and theatre status · ");
 		todo(backToScriptorium);
 		expect(shown()).toContain("dark-mode · ↩ Scriptorium › Redraft squad 2 · ");
+		todo([phase("Muster", ["[captain] Orders", "in_progress"])]);
+		expect(shown()).toContain("dark-mode · Muster › Orders · ");
+		expect(shown()).not.toContain("⏳");
 	});
 
 	test("a user task appended to Debrief shows in the footer and in the CAPTAIN box", async () => {
@@ -3472,6 +3475,18 @@ describe("cockpit", () => {
 			s.todo(sealTodo("in_progress"));
 			s.todo(sealTodo("completed"));
 			expect(await peek(s, ui)).toContain("granted");
+		});
+
+		test("the Muster Orders task is no seal", async () => {
+			const { s, ui } = await running();
+			const lines = recorder(s.dir);
+			const orders = (status: string) => [{ name: "Muster", tasks: [{ content: "[captain] Orders", status }] }];
+			s.todo(orders("in_progress"));
+			s.todo(orders("completed"));
+			await control(s, lines);
+			const t = await peek(s, ui);
+			expect(t).not.toContain("Orders granted");
+			expect(t).not.toContain("seal Orders");
 		});
 	});
 

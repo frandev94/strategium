@@ -30,7 +30,7 @@ const text = (over: Partial<ViewInput> = {}, width = 100) => plain(renderCockpit
 
 // The 8 stations of SKILL.md with the agent tags each one uses, and the boxes each must show.
 const STATIONS: [string, string[], string[]][] = [
-	["Muster", ["captain", "seal"], ["CAPTAIN", "SEAL"]],
+	["Muster", ["captain"], ["CAPTAIN"]],
 	["Auspex", ["scout"], ["SCOUTS"]],
 	["Scriptorium", ["librarian", "archmagos", "seal"], ["LIBRARIANS", "SEAL"]],
 	["Deployment", ["captain"], ["CAPTAIN"]],
@@ -41,7 +41,7 @@ const STATIONS: [string, string[], string[]][] = [
 ];
 /** The run at station `at`: earlier phases completed, its first task in_progress. */
 const run = (at: number): Phase[] =>
-	STATIONS.map(([name, tags], i) => ({ name, tasks: tags.map((tag, j) => ({ content: `[${tag}] ${tag} job`, status: i < at ? "completed" : i === at && j === 0 ? "in_progress" : "pending" })) }));
+	STATIONS.map(([name, tags], i) => ({ name, tasks: tags.map((tag, j) => ({ content: name === "Muster" ? "[captain] Orders" : `[${tag}] ${tag} job`, status: i < at ? "completed" : i === at && j === 0 ? "in_progress" : "pending" })) }));
 // Box titles are the `┌─ TITLE ─` / `╔═ …` tops; a plain icon before the name is dropped.
 const titles = (t: string) => [...t.matchAll(/[┌╔]─ (.+?) ─/g)].map(m => m[1].replace(/^\S+ (?=[A-Z-]+$)/, ""));
 const dep = (over: Partial<Deployed>): Deployed => ({ who: "X", role: "scout", station: "Plan", state: "active", ...over });
@@ -70,6 +70,13 @@ describe("seals", () => {
 		["first seen completed", phases(["[builder] x", "pending"]), phases(["[builder] x", "pending"], ["[seal] Plan", "completed"]), []],
 	])("grantedSeals: %s", (_n, before, after, names) => {
 		expect(grantedSeals(before, after).map(s => s.name)).toEqual(names);
+	});
+
+	test("the Muster Orders captain task is no seal", () => {
+		const orders = (status: string) => phases(["[captain] Orders", status], ["\u{f18bc} captain · Orders", status]);
+		expect(sealsFrom(orders("in_progress"))).toEqual([]);
+		expect(grantedSeals(orders("in_progress"), orders("completed"))).toEqual([]);
+		expect(grantedSeals(orders("pending"), orders("completed"))).toEqual([]);
 	});
 });
 
