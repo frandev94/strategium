@@ -1,3 +1,17 @@
+## [0.2.24] - 2026-11-21
+
+### 🚀 Features
+
+- *(skills)* Plan mode keeps a todo with only the plan stations
+
+### 🐛 Bug Fixes
+
+- *(skills)* A hand-off needs a finished plan todo; todo.ts refuses a flag as a station
+- *(skills)* Decide the plan hand-off by station order
+
+### 📚 Documentation
+
+- *(skills)* Plan-mode todo, the fresh-session rebuild and the proposed plan
 ## [0.2.23] - 2026-11-21
 
 ### 🐛 Bug Fixes
