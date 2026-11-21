@@ -1,6 +1,6 @@
 const USAGE = `Run the real omp + this plugin in a Windows ConPTY, seed a run, and screenshot what the user sees, or replay past regressions. Windows only.
 
-  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
+  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live|signal] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
                              [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png]
   bun tools/tui-shot/shot.ts --replay=NAME | --all  [--plugin=DIR] [--suffix=-x] [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png] [--all-png] [--keep-work]
 
@@ -26,8 +26,8 @@ const SID = "01a1eb00-0000-7000-8000-00000000d3a0", KEY = "demo-shot"; // the se
 type Task = { content: string; status: string };
 type Phase = { name: string; tasks: Task[] };
 type Seed = { where: Record<string, string>; extra: Record<string, unknown>; phases: Phase[]; timed?: number; cockpit?: Record<string, unknown>; live?: Record<string, LiveSeed> };
-// What a child writes in runs/<sid>.live/<agent id>.json (index.ts readLive, contract v1); since/at are minutes before the seed is written, the rest goes as is.
-type LiveSeed = { since: number; at: number; busy: number; done?: number; total?: number; current?: string; intent?: string; tool?: string };
+// What a child writes in runs/<sid>.live/<agent id>.json (index.ts readLive, contract v2: pct, eta_min, line, blocked are what a child's signal writes); since/at are minutes before the seed is written, the rest goes as is.
+type LiveSeed = { since: number; at: number; busy: number; done?: number; total?: number; current?: string; intent?: string; tool?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean };
 const t = (content: string, status: string): Task => ({ content, status });
 const sl = (id: string) => ({ id, parallel: true, files: [] });
 const MUSTER = { name: "Muster", tasks: [t("[captain] Begin run", "completed"), t("[captain] Orders", "completed")] };
@@ -90,6 +90,13 @@ SEEDS.live = { // skirmish with three active agents and one task line, so every 
 		AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, current: "Wire the live rows", tool: "edit", intent: "Editing cockpit.ts" },
 		GammaVeteran: { since: 20, at: 8, busy: 0, tool: "bash", intent: "Running the tests" },
 		DeltaBrother: { since: 3, at: 0, busy: 1, tool: "read", intent: "Reading the writer" } } };
+
+SEEDS.signal = { // live with signals: alpha signals pct/eta/line over its todo, delta is blocked, gamma is a plain row
+	...SEEDS.live,
+	live: {
+		AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, current: "Wire the live rows", tool: "edit", pct: 40, eta_min: 12, line: "Writing the signal tests" },
+		GammaVeteran: { since: 20, at: 0, busy: 1, tool: "bash", intent: "Running the tests" },
+		DeltaBrother: { since: 3, at: 0, busy: 0, tool: "read", intent: "Reading the writer", blocked: true, line: "Waiting for a decision" } } };
 
 // --- args: argparse semantics (--x=v and --x v; --ponytail with an optional value), no prefix abbreviations ---
 export interface Args {
@@ -871,6 +878,13 @@ async function stepsAgentLive(R: Run) {
 	await R.sleep(8);
 	await R.snap("after", true);
 }
+async function stepsAgentSignal(R: Run) {
+	await openSnap(R);
+	// Alpha moves on (70%, ~5m); delta stays blocked, so the alarm must not ring a second time.
+	R.writeLive({ AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, current: "Wire the live rows", pct: 70, eta_min: 5, line: "Writing the signal tests" }, DeltaBrother: { since: 3, at: 0, busy: 0, blocked: true, line: "Waiting for a decision" } });
+	await R.sleep(8);
+	await R.snap("after", true);
+}
 /** The row that follows the squad line of `squad` (live rows sit under the agent's line). */
 const liveRowOf = (s: Snap, squad: string) => {
 	const y = s.rowsText.findIndex(r => new RegExp(`squad ${squad} forging`).test(r));
@@ -885,6 +899,21 @@ function checksAgentLive(C: Ctx) {
 	C.ck("after: delta row shows its new intent", /Searching the reader/.test(liveRowOf(a, "delta")), liveRowOf(a, "delta"), "Searching the reader", a);
 	const stalls = chronicleRows(a).filter(r => /stalled 8m/.test(r));
 	C.ck("after: exactly one 'stalled 8m' row in the CHRONICLE", stalls.length === 1, stalls, "1 row", a);
+	const bad = range(0, a.rows).filter(i => oneOf(a.at(i, 0), "╔║╟╚") && !oneOf(a.at(i, W - 1), "╗║╢╝"));
+	C.ck(`after: every framed row ends at col ${W - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, a);
+}
+
+function checksAgentSignal(C: Ctx) {
+	const o = snapOf(C, "open"), a = snapOf(C, "after"), W = a.cols;
+	const al = liveRowOf(o, "alpha");
+	C.ck("open: alpha row shows the signalled pct, ETA and line", /10m · 40% · ~12m · Writing the signal tests/.test(al), al, "10m · 40% · ~12m · Writing the signal tests", o);
+	C.ck("open: alpha row has no done/total nor the todo's current task", !/\d\/\d|Wire the live rows/.test(al), al, "no 2/5, no current task", o);
+	const de = liveRowOf(o, "delta");
+	C.ck("open: delta row starts with blocked ·", /blocked · 3m · .*Waiting for a decision/.test(de), de, "blocked · 3m · … Waiting for a decision", o);
+	C.ck("open: gamma row is plain (not blocked)", !/blocked/.test(liveRowOf(o, "gamma")), liveRowOf(o, "gamma"), "no blocked", o);
+	C.ck("after: alpha row moved to 70% · ~5m without reopening", /70% · ~5m · Writing the signal tests/.test(liveRowOf(a, "alpha")), liveRowOf(a, "alpha"), "70% · ~5m", a);
+	const bl = chronicleRows(a).filter(r => /blocked/.test(r));
+	C.ck("after: exactly one 'blocked' row in the CHRONICLE", bl.length === 1, bl, "1 row", a);
 	const bad = range(0, a.rows).filter(i => oneOf(a.at(i, 0), "╔║╟╚") && !oneOf(a.at(i, W - 1), "╗║╢╝"));
 	C.ck(`after: every framed row ends at col ${W - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, a);
 }
@@ -912,6 +941,7 @@ export const REPLAYS: Record<string, Replay> = {
 	"select-behind-cockpit": { r: "R10", kind: "KNOWN", seed: "scriptorium", ext: true, steps: stepsSelect, checks: checksSelect },
 	"ponytail-notice": { r: "R16", kind: "OPEN", seed: "scriptorium", ponytail: true, settle: false, steps: stepsPonytail, checks: checksPonytail },
 	"agent-live": { r: "R20,#114", kind: "FIXED", seed: "live", steps: stepsAgentLive, checks: checksAgentLive },
+	"agent-signal": { r: "R21,#115", kind: "FIXED", seed: "signal", steps: stepsAgentSignal, checks: checksAgentSignal },
 	"cockpit-restart": { r: "#19", kind: "FIXED", seed: "restart", steps: stepsCockpitRestart, checks: checksCockpitRestart },
 };
 
