@@ -620,7 +620,7 @@ describe("the station in the footer", () => {
 	test("an active seal task waits for the user, with or without glyph tags, and carries no task", () => {
 		expect(whereFrom(waitingForPlan)).toEqual({ station: "Scriptorium", seal: "Plan" });
 		expect(whereFrom([phase("Scriptorium", ["\u{f047a} seal · Plan the squads", "in_progress"])])).toEqual({ station: "Scriptorium", seal: "Plan the squads" });
-		expect(whereFrom([phase("Scriptorium", ["[seal] UI (2)", "in_progress"])])).toEqual({ station: "Scriptorium", seal: "UI (2)" });
+		expect(whereFrom([phase("Scriptorium", ["[seal] Demo (2)", "in_progress"])])).toEqual({ station: "Scriptorium", seal: "Demo (2)" });
 	});
 	test("the task drops a bracket tag or a glyph tag", () => {
 		expect(whereFrom([phase("Muster", ["[captain] Begin run and theatre status", "in_progress"])])?.task).toBe("Begin run and theatre status");
@@ -4443,12 +4443,12 @@ describe("cockpit", () => {
 					expect(t).toContain("the details are in the Captain's message");
 				});
 
-				test("UI (2) is whole in the footer, the chronicle and the grant line", async () => {
-					const { s, ui } = await sealed("UI (2)");
-					expect(s.shown()).toContain("seal UI (2)");
-					expect(await chron(s, ui)).toContain("seal UI (2) awaits the Chapter Master");
-					s.todo(granted("UI (2)"));
-					expect(await chron(s, ui)).toContain("UI (2) granted");
+				test("Demo (2) is whole in the footer, the chronicle and the grant line", async () => {
+					const { s, ui } = await sealed("Demo (2)");
+					expect(s.shown()).toContain("seal Demo (2)");
+					expect(await chron(s, ui)).toContain("seal Demo (2) awaits the Chapter Master");
+					s.todo(granted("Demo (2)"));
+					expect(await chron(s, ui)).toContain("Demo (2) granted");
 				});
 			});
 		});

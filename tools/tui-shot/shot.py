@@ -23,7 +23,7 @@ def t(c, s): return {"content": c, "status": s}
 def sl(i): return {"id": i, "parallel": True, "files": []}
 MUSTER = {"name": "Muster", "tasks": [t("[captain] Begin run", "completed"), t("[captain] Orders", "completed")]}
 AUSPEX = {"name": "Auspex", "tasks": [t("[scout] Map the cockpit code", "completed")]}
-INQ = {"name": "Inquisition", "tasks": [t("[inquisitor] Review the branch", "pending"), t("[seal] UI", "pending")]}
+INQ = {"name": "Inquisition", "tasks": [t("[inquisitor] Review the branch", "pending"), t("[seal] Demo", "pending")]}
 SCRIPTORIUM = {"name": "Scriptorium", "tasks": [t("[librarian] Plan area cockpit", "completed"), t("[librarian] Plan area docs", "completed"),
                                                 t("[archmagos] Merge the plan", "completed"), t("[seal] Plan", "in_progress")]}
 SEEDS = {
@@ -415,9 +415,9 @@ def steps_seal_row(R): R.snap("screen"); open_snap(R)
 def checks_seal_row(C):
     sc, o = C.s["screen"], C.s["open"]; y = o.where("SEALS")
     C.ck("footer has seal Plan", sc.has("seal Plan"), None, "seal Plan", sc)
-    # chain: waiting glyph (1 cell, then padding spaces) Plan, then ' → ', then '○ UI'
-    m = re.search("\U000f051f( +)Plan → ○ UI", o.row(y)) if y >= 0 else None
-    C.ck("SEALS row is '<U+F051F> Plan → ○ UI', glyph 1 cell", bool(m) and (y, m.start()) not in o.wide, o.row(y), None, o)
+    # chain: waiting glyph (1 cell, then padding spaces) Plan, then ' → ', then '○ Demo'
+    m = re.search("\U000f051f( +)Plan → ○ Demo", o.row(y)) if y >= 0 else None
+    C.ck("SEALS row is '<U+F051F> Plan → ○ Demo', glyph 1 cell", bool(m) and (y, m.start()) not in o.wide, o.row(y), None, o)
     C.ck("no SEAL ─ box title", not any("SEAL ─" in r for r in o.rows_text), None, None, o)
     C.ck("panel title SEAL PLAN · awaits you", o.has("SEAL PLAN · awaits you"), None, None, o)
     C.ck("panel default line", o.has("the details are in the Captain's message"), None, None, o)
