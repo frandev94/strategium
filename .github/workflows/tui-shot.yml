@@ -25,8 +25,6 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      PYTHONUTF8: "1"
-      PYTHONUNBUFFERED: "1"
       OMP: '${{ github.workspace }}\node_modules\.bin\omp.exe'
       # runner.* is not available in jobs.<id>.env; OUT is derived in the steps from $RUNNER_TEMP.
     steps:
@@ -36,7 +34,7 @@ jobs:
       - name: Replays
         id: replays
         shell: bash
-        run: python tools/tui-shot/shot.py --all --no-png --omp="$OMP" --out="$RUNNER_TEMP/tui-shot" 2>&1 | tee "$RUNNER_TEMP/tui-shot.log"
+        run: bun tools/tui-shot/shot.ts --all --no-png --omp="$OMP" --out="$RUNNER_TEMP/tui-shot" 2>&1 | tee "$RUNNER_TEMP/tui-shot.log"
       - name: Summary table
         # Also on green: the table is the only place that shows which KNOWN scenarios still pin an upstream limit.
         if: always() && steps.replays.outcome != 'skipped'
@@ -52,7 +50,7 @@ jobs:
         run: |
           # Scenario-level lines start at column 0 ("FAIL NAME (R)"); per-check lines are indented. At most 5 reruns.
           sed -n 's/^FAIL \([^ ]*\) .*/\1/p' "$RUNNER_TEMP/tui-shot.log" | tr -d '\r' | sort -u | head -5 | while read -r n; do
-            python tools/tui-shot/shot.py --replay="$n" --all-png --omp="$OMP" --out="$RUNNER_TEMP/tui-shot/rerun" || true
+            bun tools/tui-shot/shot.ts --replay="$n" --all-png --omp="$OMP" --out="$RUNNER_TEMP/tui-shot/rerun" || true
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
