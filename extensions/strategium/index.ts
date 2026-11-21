@@ -1454,20 +1454,20 @@ export default function (pi: ExtensionAPI) {
 					}
 					dropFiles(prevSid);
 					beat(sid);
-					const n = notifyBySession.get(prevSid);
-					if (n !== undefined) notifyBySession.set(sid, n);
-					const sound = soundBySession.get(prevSid);
-					if (sound !== undefined) soundBySession.set(sid, sound);
-					const toast = toastBySession.get(prevSid);
-					if (toast !== undefined) toastBySession.set(sid, toast);
-					const vol = volumeBySession.get(prevSid);
-					if (vol !== undefined) volumeBySession.set(sid, vol);
-					const idle = idleBySession.get(prevSid);
-					if (idle !== undefined) idleBySession.set(sid, idle);
-					const arch = archmagosBySession.get(prevSid);
-					if (arch !== undefined) archmagosBySession.set(sid, arch);
-					const commit = commitBySession.get(prevSid);
-					if (commit !== undefined) commitBySession.set(sid, commit);
+					// The old id must not keep a setting its run took away.
+					for (const m of [
+						notifyBySession,
+						soundBySession,
+						toastBySession,
+						volumeBySession,
+						idleBySession,
+						archmagosBySession,
+						commitBySession,
+					] as Map<string, unknown>[]) {
+						const v = m.get(prevSid);
+						if (v !== undefined) m.set(sid, v);
+						m.delete(prevSid);
+					}
 				} catch {
 					// Another session took the key meanwhile: the run stays where it is.
 				}

@@ -1567,14 +1567,22 @@ describe("the run follows an approved plan", () => {
 	});
 
 	test("a claim error during the move does not break the session switch", async () => {
-		const { s, sm, ctx } = await owner();
+		const { s, sm, ctx, notes } = await owner();
 		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		await s.commands["strategium-config"].handler("archmagos on", ctx);
 		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "execute" }, ctx);
-		// Another session took the key over meanwhile.
-		writeFileSync(lockPath(s.dir, "K-1"), "sess-X");
+		// Another session is taking the key over right now: a fresh takeover guard makes claim throw while sess-A still holds the lock.
+		writeFileSync(`${lockPath(s.dir, "K-1")}.force`, `sess-X ${Date.now()}`);
 		sm.sid = "sess-B";
 		await emit(s, "session_switch", { reason: "new" }, ctx);
-		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-X");
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-A");
+		const cfg = async (sid: string) => {
+			sm.sid = sid;
+			await s.commands["strategium-config"].handler("", ctx);
+			return notes.at(-1) ?? "";
+		};
+		expect(await cfg("sess-B")).toContain("archmagos: off (STRATEGIUM_ARCHMAGOS)");
+		expect(await cfg("sess-A")).toContain("archmagos: on (this session)");
 		// The switch did not throw, and nothing moved to the new session.
 		expect(files(s.dir, "sess-B").run).toBe(false);
 	});
@@ -1623,6 +1631,40 @@ describe("the run follows an approved plan", () => {
 		sm.sid = "sess-B";
 		await emit(s, "session_switch", { reason: "new" }, ctx);
 		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-B");
+	});
+
+	test("every per-session setting moves with an approved plan and leaves the old session id", async () => {
+		const s = setup("sess-A");
+		await s.call({ action: "begin", key: "K-1" });
+		const notes: string[] = [];
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer, notes);
+		await s.handlers.session_start[0]({}, ctx);
+		const config = (args = "") => s.commands["strategium-config"].handler(args, ctx);
+		for (const a of ["notify off", "sound off", "toast off", "volume 40", "idle 7", "archmagos on", "commit on"]) await config(a);
+		await s.handlers.plan_review_requested[0]({ sessionId: "sess-A" }, ctx);
+		await s.handlers.plan_review_resolved[0]({ sessionId: "sess-A", choice: "execute" }, ctx);
+		sm.sid = "sess-B";
+		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
+		const mine = ["notify: off", "sound: off", "volume: 40", "toast: off", "idle: 7 min", "archmagos: on", "commit: on"];
+		await config();
+		for (const l of mine) expect(notes.at(-1)).toContain(`${l} (this session)`);
+		sm.sid = "sess-A";
+		await config();
+		const old = notes.at(-1) ?? "";
+		expect(old).not.toContain("(this session)");
+		expect(old).toMatch(/volume: \d+ \(default\)/);
+		for (const l of [
+			"notify: on (STRATEGIUM_NOTIFY)",
+			"sound: on (STRATEGIUM_SOUND)",
+			"toast: on (STRATEGIUM_TOAST)",
+			"idle: 3 min (STRATEGIUM_IDLE_MIN)",
+			"archmagos: off (STRATEGIUM_ARCHMAGOS)",
+			"commit: off (STRATEGIUM_COMMIT)",
+		])
+			expect(old).toContain(l);
+		sm.sid = "sess-B";
+		await config();
+		for (const l of mine) expect(notes.at(-1)).toContain(`${l} (this session)`);
 	});
 });
 
@@ -2150,6 +2192,9 @@ describe("the archmagos setting", () => {
 		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
 		await s.commands["strategium-config"].handler("", ctx);
 		expect(notes.at(-1)).toContain("archmagos: on (this session)");
+		sm.sid = "sess-A";
+		await s.commands["strategium-config"].handler("", ctx);
+		expect(notes.at(-1)).toContain("archmagos: off (STRATEGIUM_ARCHMAGOS)");
 	});
 
 	test("begin archmagos: true marks the run, a same-key begin keeps it, archmagos: false clears it", async () => {
@@ -2221,6 +2266,9 @@ describe("the commit setting", () => {
 		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
 		await s.commands["strategium-config"].handler("", ctx);
 		expect(notes.at(-1)).toContain("commit: on (this session)");
+		sm.sid = "sess-A";
+		await s.commands["strategium-config"].handler("", ctx);
+		expect(notes.at(-1)).toContain("commit: off (STRATEGIUM_COMMIT)");
 	});
 });
 
