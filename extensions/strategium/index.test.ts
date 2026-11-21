@@ -4825,3 +4825,200 @@ describe("cost tiers", () => {
 		});
 	});
 });
+
+describe("the remote guard", () => {
+	type Verdict = { block?: true; reason?: string } | undefined;
+	// A real subagent has its own session manager (its own id) and learns nothing of its parent; it never passed through a Captain tool_call.
+	async function held(sid: string) {
+		const s = setup(sid);
+		await s.call({ action: "begin", key: "K-1" });
+		const subCtx = { ...s.ctx, sessionManager: { getSessionId: () => `${sid}-child` }, agent: { kind: "sub", id: "0-X", parentId: "Main" } };
+		const tool = (toolName: string, input: unknown, ctx: unknown = s.ctx) => s.handlers.tool_call[0]({ toolName, input }, ctx) as Verdict;
+		const sub = (toolName: string, input: unknown) => tool(toolName, input, subCtx);
+		return { s, tool, sub };
+	}
+
+	test("a subagent's ssh, scp, rsync, sftp and ansible-playbook without --check are refused while its Captain holds a run", async () => {
+		const { sub } = await held("sess-remote-1");
+		for (const command of ["ssh h", "scp a box:/x", "rsync a box:/x", "sftp h", "ansible-playbook -i inv.yml site.yml"]) {
+			const why = sub("bash", { command })?.reason;
+			expect(why).toContain("agents reach no remote machine during a run");
+			expect(why).toContain("strategium action targets");
+		}
+		expect(sub("bash", { command: "ansible-playbook -i inv.yml --check site.yml" })).toBeUndefined();
+		expect(sub("bash", { command: "ssh-keygen -l -f k" })).toBeUndefined();
+		expect(sub("bash", { command: "bun test" })).toBeUndefined();
+	});
+
+	test("the Captain's ssh is refused before Apply, allowed after apply for that host, and a subagent stays refused", async () => {
+		const { s, tool, sub } = await held("sess-remote-2");
+		const before = tool("bash", { command: "ssh h" })?.reason;
+		expect(before).toContain("Apply");
+		expect(before).toContain("strategium action apply");
+		expect(await s.call({ action: "apply", hosts: ["h"] })).toBe("APPLY h");
+		expect(tool("bash", { command: "ssh h uptime" })).toBeUndefined();
+		expect(tool("bash", { command: "ssh other" })?.reason).toContain("Apply");
+		expect(sub("bash", { command: "ssh h" })?.reason).toContain("strategium action targets");
+		expect(await s.call({ action: "apply", hosts: ["g"] })).toBe("APPLY h, g");
+	});
+
+	test("ssh:// in read, write and grep is refused for the Captain", async () => {
+		const { tool } = await held("sess-remote-3");
+		expect(tool("read", { path: "ssh://h/etc/hosts" })?.reason).toContain("Apply");
+		expect(tool("write", { path: "ssh://h/tmp/x", content: "c" })?.reason).toContain("Apply");
+		expect(tool("grep", { pattern: "x", path: "ssh://h/etc" })?.reason).toContain("Apply");
+		expect(tool("read", { path: "ssh://" })).toBeUndefined();
+	});
+
+	test("ssh:// in read, write and grep is refused for a subagent", async () => {
+		const { sub } = await held("sess-remote-4");
+		for (const [name, input] of [
+			["read", { path: "ssh://h/etc/hosts" }],
+			["write", { path: "ssh://h/tmp/x", content: "c" }],
+			["grep", { pattern: "x", path: "src;ssh://h/etc" }],
+		] as const)
+			expect(sub(name, input)?.reason).toContain("strategium action targets");
+	});
+
+	test("a declared throwaway target is allowed to a subagent and to the Captain, other hosts are not", async () => {
+		const { s, tool, sub } = await held("sess-remote-5");
+		expect(await s.call({ action: "targets", hosts: ["box"] })).toBe("TARGETS box");
+		expect(sub("bash", { command: "ssh box uptime" })).toBeUndefined();
+		expect(sub("read", { path: "ssh://box/x" })).toBeUndefined();
+		expect(tool("bash", { command: "ssh box uptime" })).toBeUndefined();
+		expect(tool("read", { path: "ssh://box/x" })).toBeUndefined();
+		expect(sub("bash", { command: "ssh prod" })?.block).toBe(true);
+		expect(tool("bash", { command: "scp a prod:/x" })?.block).toBe(true);
+		expect(await s.call({ action: "targets", hosts: [] })).toBe("TARGETS none");
+		expect(sub("bash", { command: "ssh box" })?.block).toBe(true);
+	});
+
+	test("with no run neither the Captain nor a subagent is guarded, and neither is after the run ends", async () => {
+		const s = setup("sess-remote-6");
+		const subCtx = { ...s.ctx, sessionManager: { getSessionId: () => "sess-remote-6-child" }, agent: { kind: "sub" } };
+		const call = (ctx: unknown) => s.handlers.tool_call[0]({ toolName: "bash", input: { command: "ssh h" } }, ctx) as Verdict;
+		expect(call(s.ctx)).toBeUndefined();
+		expect(call(subCtx)).toBeUndefined();
+		await s.call({ action: "begin", key: "K-1" });
+		expect(call(s.ctx)?.block).toBe(true);
+		expect(call(subCtx)?.block).toBe(true);
+		await s.call({ action: "end" });
+		expect(call(s.ctx)).toBeUndefined();
+		expect(call(subCtx)).toBeUndefined();
+	});
+
+	test("the guard applies to the Captain before the repo is set, and after", async () => {
+		const { s, tool } = await held("sess-remote-7");
+		expect(tool("bash", { command: "ssh h" })?.block).toBe(true);
+		await s.call({ action: "repo", repo: s.dir });
+		expect(tool("bash", { command: "ssh h" })?.block).toBe(true);
+	});
+
+	test("targets and apply need a run and clean hosts", async () => {
+		const s = setup("sess-remote-8");
+		expect(await s.call({ action: "targets", hosts: ["box"] })).toBe("ERROR no active run in this session");
+		expect(await s.call({ action: "apply", hosts: ["box"] })).toBe("ERROR no active run in this session");
+		await s.call({ action: "begin", key: "K-1" });
+		for (const action of ["targets", "apply"]) {
+			expect(await s.call({ action, hosts: ["bad host"] })).toContain("ERROR");
+			expect(await s.call({ action, hosts: [""] })).toContain("ERROR");
+			expect(await s.call({ action, hosts: [" "] })).toContain("ERROR");
+		}
+		expect(await s.call({ action: "apply", hosts: [] })).toBe("APPLY none");
+		expect(await s.call({ action: "targets" })).toContain("ERROR");
+		expect(await s.call({ action: "targets", hosts: [" box "] })).toBe("TARGETS box");
+	});
+
+	test("targets and apply are kept on the run file", async () => {
+		const { s } = await held("sess-remote-9");
+		await s.call({ action: "targets", hosts: ["box", "inv/x.yml"] });
+		await s.call({ action: "apply", hosts: ["h"] });
+		const file = join(s.dir, "runs", "sess-remote-9.json");
+		const saved = JSON.parse(readFileSync(file, "utf8"));
+		expect(saved.targets).toEqual(["box", "inv/x.yml"]);
+		expect(saved.applied).toEqual(["h"]);
+	});
+
+	test("a subagent call with no prior Captain tool call is refused during a run (workers share no module state), and passes with no run", async () => {
+		const s = setup("sess-remote-10");
+		const subCtx = { ...s.ctx, sessionManager: { getSessionId: () => "sess-remote-10-child" }, agent: { kind: "sub" } };
+		const call = () => s.handlers.tool_call[0]({ toolName: "bash", input: { command: "ssh h" } }, subCtx) as Verdict;
+		expect(call()).toBeUndefined();
+		await s.call({ action: "begin", key: "K-1" });
+		expect(call()?.block).toBe(true);
+		await s.call({ action: "end" });
+		expect(call()).toBeUndefined();
+	});
+
+	test("a run that belongs to another process does not guard this process's subagents", async () => {
+		const { s, sub } = await held("sess-remote-11");
+		const file = join(s.dir, "runs", "sess-remote-11.json");
+		writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), pid: process.pid + 1 }));
+		expect(sub("bash", { command: "ssh h" })).toBeUndefined();
+	});
+
+	test("a session that resumes a run takes its pid", async () => {
+		const { s, sub } = await held("sess-remote-12");
+		const file = join(s.dir, "runs", "sess-remote-12.json");
+		writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), pid: process.pid + 1 }));
+		await s.start();
+		expect(JSON.parse(readFileSync(file, "utf8")).pid).toBe(process.pid);
+		expect(sub("bash", { command: "ssh h" })?.block).toBe(true);
+	});
+
+	test("after session_shutdown a subagent call passes and the run file stays for the resume", async () => {
+		const { s, sub } = await held("sess-remote-13");
+		expect(sub("bash", { command: "ssh h" })?.block).toBe(true);
+		s.handlers.session_shutdown[0]({}, s.ctx);
+		expect(sub("bash", { command: "ssh h" })).toBeUndefined();
+		expect(existsSync(join(s.dir, "runs", "sess-remote-13.json"))).toBe(true);
+	});
+
+	test("a subagent call that reaches nothing remote reads no run file", async () => {
+		const { s, sub } = await held("sess-remote-14");
+		// With a file where the runs directory was, reading the runs would throw: only the pre-check keeps a local call away from it.
+		rmSync(join(s.dir, "runs"), { recursive: true });
+		writeFileSync(join(s.dir, "runs"), "not a directory");
+		expect(sub("bash", { command: "ls" })).toBeUndefined();
+		expect(sub("read", { path: "README.md" })).toBeUndefined();
+		expect(() => sub("bash", { command: "ssh h" })).toThrow();
+	});
+
+	test("with two sessions in one process, any held run that refuses a subagent call refuses it, in both name orders", async () => {
+		for (const [first, second] of [["sess-aa", "sess-zz"], ["sess-zz", "sess-aa"]]) {
+			const a = setup(first);
+			await a.call({ action: "begin", key: `K-${first}` });
+			await a.call({ action: "targets", hosts: ["prod"] });
+			const b = setup(second, a.dir);
+			await b.call({ action: "begin", key: `K-${second}` });
+			const subCtx = { ...b.ctx, sessionManager: { getSessionId: () => "child" }, agent: { kind: "sub" } };
+			for (const s of [a, b]) {
+				const r = s.handlers.tool_call[0]({ toolName: "bash", input: { command: "ssh prod" } }, subCtx) as Verdict;
+				expect(r?.block).toBe(true);
+			}
+		}
+	});
+
+	test("apply with hosts [] clears the grant, and status shows the lists while they are set", async () => {
+		const { s } = await held("sess-remote-15");
+		await s.call({ action: "targets", hosts: ["box"] });
+		await s.call({ action: "apply", hosts: ["h", "g"] });
+		const status = await s.call({ action: "status" });
+		expect(status).toContain("TARGETS box");
+		expect(status).toContain("APPLIED h, g");
+		expect(await s.call({ action: "apply", hosts: [] })).toBe("APPLY none");
+		await s.call({ action: "targets", hosts: [] });
+		const cleared = await s.call({ action: "status" });
+		expect(cleared).not.toContain("TARGETS");
+		expect(cleared).not.toContain("APPLIED");
+		expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-remote-15.json"), "utf8")).applied).toBeUndefined();
+	});
+
+	test("status with no targets or applied has no blank lines", async () => {
+		const { s } = await held("sess-remote-16");
+		const lines = (await s.call({ action: "status" })).split("\n");
+		expect(lines).not.toContain("");
+		expect(lines[1]).toBe("RUN K-1 theatre=none repo=none session=emote-16 (this session)");
+		expect(lines[2]).toStartWith("ARCHMAGOS");
+	});
+});
