@@ -41,7 +41,7 @@ const STATIONS: [string, string[], string[]][] = [
 ];
 /** The run at station `at`: earlier phases completed, its first task in_progress. */
 const run = (at: number): Phase[] =>
-	STATIONS.map(([name, tags], i) => ({ name, tasks: tags.map((tag, j) => ({ content: name === "Muster" ? "[captain] Orders" : `[${tag}] ${tag} job`, status: i < at ? "completed" : i === at && j === 0 ? "in_progress" : "pending" })) }));
+	STATIONS.map(([name, tags], i) => ({ name, tasks: tags.map((tag, j) => ({ content: `[${tag}] ${tag} job`, status: i < at ? "completed" : i === at && j === 0 ? "in_progress" : "pending" })) }));
 // Box titles are the `┌─ TITLE ─` / `╔═ …` tops; a plain icon before the name is dropped.
 const titles = (t: string) => [...t.matchAll(/[┌╔]─ (.+?) ─/g)].map(m => m[1].replace(/^\S+ (?=[A-Z-]+$)/, ""));
 const dep = (over: Partial<Deployed>): Deployed => ({ who: "X", role: "scout", station: "Plan", state: "active", ...over });
