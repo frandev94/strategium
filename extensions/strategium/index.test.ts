@@ -1573,11 +1573,26 @@ describe("the run follows an approved plan", () => {
 		const waiting = count("seal Plan awaits");
 		const init = [phase("Plan", ["[seal] Plan", "completed"]), phase("Muster", ["[captain] Objective", "in_progress"]), phase("Deployment", ["[captain] Branch and squads", "pending"])];
 		await todoResult(s, ctx, "init", init);
+		expect(chronicle()).not.toContain("station Muster");
 		expect(count("Plan granted")).toBe(1);
 		expect(count("seal Plan awaits")).toBe(waiting);
 		const done = [phase("Plan", ["[seal] Plan", "completed"]), phase("Muster", ["[captain] Objective", "completed"]), phase("Deployment", ["[captain] Branch and squads", "in_progress"])];
 		await todoResult(s, ctx, "done", done);
 		expect(count("Plan granted")).toBe(1);
+	});
+
+	test("a reverse init (to Scriptorium) while a Skirmish seal waits is no hand-off: no grant logged", async () => {
+		const { s, ctx } = await owner();
+		await todoResult(s, ctx, "start", [
+			phase("Deployment", ["[captain] Branch and squads", "completed"]),
+			phase("Skirmish", ["[battle-brother] Squads", "completed"], ["[seal] Demo", "in_progress"]),
+			phase("Inquisition", ["[inquisitor] Review", "pending"]),
+			phase("Debrief", ["[captain] Debrief", "pending"]),
+		]);
+		await todoResult(s, ctx, "init", [phase("Scriptorium", ["[librarian] Plan", "in_progress"], ["[seal] Plan", "pending"])]);
+		const log = (JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.cockpit"), "utf8")).chronicle as { text: string }[]).map(e => e.text);
+		expect(log.filter(t => t.includes("Demo granted"))).toEqual([]);
+		expect(log).not.toContain("station Muster");
 	});
 
 	test("squads declared in plan mode survive approve and execute", async () => {

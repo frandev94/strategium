@@ -90,7 +90,10 @@ if (import.meta.main) {
 	});
 	const [file] = positionals;
 	try {
-		for (const f of ["from", "to"] as const) if (values[f] === true) throw new Error(`--${f} needs a station`);
+		for (const f of ["from", "to"] as const) {
+			const v = values[f];
+			if (v === true || (typeof v === "string" && v.startsWith("--"))) throw new Error(`--${f} needs a station`);
+		}
 		const text = file ? await Bun.file(file).text() : await Bun.stdin.text();
 		const str = (v: unknown) => (typeof v === "string" ? v : undefined);
 		const calls = buildTodo(text, { glyphs: glyphsFromEnv(), append: values.append === true, from: str(values.from), to: str(values.to) });

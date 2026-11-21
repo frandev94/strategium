@@ -191,6 +191,12 @@ describe("station filters", () => {
 		expect(r.stderr.toString()).toContain(`--${flag} needs a station`);
 	});
 
+	test.each(["from", "to"])("the CLI treats --%s followed by another flag as missing its station", flag => {
+		const r = Bun.spawnSync(["bun", `${import.meta.dir}/todo.ts`, `--${flag}`, "--append"], { stdin: Buffer.from(five) });
+		expect(r.exitCode).toBe(1);
+		expect(r.stderr.toString()).toContain(`--${flag} needs a station`);
+	});
+
 	test("SKILL.md's skeleton splits into plan stations and the rest", async () => {
 		const skill = await Bun.file(`${import.meta.dir}/SKILL.md`).text();
 		const m = skill.replace(/\r\n/g, "\n").match(/\n( *)bun [^\n]*todo\.ts" <<'EOF'\n([\s\S]*?)\n\1EOF/);

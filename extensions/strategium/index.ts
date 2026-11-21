@@ -112,8 +112,8 @@ const isRebuild = (op: string | undefined, before: Phase[] | undefined, after: P
 	op === "init" && !!before?.length && !!after?.some(p => before.some(b => b.name === p.name));
 
 /** The plan-mode hand-off: a non-empty init replacing non-empty phases without sharing a station. An empty init is not one. */
-const isHandOff = (op: string | undefined, before: Phase[] | undefined, after: Phase[] | undefined) =>
-	op === "init" && !!before?.length && !!after?.length && !isRebuild(op, before, after);
+const isHandOff = (op: string | undefined, before: Phase[] | undefined, after: Phase[] | undefined): before is Phase[] =>
+	op === "init" && !!before?.length && !before.some(p => p.tasks.some(t => t.status === "pending")) && !!after?.length && !isRebuild(op, before, after);
 
 /**
  * The run's KEY from the objective as /strategium parsed it: a key as given, a `@file`'s base name, or the first words of "free text".
@@ -1858,7 +1858,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		if (now && now.station !== was?.station) log(run.key, "STRATEGOS", `station ${now.station}`);
 		if (now?.seal && now.seal !== was?.seal) log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
 		// A hand-off (plan stations replaced by the remaining ones) is the approval: the seal that waited is granted.
-		const handedOff = before && isHandOff(details?.op, before, phases) ? waitingSeal(before) : undefined;
+		const handedOff = isHandOff(details?.op, before, phases) ? waitingSeal(before) : undefined;
 		for (const seal of handedOff ? [handedOff] : grantedSeals(before, phases)) {
 			log(run.key, "✠ SEAL", `${seal.id} granted`, "seal");
 			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.id} granted`, ctx);
