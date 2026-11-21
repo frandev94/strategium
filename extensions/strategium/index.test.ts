@@ -805,6 +805,17 @@ describe("the station in the footer", () => {
 		expect(shown()).toContain("dark-mode · \u{f054c}  Scriptorium › Redraft squad 2 · ");
 	});
 
+	test("the footer shows a seal name cleaned and cut at 32, like a task", async () => {
+		const { call, todo, start, shown } = setup();
+		await call({ action: "begin", key: "dark-mode" });
+		start();
+		todo([phase("Scriptorium", [`[seal] ${"S".repeat(60)}`, "in_progress"])]);
+		expect(shown()).toContain(`seal ${"S".repeat(31)}… · `);
+		todo([phase("Scriptorium", ["[seal] Plan\x1b]0;pwn\x07", "in_progress"])]);
+		expect(shown()).not.toContain("\x1b]");
+		expect(shown()).toContain("seal Plan ]0;pwn  · ");
+	});
+
 	test("the station survives a restart of omp", async () => {
 		const first = setup("sess-0001");
 		await first.call({ action: "begin", key: "dark-mode" });
@@ -4254,6 +4265,28 @@ describe("cockpit", () => {
 					const { s, ui } = await sealed();
 					expect(await s.call({ action: "seal" })).toBe("SEAL Plan panel 0 lines");
 					expect(await peek(s, ui)).toContain("the details are in the Captain's message");
+				});
+
+				test("trailing blank lines are dropped before storing and counting; all blank stores none", async () => {
+					const { s } = await sealed();
+					expect(await s.call({ action: "seal", lines: ["a", "", "  ", "\x1b\t"] })).toBe("SEAL Plan panel 1 lines");
+					expect(saved(s.dir).seal.lines).toEqual(["a"]);
+					expect(await s.call({ action: "seal", lines: ["", " "] })).toBe("SEAL Plan panel 0 lines");
+					expect(saved(s.dir).seal.lines).toEqual([]);
+				});
+
+				test("an oversized seal file is capped on load like the action caps it", async () => {
+					const { s } = await sealed();
+					await s.call({ action: "seal", lines: ["x"] });
+					const lines = Array.from({ length: 300 }, (_, i) => `L${i}:${"y".repeat(900)}`);
+					writeFileSync(cockpitFile(s.dir), JSON.stringify({ ...saved(s.dir), seal: { id: "Plan", lines } }));
+					const again = await restart(s, true);
+					await again.s.sub("cockpit");
+					const comp = again.ui.opened.at(-1)!.component;
+					const raw = plain(comp.render(2000).join("\n"));
+					comp.handleInput!("q");
+					expect(raw).not.toContain("y".repeat(501));
+					expect(raw).not.toContain("L250:");
 				});
 
 				test("control characters become spaces: an escape sequence never reaches the overlay or the file", async () => {

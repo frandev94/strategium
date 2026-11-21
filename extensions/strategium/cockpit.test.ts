@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	activePhase,
 	closes,
+	clean,
 	cockpitView,
 	colorDepth,
 	grantedSeals,
@@ -893,6 +894,10 @@ describe("seal panel hardening", () => {
 		expect(noControls(raw)).toBe(false);
 		expect(plain(raw)).toContain("a ]0;PWN tail");
 		expect(plain(raw)).toContain("b evil x  y z");
+	});
+
+	test("clean turns LRM, RLM and ALM into spaces", () => {
+		expect(clean("a\u200eb\u200fc\u061cd")).toBe("a b c d");
 	});
 
 	test("a waiting seal's name is cleaned in the chain, the station note and the panel title", () => {

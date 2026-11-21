@@ -51,7 +51,7 @@ export function palette(depth: Depth, theme: Theme = THEMES[DEFAULT_THEME]): Pal
 }
 
 /** Text from the model or a file, made safe to print: control characters (ESC, TAB, CR, LF, DEL, C1), bidi overrides and line/paragraph separators become spaces. */
-export const clean = (s: string) => s.replace(/[\p{Cc}\u202a-\u202e\u2066-\u2069\u2028\u2029]/gu, " ");
+export const clean = (s: string) => s.replace(/[\p{Cc}\u202a-\u202e\u2066-\u2069\u2028\u2029\u200e\u200f\u061c]/gu, " ");
 
 export function sealsFrom(phases: Phase[]): Seal[] {
 	const out: Seal[] = [];
@@ -254,7 +254,7 @@ function fit(line: string, width: number): string {
 			w += tw;
 		}
 	}
-	return line;
+	return `${out}…${RESET}`;
 }
 
 const kindTone: Record<Kind, Tone> = { active: "green", done: "green", failed: "red", idle: "iron" };

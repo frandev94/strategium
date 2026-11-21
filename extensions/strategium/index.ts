@@ -96,7 +96,9 @@ export function whereFrom(phases: Phase[]): Where | undefined {
 	const i = phases.findIndex(p => p.tasks.some(t => t.status === "in_progress"));
 	if (i < 0) return undefined;
 	const task = phases[i].tasks.find(t => t.status === "in_progress")!;
-	const seal = waitingSeal([phases[i]])?.id;
+	const sealId = waitingSeal(phases)?.id;
+	const sealChars = [...clean(sealId ?? "")];
+	const seal = sealId === undefined ? undefined : sealChars.length > 32 ? `${sealChars.slice(0, 31).join("")}…` : sealChars.join("");
 	const back = phases.slice(i + 1).some(p => p.tasks.some(t => t.status === "completed"));
 	// A seal keeps its own form. Other tasks show their text without the agent tag (`[agent] ` or `<glyph> agent · `), cut at 32.
 	const text = seal ? "" : task.content.replace(/^\s*(?:\[[\w-]+\]|[^\w\s[]+\s*[\w-]+\s*·)\s*/u, "").trim();
@@ -891,7 +893,7 @@ export default function (pi: ExtensionAPI) {
 			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP);
 			cockpit.notes = saved.notes;
 			for (const [id, job] of saved.deployed as [string, Deployed][]) cockpit.deployed.set(id, job);
-			cockpit.seal = saved.seal;
+			cockpit.seal = saved.seal && { id: saved.seal.id, lines: saved.seal.lines.slice(0, SEAL_LINES).map((l: string) => l.slice(0, SEAL_LINE_CHARS)) };
 			cockpit.dirty = false;
 		} catch {
 			resetCockpit(key);
@@ -1224,6 +1226,7 @@ export default function (pi: ExtensionAPI) {
 						if (!waiting) return text("ERROR no seal waits; start its [seal] task first");
 						// Lines come from the model: capped so one call cannot bloat the state file, cleaned like at render.
 						const lines = (params.lines ?? []).slice(0, SEAL_LINES).map(l => clean(l.slice(0, SEAL_LINE_CHARS)).trimEnd());
+						while (lines.length && !lines.at(-1)) lines.pop();
 						if (cockpit.key !== run.key) resetCockpit(run.key);
 						cockpit.seal = { id: waiting.id, lines };
 						cockpit.dirty = true;
