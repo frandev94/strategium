@@ -44,6 +44,9 @@ type Slice = { id: string; parallel: boolean; files: string[]; tier?: Tier };
 // archmagos spawns until a scout in `scouts` is done. `scouts`: the scouts spawned after the redraft, by agent id, running
 // or done (finished completed). `builds`: the battle-brother spawns per squad id; the second runs one tier up (see tierFor).
 // `phases`: the todo as last seen, so the cockpit boxes and seals come back after a restart.
+// `targets`: the plan's throwaway hosts (or an Ansible inventory path), which agents and the Captain may reach during the run.
+// `applied`: hosts the Chapter Master granted Apply for (strategium action apply); only the Captain reaches them.
+// `pid`: the omp process that holds the run; its subagents (worker threads that re-import this module) are guarded by the run of their process.
 type Run = {
 	key: string;
 	theatre: string;
@@ -65,6 +68,9 @@ type Run = {
 	redraft?: true;
 	builds?: Record<string, number>;
 	phases?: Phase[];
+	targets?: string[];
+	applied?: string[];
+	pid?: number;
 };
 type Tui = { requestRender(): void; terminal: { rows: number } };
 type Component = { render(width: number): string[]; handleInput?(data: string): void; invalidate?(): void; dispose?(): void };
@@ -170,6 +176,10 @@ function lastBeat(sid: string): string | undefined {
 	}
 }
 const sidOf = (ctx: { sessionManager: { getSessionId(): string } }) => ctx.sessionManager.getSessionId();
+// Subagents run in omp worker threads that re-import this module, so no in-memory registry links them to their Captain. The
+// link is the process: a run carries the pid of the omp process that holds it, and a subagent is guarded by the runs of its own process.
+// shortcut: one omp process runs one main session; with several, a subagent is refused if ANY run held by this process refuses it (it may only
+// over-block remote access). A dead process's run file keeps its pid until another session takes it over; upgrade if omp exposes the parent session id on ctx.agent.
 
 function readRun(sid: string): Run | undefined {
 	const f = runFile(sid);
@@ -332,7 +342,7 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	// Begun again on the same key, every stored field stays except the booking mode.
 	const { untimed: _u, ...kept } = keep ?? {};
 	// A run begun under another key still hands its hidden tools on, or end could never restore them.
-	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: keep ? keep.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}) });
+	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, pid: process.pid, repo: keep ? keep.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
 	startKey(key, booked, spent, untimed);
 }
@@ -358,7 +368,8 @@ function fullStatus(sid: string): string {
 	const runs = allRuns().map(r => {
 		// A run whose session is gone (crash) still has its file: say so, or the user counts it twice.
 		const stale = holds(stateDir(), r.key, r.sid) ? "" : " (stale: its session is gone)";
-		return `RUN ${r.key} theatre=${r.theatre} repo=${r.repo ?? "none"} session=${shortSid(r.sid)}${r.sid === sid ? " (this session)" : ""}${stale}`;
+		const lists = [r.targets?.length && `TARGETS ${r.targets.join(", ")}`, r.applied?.length && `APPLIED ${r.applied.join(", ")}`].filter(Boolean) as string[];
+		return [`RUN ${r.key} theatre=${r.theatre} repo=${r.repo ?? "none"} session=${shortSid(r.sid)}${r.sid === sid ? " (this session)" : ""}${stale}`, ...lists].join("\n");
 	});
 	return [statusLines(), ...runs].join("\n");
 }
@@ -642,22 +653,366 @@ function settle(run: Run, agents: Record<string, Slice>, touched: Slice[]): Run 
 	return { ...run, agents, slices, stopped };
 }
 
-// A runner is a command word, never an argument: it starts the command or follows ; & | ( ` or a newline, behind VAR=x
-// assignments and wrappers (env, time, sudo, then...). It may be named by path (./node_modules/.bin/jest, /usr/bin/pytest,
-// C:\tools\bun.exe) and carry .exe or .cmd on Windows.
+// Command words. A command word is never an argument: it starts a segment (after ; | ( ` or a newline, or an & that is not part of a
+// redirect), behind VAR=x assignments, redirections and wrappers (env, time, sudo, then...). It may be named by path
+// (./node_modules/.bin/jest, /usr/bin/pytest, C:\tools\bin.exe) and carry .exe or .cmd on Windows. The guards read a segment as words, left
+// to right, each index advancing once: no regex ever scans a head, so the scan is linear in the command whatever it holds.
 const EXT = String.raw`(?:\.exe|\.cmd)?`;
-const RUNNER = new RegExp(
-	String.raw`(?:^|[;&|(\n\x60])\s*` +
-		String.raw`(?:(?:\w+=\S*|(?:env|time|exec|nohup|sudo|xargs|nice|stdbuf|setsid|doas|watch)(?:\s+-\S+(?:\s+\d\S*)?)*|then|do|else|elif|if|while|until|!|\{|timeout(?:\s+-\S+(?:\s+\d\S*)?)*\s+\d\w*)\s+)*` +
-		String.raw`(?:[^\s;&|()\x60"'<>=]*[\\/])?` +
-		String.raw`(?:bun${EXT}\s+(?:test|run)\b|bunx${EXT}\s|npx${EXT}\s|(?:npm|pnpm|yarn)${EXT}\s+(?:test|t|run|run-script|exec|build)\b` +
-		String.raw`|(?:tsc|jest|vitest|pytest|gradle|mvn|playwright)${EXT}\b|(?:cargo|go|dotnet)${EXT}\s+(?:test|build)\b)`,
+const SEGMENT = /[;|(\n\x60]|(?<![<>])&(?!>)/g;
+const WORD = /\S+/g;
+const ASSIGNMENT = /^\w+=/;
+const REDIRECT = /^\d*(?:<<?-?|&?>>?)&?/;
+const DURATION = /^\d[\w.]*$/;
+const PATH_PREFIX = /^[^\s;&|()\x60"'<>=]*[\\/]/;
+// Quoted text is masked with FILL: not a word character, not whitespace, and none of the characters the scan reads. Bash joins `ss""h` into `ssh`, so a word is read as unfill(word).
+const FILL = "\x01";
+const unfill = (t: string) => t.replaceAll(FILL, "");
+// Words that open a command without being one.
+const KEYWORDS = new Set(["then", "do", "else", "elif", "if", "while", "until", "!", "{"]);
+// Wrapper words, with the options that take a value: short letters (sudo -u root, -oL) and long names (timeout --signal KILL 10).
+const WRAPPERS = new Map(
+	Object.entries({
+		sudo: ["ugChprtUDRT", "user group close-from host prompt role type other-user chdir chroot command-timeout"],
+		doas: ["uC", ""],
+		env: ["uCS", "unset chdir split-string"],
+		timeout: ["sk", "signal kill-after"],
+		nice: ["n", "adjustment"],
+		stdbuf: ["ioe", "input output error"],
+		xargs: ["adEILnPs", "arg-file delimiter eof replace max-lines max-args max-procs max-chars process-slot-var"],
+		watch: ["n", "interval"],
+		sshpass: ["pfdP", ""],
+		time: ["fo", "format output"],
+		exec: ["a", ""],
+		nohup: ["", ""],
+		setsid: ["", ""],
+		builtin: ["", ""],
+		eval: ["", ""],
+		command: ["", ""],
+	}).map(([name, [short, long]]) => [name, { short, long: new Set(long.split(" ").filter(Boolean)) }]),
 );
-const WRITE_WORD = /(^|[;&|(\n]|\$\(|`)\s*(rm|rmdir|mv|cp|touch|truncate|tee|ln)\b/;
-// git's global options (-C dir, -c k=v, --git-dir=x) come before the subcommand and must not hide it.
-const WRITE_GIT = /\bgit\s+(?:(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?|-\w)\s+)*(checkout\s+(\S+\s+)?--(?=\s|$)|checkout\s+\.(?=\s|$)|(restore|reset\s+--hard|clean|stash|apply|am|rm|mv)\b)/;
+
+type Word = { t: string; at: number };
+type Segment = { words: Word[]; head: number; to: number };
+
+/** How many words one option of a wrapper takes: 2 when its value is the next word, 1 when it is attached (-oL, --x=y) or takes none. */
+function optionWords(opt: string, w: { short: string; long: Set<string> }): number {
+	if (opt.startsWith("--")) return !opt.includes("=") && w.long.has(opt.slice(2)) ? 2 : 1;
+	for (let j = 1; j < opt.length; j++) if (w.short.includes(opt[j])) return j + 1 < opt.length ? 1 : 2;
+	return 1;
+}
+
+/**
+ * The index of the command word among the words of one segment, -1 when it has none. Walks once: assignments, redirections (with their
+ * operand when it is the next word), keywords, wrappers, their options and values, and the duration after timeout come first.
+ * An option is one only behind a wrapper; `timeout` without a duration, and `command -v`, are commands themselves.
+ */
+function commandIndex(w: Word[]): number {
+	let wrap: { short: string; long: Set<string> } | undefined;
+	let timeout = -1;
+	for (let i = 0; i < w.length; ) {
+		const raw = w[i].t;
+		const t = unfill(raw);
+		// Quoted text cannot be read: behind a wrapper a word that is only filler is an option, its value or an assignment, so it is skipped.
+		const quoted = t === "" && raw !== "";
+		const redirect = REDIRECT.exec(raw);
+		if (wrap && quoted) {
+			timeout = -1;
+			i++;
+		} else if (wrap && t.length > 1 && t[0] === "-") i += optionWords(t, wrap);
+		else if (timeout >= 0) {
+			if (!DURATION.test(t)) return timeout;
+			timeout = -1;
+			i++;
+		} else if (ASSIGNMENT.test(t)) i++;
+		else if (redirect) i += redirect[0].length === raw.length ? 2 : 1;
+		else if (KEYWORDS.has(t)) {
+			wrap = undefined;
+			i++;
+		} else if (WRAPPERS.has(t) && !(t === "command" && /^-[vV]/.test(unfill(w[i + 1]?.t ?? "")))) {
+			wrap = WRAPPERS.get(t);
+			if (t === "timeout") timeout = i;
+			i++;
+		} else return i;
+	}
+	return timeout;
+}
+
+/**
+ * The segments of `mask`, each with its words and the index of its command word. `VAR=$(cmd) ssh h` is two segments split at the `(`:
+ * what follows the `)` that closes it continues the first, so it is read as a segment of its own. `depth` counts the parens still
+ * open of such a `$(`: it starts when a chunk with no command word ends in `$` before a `(`, grows with each inner `(`, and
+ * shrinks with each `)`, so a `;`, `|` or newline inside the substitution does not end it.
+ */
+function segments(mask: string): Segment[] {
+	const out: Segment[] = [];
+	let from = 0;
+	let depth = 0;
+	for (;;) {
+		SEGMENT.lastIndex = from;
+		const m = SEGMENT.exec(mask);
+		const to = m ? m.index : mask.length;
+		const words = [...mask.slice(from, to).matchAll(WORD)].map(x => ({ t: x[0], at: from + x.index }));
+		let head = commandIndex(words);
+		out.push({ words, head, to });
+		let close = -1;
+		for (let k = 0; depth > 0 && close < 0 && k < words.length; k++)
+			for (const ch of words[k].t) if (ch === ")" && --depth === 0) { close = k; break; }
+		if (close >= 0) {
+			const rest = words.slice(close + 1);
+			head = commandIndex(rest);
+			out.push({ words: rest, head, to });
+		}
+		if (depth > 0) depth += m?.[0] === "(" ? 1 : 0;
+		else if (m?.[0] === "(" && head < 0 && words.at(-1)?.t.endsWith("$")) depth = 1;
+		if (!m) return out;
+		from = m.index + 1;
+	}
+}
+
+/** `mask` with each backtick span filled: the outer command, where the span only extends a word (`A=`x`B ssh h` runs ssh). */
+function fillTicks(mask: string): string {
+	const out = mask.split("");
+	for (let i = 0; i < out.length; i++) {
+		if (out[i] === "\\") i++;
+		else if (out[i] === "`") {
+			const end = mask.indexOf("`", i + 1);
+			const last = end < 0 ? mask.length - 1 : end;
+			for (let k = i; k <= last; k++) out[k] = FILL;
+			i = last;
+		}
+	}
+	return out.join("");
+}
+
+/** The segments of the mask, and of its outer view when it holds backticks: the span's own commands and the command around it. */
+const allSegments = (mask: string) => (mask.includes("`") ? [...segments(mask), ...segments(fillTicks(mask))] : segments(mask));
+
+/** The command word as the guards compare it: cut at `)`, without its directory or quote filler, where it starts in the text and where its raw form ends. */
+function wordName(w: Word): { name: string; at: number; end: number } {
+	const close = w.t.search(/[)<>]/);
+	const word = close < 0 ? w.t : w.t.slice(0, close);
+	const dir = PATH_PREFIX.exec(word)?.[0].length ?? 0;
+	return { name: unfill(word.slice(dir)), at: w.at + dir, end: w.at + word.length };
+}
+
+// A runner is tested at the start of "<command word> <next word>", both without quote filler, so it can never be an argument.
+const RUNNER = new RegExp(
+	String.raw`^(?:bun${EXT}[ \t]+(?:test|run)\b|bunx${EXT}[ \t]|npx${EXT}[ \t]|(?:npm|pnpm|yarn)${EXT}[ \t]+(?:test|t|run|run-script|exec|build)\b` +
+		String.raw`|(?:tsc|jest|vitest|pytest|gradle|mvn|playwright)${EXT}\b|(?:cargo|go|dotnet)${EXT}[ \t]+(?:test|build)\b)`,
+);
+const WRITE_WORD = /^(?:rm|rmdir|mv|cp|touch|truncate|tee|ln)\b/;
+// git's global options come before the subcommand and must not hide it: -C dir, -c k=v, --git-dir x (a value) and flags (-p, --no-pager, --git-dir=x).
+const GIT_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix"]);
+const GIT_FLAG = /^(?:-\w|--[\w-]+(?:=\S*)?)$/;
+
+/** `w[j]` as the guards compare it: without quote filler, cut at `)`. */
+const plain = (w?: Word) => unfill(w?.t.split(")")[0] ?? "");
+
+/** Whether a `git` word among `w` runs a subcommand that rewrites the work tree. Each option chain is walked once, then the scan goes on after it. */
+function gitWrites(w: Word[]): boolean {
+	for (let i = 0; i < w.length; i++) {
+		const name = wordName(w[i]).name;
+		if (name !== "git" && name !== "git.exe") continue;
+		let j = i + 1;
+		while (j < w.length && (GIT_VALUE.has(plain(w[j])) ? (j += 2) : GIT_FLAG.test(plain(w[j])) && ++j));
+		const sub = plain(w[j]);
+		const next = plain(w[j + 1]);
+		if (sub === "checkout" ? next === "--" || next === "." || plain(w[j + 2]) === "--" : sub === "reset" ? /^--hard\b/.test(next) : /^(?:restore|clean|stash|apply|am|rm|mv)\b/.test(sub)) return true;
+		i = j - 1;
+	}
+	return false;
+}
 // A redirect, unless it goes to a file descriptor, /dev/null or a scratch place.
-const WRITE_REDIRECT = /\d*>>?(?!>)(?!\s*(?:&[\d-]|\/dev\/null\b|["']?(?:\$\{?(?:TEMP|TMP|TMPDIR)\}?|\/tmp\/|%TEMP%|(?:out|local):\/\/)))/;
+const WRITE_REDIRECT = />>?(?!>)(?!\s*(?:&[\d-]|\/dev\/null\b|["']?(?:\$\{?(?:TEMP|TMP|TMPDIR)\}?|\/tmp\/|%TEMP%|(?:out|local):\/\/)))/;
+
+/** `body` blanked, newlines kept, except the `$( )` and backtick spans: an unquoted heredoc body runs them. One pass. */
+function blankKeepingRuns(body: string): string {
+	const out = body.replace(/[^\n]/g, " ").split("");
+	let i = 0;
+	while (i < body.length) {
+		const c = body[i];
+		if (c === "\\") i += 2;
+		else if (c === "`" || (c === "$" && body[i + 1] === "(")) {
+			let end = body.length - 1;
+			if (c === "`") {
+				const close = body.indexOf("`", i + 1);
+				if (close >= 0) end = close;
+			} else {
+				for (let j = i + 2, depth = 1; j < body.length; j++) {
+					depth += body[j] === "(" ? 1 : body[j] === ")" ? -1 : 0;
+					if (depth === 0) {
+						end = j;
+						break;
+					}
+				}
+			}
+			for (let j = i; j <= end; j++) out[j] = body[j];
+			i = end + 1;
+		} else i++;
+	}
+	return out.join("");
+}
+
+const OPENER = /<<-?[ \t]*(['"]?)(\w+)\1/y;
+
+/** The heredoc opener of one line, ignoring a `<<` inside quotes, after a `#` or in `$(( ))` arithmetic. */
+function heredocOpener(line: string): RegExpExecArray | null {
+	let quote = "";
+	let arith = 0;
+	for (let i = 0; i < line.length; i++) {
+		const c = line[i];
+		if (quote) {
+			if (c === quote) quote = "";
+			else if (c === "\\" && quote === '"') i++;
+		} else if (c === "\\") i++;
+		else if (c === "'" || c === '"') quote = c;
+		else if (c === "#" && (i === 0 || /[\s;&|(]/.test(line[i - 1]))) return null;
+		else if (c === "$" && line.startsWith("((", i + 1)) {
+			arith = 2;
+			i += 2;
+		} else if (arith) arith += c === "(" ? 1 : c === ")" ? -1 : 0;
+		else if (c === "<" && line[i + 1] === "<" && line[i - 1] !== "<") {
+			OPENER.lastIndex = i;
+			const m = OPENER.exec(line);
+			if (m) return m;
+		}
+	}
+	return null;
+}
+
+/**
+ * `src` with its heredoc bodies blanked (the opener line stays: its redirect writes the file), same length. A heredoc counts
+ * only when its terminator line exists; an unterminated one stays visible. A body with an unquoted terminator keeps its
+ * `$( )` and backtick spans visible, because the shell runs them. Linear: terminator lines are indexed once per word.
+ */
+function blankHeredocs(src: string): string {
+	const lines = src.split("\n");
+	const ends = new Map<string, number[]>();
+	lines.forEach((l, i) => {
+		const w = /^[ \t]*(\w+)\r?$/.exec(l)?.[1];
+		if (!w) return;
+		const list = ends.get(w);
+		if (list) list.push(i);
+		else ends.set(w, [i]);
+	});
+	const cursor = new Map<string, number>();
+	for (let i = 0; i < lines.length; i++) {
+		const m = heredocOpener(lines[i]);
+		if (!m) continue;
+		const id = m[2];
+		const list = ends.get(id) ?? [];
+		let k = cursor.get(id) ?? 0;
+		while (k < list.length && list[k] <= i) k++;
+		cursor.set(id, k);
+		if (k >= list.length) continue;
+		const body = lines.slice(i + 1, list[k] + 1).join("\n");
+		const blanked = m[1] ? body.replace(/[^\n]/g, " ") : blankKeepingRuns(body);
+		blanked.split("\n").forEach((l, b) => (lines[i + 1 + b] = l));
+		i = list[k];
+	}
+	return lines.join("\n");
+}
+
+/**
+ * The shell text as the guards read it, in two views of the same length: `mask` has heredoc bodies and `#` comments blank and
+ * quoted text filled with FILL (not blank: a quoted option value, `sudo -u "$U" ssh h`, must stay one word), except `$( )` and
+ * backticks inside double quotes (they run) and, with `keepRedirect`, a quoted redirect
+ * target; `text` has only the heredoc bodies and comments blank, for reading arguments. An unterminated `"` stays as written and
+ * so does everything after it (the scan stops there: rescanning after it would be exponential in nested quotes). Past the
+ * nesting cap a quoted span stays as written too: over-blocking beats hiding a command. A backslash-newline continuation joins the
+ * lines. `${ }` keeps its blanks and separators as filler, and an escaped separator (`\;`) is filler, so neither splits a word.
+ */
+function maskShell(command: string, keepRedirect: boolean): { mask: string; text: string } {
+	// Inside a word the continuation leaves filler, so `ss\<newline>h` reads as `ssh`; elsewhere it is blank.
+	const joined = command.replace(/\\\r?\n/g, (m, at: number) => (/\S/.test(command[at - 1] ?? " ") && /\S/.test(command[at + m.length] ?? " ") ? FILL : " ").repeat(m.length));
+	const s = blankHeredocs(joined);
+	const text = s.split("");
+	const mask = s.split("");
+	const blank = (arr: string[], from: number, to: number, fill = " ") => {
+		for (let i = from; i < to; i++) if (arr[i] !== "\n") arr[i] = fill;
+	};
+	const redirected = (i: number) => {
+		let k = i - 1;
+		while (k >= 0 && (s[k] === " " || s[k] === "\t")) k--;
+		return s[k] === ">";
+	};
+	// Inside "...": returns the index after the closing quote, or s.length when there is none.
+	const dq = (i: number, depth: number): number => {
+		const spans: [number, number][] = [];
+		let capped = false;
+		let j = i + 1;
+		while (j < s.length && s[j] !== '"') {
+			if (s[j] === "\\") j += 2;
+			else if ((s[j] === "$" && s[j + 1] === "(") || s[j] === "`") {
+				if (depth < 16) {
+					const end = code(s[j] === "`" ? j + 1 : j + 2, s[j] === "`" ? "`" : ")", depth + 1);
+					spans.push([j, end + 1]);
+					j = end + 1;
+				} else {
+					capped = true;
+					j++;
+				}
+			} else j++;
+		}
+		if (j >= s.length) return s.length;
+		if (!capped && !(keepRedirect && redirected(i))) {
+			let from = i;
+			for (const [a, b] of spans) {
+				blank(mask, from, a, FILL);
+				from = b;
+			}
+			blank(mask, from, j + 1, FILL);
+		}
+		return j + 1;
+	};
+	// Code up to the `close` that ends it (a `)` of $( ) or a backtick), "" for the end; returns where it stopped.
+	const code = (from: number, close: string, depth: number): number => {
+		let paren = 0;
+		let brace = 0;
+		let i = from;
+		while (i < s.length) {
+			const c = s[i];
+			if (c === close && (close !== ")" || paren === 0)) return i;
+			if (c === "\\") {
+				if (/[;&|()]/.test(s[i + 1] ?? "")) mask[i + 1] = FILL;
+				i += 2;
+			} else if (c === "(" || c === ")") {
+				paren += c === "(" ? 1 : -1;
+				i++;
+			} else if (c === "$" && s[i + 1] === "{") {
+				brace++;
+				i += 2;
+			} else if (c === "}" && brace > 0) {
+				brace--;
+				i++;
+			} else if (c === "#" && close !== "`" && brace === 0 && (i === 0 || /[\s;&|(]/.test(s[i - 1]))) {
+				const nl = s.indexOf("\n", i);
+				const end = nl < 0 ? s.length : nl;
+				blank(mask, i, end);
+				blank(text, i, end);
+				i = end;
+			} else if (c === "'") {
+				// ANSI-C quotes ($'...') honour a backslash.
+				let end = i + 1;
+				if (s[i - 1] === "$") while (end < s.length && s[end] !== "'") end += s[end] === "\\" ? 2 : 1;
+				else end = s.indexOf("'", i + 1);
+				if (end < 0 || end >= s.length) i++;
+				else {
+					if (!(keepRedirect && redirected(i))) blank(mask, i, end + 1, FILL);
+					i = end + 1;
+				}
+			} else if (c === '"') i = dq(i, depth);
+			else if (c === "`" && depth < 16) i = code(i + 1, "`", depth + 1) + 1;
+			else {
+				if (brace > 0 && paren <= 0 && /[\s;&|]/.test(c)) mask[i] = FILL;
+				i++;
+			}
+		}
+		return s.length;
+	};
+	code(0, "", 0);
+	return { mask: mask.join(""), text: text.join("") };
+}
 
 /**
  * Why a bash command is not allowed for the Captain during a run: test and build runners, and file writes.
@@ -665,15 +1020,148 @@ const WRITE_REDIRECT = /\d*>>?(?!>)(?!\s*(?:&[\d-]|\/dev\/null\b|["']?(?:\$\{?(?
  */
 // ponytail: a pattern list, not a shell parser; it stops slips, not a determined workaround.
 export function bashBlock(command: string): string | undefined {
-	// Heredoc bodies are data; quoted strings are blanked, except a quoted redirect target.
-	const cmd = command
-		// The opener line stays (its redirect writes the file); only the body lines go.
-		.replace(/<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2(?=\n|$)/g, "<<HEREDOC$3")
-		.replace(/(>>?\s*)?('[^']*'|"[^"]*")/g, (m, redir) => (redir ? m : '""'));
-	if (RUNNER.test(cmd)) return "Strategium: the Captain runs no builds or test suites. Delegate the check to a sonic agent.";
-	if (WRITE_WORD.test(cmd) || /\bsed\s+(-\w*i|--in-place)/.test(cmd) || /\bperl\s+-\w*i/.test(cmd) || WRITE_GIT.test(cmd) || WRITE_REDIRECT.test(cmd))
+	const cmd = maskShell(command, true).mask;
+	let write = false;
+	for (const seg of allSegments(cmd)) {
+		if (seg.head >= 0) {
+			const { name } = wordName(seg.words[seg.head]);
+			const view = `${name} ${unfill(seg.words[seg.head + 1]?.t ?? "")}`;
+			if (RUNNER.test(view)) return "Strategium: the Captain runs no builds or test suites. Delegate the check to a sonic agent.";
+			write = write || WRITE_WORD.test(name);
+		}
+		write = write || gitWrites(seg.words);
+	}
+	if (write || /\bsed\s+(-\w*i|--in-place)/.test(unfill(cmd)) || /\bperl\s+-\w*i/.test(unfill(cmd)) || WRITE_REDIRECT.test(cmd))
 		return "Strategium: the Captain writes no files through bash during a run. Delegate the change to an agent; scratch output may only be redirected into $TEMP.";
 	return undefined;
+}
+
+// Remote access. ponytail: same pattern-list limit as bashBlock; `bash -c "ssh h"`, other remote tools and xd:// payloads are not seen.
+const REMOTE_WORD = /^(ssh|scp|sftp|rsync|ansible-playbook|ansible)(?:\.exe|\.cmd)?$/i;
+const TOKEN = /(?:'[^']*'|"[^"]*"|[^\s'"])+/g;
+const ANSIBLE_SAFE = new Set(["--check", "-C", "--syntax-check", "--list-hosts", "--list-tasks", "--list-tags", "--version"]);
+// Options that take a value, per command: attached (-p22) or the next argument.
+const VALUE_LETTERS = { ssh: "BbcDEeFIiJLlmOoPpQRSWw", sftp: "BbcDFiJloPRSs", scp: "cDFiJloPSX", rsync: "eBfMT" } as const;
+
+/** A host as the guard compares it: no scheme, user@, brackets, :port or :path; lowercase. "" when it cannot be read. */
+function normHost(raw: string): string {
+	let h = raw.trim().toLowerCase();
+	if (/[$\x60]/.test(h)) return "";
+	if (/^[a-z]:[\\/]/.test(h)) return h;
+	if (/^[a-z][a-z0-9+.-]*:\/\//.test(h)) h = h.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").split("/")[0];
+	else if (/[\\/]/.test(h.split(":")[0])) return h;
+	h = h.slice(h.lastIndexOf("@") + 1);
+	return h.startsWith("[") ? h.slice(1).split("]")[0] : h.split(":")[0];
+}
+
+// rsync options that take their value as the next argument (`--exclude a:b` is a pattern, not a host).
+const RSYNC_LONG_VALUE = /^--(?:exclude|include|filter|exclude-from|include-from|files-from|rsh|rsync-path|port|bwlimit|chmod|chown|backup-dir|suffix|partial-dir|temp-dir|compare-dest|copy-dest|link-dest|log-file|out-format|info|debug|timeout|contimeout|max-size|min-size|password-file|address|sockopts)$/;
+
+function scanArgs(tokens: string[], valueLetters: string, longValue?: RegExp): { operands: string[]; jumps: string[] } {
+	const operands: string[] = [];
+	const jumps: string[] = [];
+	for (let i = 0; i < tokens.length; i++) {
+		const t = tokens[i];
+		if (t === "--") {
+			operands.push(...tokens.slice(i + 1));
+			break;
+		}
+		if (t.length < 2 || t[0] !== "-") operands.push(t);
+		else if (t.startsWith("--")) {
+			if (longValue?.test(t)) i++;
+		} else
+			for (let j = 1; j < t.length; j++) {
+				if (!valueLetters.includes(t[j])) continue;
+				const value = t.length > j + 1 ? t.slice(j + 1) : (tokens[++i] ?? "");
+				// -J j and -o ProxyJump=j both name a jump host.
+				const jump = t[j] === "J" ? value : t[j] === "o" ? /^proxyjump[\s=]+(.+)$/i.exec(value)?.[1] : undefined;
+				if (jump) jumps.push(...jump.split(",").filter(Boolean));
+				break;
+			}
+	}
+	return { operands, jumps };
+}
+
+// A letter, a colon and a slash or backslash is a Windows drive (C:/a, C:\a), not a host; a one-letter host needs user@, brackets or a path without a leading slash.
+const REMOTE_OPERAND = /^(?:[a-z][a-z0-9+.-]*:\/\/|(?:[^@/\\:]*@)?(?:\[[^\]]*\]|[^@/\\:]+):)/i;
+const isRemoteOperand = (t: string) => REMOTE_OPERAND.test(t) && !/^[a-z]:[\\/]/i.test(t);
+
+// What one command reaches: its targets, `via` for the refusal and undefined when it stays local.
+function commandTargets(word: string, tokens: string[]): { via: string; targets: string[] } | undefined {
+	if (word === "ansible" || word === "ansible-playbook") {
+		if (tokens.some(t => ANSIBLE_SAFE.has(t))) return undefined;
+		const inv: string[] = [];
+		tokens.forEach((t, i) => {
+			const m = t.match(/^(?:--inventory(?:-file)?=|-i)(.+)$/);
+			const value = m ? m[1] : /^(-i|--inventory(?:-file)?)$/.test(t) ? tokens[i + 1] : undefined;
+			if (value) inv.push(...value.split(",").filter(Boolean).map(normHost));
+		});
+		return { via: `${word} without --check`, targets: inv.length ? inv : [""] };
+	}
+	const { operands, jumps } = scanArgs(tokens, VALUE_LETTERS[word as keyof typeof VALUE_LETTERS], word === "rsync" ? RSYNC_LONG_VALUE : undefined);
+	const hosts = word === "scp" || word === "rsync" ? operands.filter(isRemoteOperand) : operands.slice(0, 1);
+	if (!hosts.length) return undefined;
+	return { via: word, targets: [...hosts, ...jumps].map(normHost) };
+}
+
+function bashRemote(command: string): { via: string; targets: string[] } | undefined {
+	const { mask, text } = maskShell(command, false);
+	const vias = new Set<string>();
+	const targets = new Set<string>();
+	for (const seg of allSegments(mask)) {
+		if (seg.head < 0) continue;
+		const { name, end: start } = wordName(seg.words[seg.head]);
+		const word = REMOTE_WORD.exec(name)?.[1];
+		if (!word) continue;
+		// The arguments run to the end of the segment or the first `)`.
+		const close = mask.slice(start, seg.to).indexOf(")");
+		const end = close < 0 ? seg.to : start + close;
+		// Redirections are not arguments: `2>&1`, `>out` and a bare `>` with the file after it.
+		const raw = [...text.slice(start, end).matchAll(TOKEN)].map(t => t[0]);
+		const tokens: string[] = [];
+		for (let i = 0; i < raw.length; i++) {
+			if (/^\d*&?[<>]/.test(raw[i])) i += /^\d*&?(?:>>?|<)$/.test(raw[i]) ? 1 : 0;
+			else tokens.push(raw[i].replaceAll(FILL, "").replace(/['"]/g, ""));
+		}
+		const hit = commandTargets(word.toLowerCase(), tokens);
+		if (!hit) continue;
+		vias.add(hit.via);
+		for (const t of hit.targets) targets.add(t);
+	}
+	return targets.size ? { via: [...vias].join(", "), targets: [...targets] } : undefined;
+}
+
+/**
+ * The remote machines a tool call would reach: bash by its ssh/scp/sftp/rsync/ansible command words, every other tool by the
+ * `ssh://` entries of its path-like fields (never its content). Undefined when it reaches none. A target is "" when it cannot be read.
+ */
+export function remoteTargets(name: string, input: unknown): { via: string; targets: string[] } | undefined {
+	const args = asObj(input);
+	if (name === "bash") return bashRemote(typeof args.command === "string" ? args.command : "");
+	const entries = [
+		...editTargets(name, args),
+		...(typeof args.path === "string" ? args.path.split(";") : []),
+		...(Array.isArray(args.paths) ? args.paths : []),
+		...(typeof args.file === "string" ? [args.file] : []),
+	];
+	const hosts = new Set<string>();
+	for (const e of entries)
+		// Bare ssh:// only lists the configured hosts.
+		if (typeof e === "string" && /^ssh:\/\/[^/\s]/i.test(e.trim())) hosts.add(normHost(e));
+	return hosts.size ? { via: "ssh://", targets: [...hosts] } : undefined;
+}
+
+/** Why a call that reaches a remote machine is refused, or undefined. The sub may reach `targets`; the Captain also `applied`. */
+export function remoteBlock(run: { targets?: string[]; applied?: string[] }, who: "captain" | "sub", name: string, input: unknown): string | undefined {
+	const hit = remoteTargets(name, input);
+	if (!hit) return undefined;
+	const granted = new Set([...(run.targets ?? []), ...(who === "captain" ? (run.applied ?? []) : [])].map(h => (typeof h === "string" ? normHost(h) : "")));
+	const missing = hit.targets.filter(t => !t || !granted.has(t)).map(t => t || "an unnamed host");
+	if (!missing.length) return undefined;
+	const what = `(${hit.via} ${missing.join(", ")})`;
+	return who === "sub"
+		? `Strategium: agents reach no remote machine during a run ${what}. Only the plan's throwaway targets are allowed; the Captain declares them with strategium action targets.`
+		: `Strategium: the Captain reaches no remote machine before the Apply seal for its environment ${what}. Once the Chapter Master grants Apply, record it with strategium action apply (hosts); throwaway targets are declared with strategium action targets.`;
 }
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
@@ -1122,7 +1610,7 @@ export default function (pi: ExtensionAPI) {
 	pi.setLabel("Strategium");
 
 	const schema = z.object({
-		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft", "seal"]),
+		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "targets", "apply", "redraft", "seal"]),
 		key: z.string().optional(),
 		booked: z.number().int().positive().optional(),
 		spent: z.number().int().nonnegative().optional(),
@@ -1136,13 +1624,14 @@ export default function (pi: ExtensionAPI) {
 		archmagos: z.boolean().optional(),
 		slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()), tier: z.enum(["light", "standard", "heavy"]).optional() })).optional(),
 		lines: z.array(z.string()).optional(),
+		hosts: z.array(z.string()).optional(),
 	});
 
 	pi.registerTool({
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft, seal (lines). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), targets (hosts), apply (hosts), redraft, seal (lines). targets declares the plan's throwaway hosts (or an Ansible inventory path) that agents and the Captain may reach; hosts: [] clears them. apply records the Apply grant for the given hosts: only the Captain then reaches them; apply hosts: [] clears the grant. During a run no ssh, scp, sftp, rsync, ansible or ssh:// path reaches a host that is not declared. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
@@ -1241,6 +1730,21 @@ export default function (pi: ExtensionAPI) {
 						return text(
 							`REDRAFT ${run.key}: back to Auspex; no librarian or archmagos until a scout spawned now has finished${run.archmagosSpawned ? "; then one more archmagos may be spawned" : ""}`,
 						);
+					}
+					case "targets":
+					case "apply": {
+						const run = ownRun(sid);
+						if (!run) return text("ERROR no active run in this session");
+						const hosts = [...new Set((params.hosts ?? []).map(h => h.trim()))];
+						if (!params.hosts || hosts.some(h => !h || /\s/.test(h))) return text(`ERROR ${params.action} needs hosts: names or paths without spaces`);
+						if (params.action === "targets") {
+							writeRun({ ...run, targets: hosts.length ? hosts : undefined });
+							return text(`TARGETS ${hosts.join(", ") || "none"}`);
+						}
+						// apply [] clears the grant; hosts add to it.
+						const applied = hosts.length ? [...new Set([...(run.applied ?? []), ...hosts])] : undefined;
+						writeRun({ ...run, applied });
+						return text(`APPLY ${applied?.join(", ") ?? "none"}`);
 					}
 				}
 			} catch (err) {
@@ -1470,7 +1974,7 @@ export default function (pi: ExtensionAPI) {
 					claim(stateDir(), moved.key, sid, prevSid);
 					// omp cancelled the old session's background agents: none runs any more.
 					// The old session's station is not where the fresh one starts.
-					writeRun(settle({ ...moved, sid, where: undefined }, {}, Object.values(moved.agents ?? {})));
+					writeRun(settle({ ...moved, sid, pid: process.pid, where: undefined }, {}, Object.values(moved.agents ?? {})));
 					// The cockpit in memory is the moved run's: the next draw saves it under the new sid.
 					if (cockpit.key === moved.key) {
 						cockpit.dirty = true;
@@ -1516,7 +2020,7 @@ export default function (pi: ExtensionAPI) {
 			// as a freeze. The mark is spent on every path.
 			if (held) {
 				const resume = died || own.closedBy === "shutdown";
-				if (own.closedBy) writeRun({ ...own, closedBy: undefined });
+				if (own.closedBy || own.pid !== process.pid) writeRun({ ...own, closedBy: undefined, pid: process.pid });
 				if (resume) resumeOrWarn(own, sid, ctx);
 			}
 		}
@@ -1741,15 +2245,29 @@ export default function (pi: ExtensionAPI) {
 
 	// ponytail: bash is a pattern list (see bashBlock); the edit tools are hidden and write/edit targets are checked below.
 	pi.on("tool_call", (e, ctx) => {
-		if (ctx?.agent?.kind === "sub") return;
-		const run = ownRun(sidOf(ctx));
 		const name = e.toolName.replace(/^_+/, "");
+		if (ctx?.agent?.kind === "sub") {
+			// Subagents keep everything else they have; they only never reach a remote machine the plan did not declare.
+			// They run in worker threads of the Captain's process: any run that carries this pid and is still held can refuse them. Local calls read no file.
+			if (!remoteTargets(name, e.input)) return;
+			for (const r of allRuns()) {
+				if (r.pid !== process.pid || !holds(stateDir(), r.key, r.sid)) continue;
+				const why = remoteBlock(r, "sub", name, e.input);
+				if (why) return { block: true, reason: why };
+			}
+			return;
+		}
+		const run = ownRun(sidOf(ctx));
 		// omp hands the keys of a dialog opened while the cockpit is up to the cockpit, then focus to the editor: close it before the dialog mounts.
 		if (name === "ask") cockpit.close?.();
 		// A question to the user during a run needs them at the keyboard, wherever they are.
 		if (name === "ask" && run) {
 			const err = alert(sidOf(ctx), "attention", `${run.key}: your answer is needed`);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+		}
+		if (run) {
+			const why = remoteBlock(run, "captain", name, e.input);
+			if (why) return { block: true, reason: why };
 		}
 		if (!run?.repo) return;
 		const repo = run.repo;
