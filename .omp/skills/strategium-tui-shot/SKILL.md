@@ -82,7 +82,9 @@ Not replayable on screen: R11 (the code path is gone; `no-widget` covers its rep
 
 ### In CI
 
-`.github/workflows/tui-shot.yml` runs `python tools/tui-shot/shot.py --all --no-png` on `windows-latest` for pull requests that touch `extensions/`, `tools/tui-shot/`, `package.json`, `bun.lock` or the workflow itself (and by hand with `workflow_dispatch`). omp is the devDependency's `node_modules\.bin\omp.exe`: bump the pin on purpose, the replays run on the bump. When the run fails, a step reruns each `FAIL` scenario with `--all-png` (a PNG of every snapshot) into `rerun/`, so the main run's `.raw`/`.html` stay intact. The artifact `tui-shot` holds the `.raw`/`.html`/PNGs and the log. No model is called.
+`.github/workflows/tui-shot.yml` runs `python tools/tui-shot/shot.py --all --no-png` on `windows-latest` for pull requests that touch `extensions/`, `tools/tui-shot/`, `skills/strategium/todo.ts`, `alarm/` (the two files outside `extensions/` that the cockpit imports), `package.json`, `bun.lock` or the workflow itself (and by hand with `workflow_dispatch`); a newer push to the same ref cancels the run in progress. omp is the devDependency's `node_modules\.bin\omp.exe`: bump the pin on purpose, the replays run on the bump. When the Replays step fails, a step reruns each `FAIL` scenario (at most 5, 5 minutes) with `--all-png` (a PNG of every snapshot) into `rerun/`, so the main run's `.raw`/`.html` stay intact. Pass or fail, the job summary shows the `--all` table (scenario, R, kind, result, first failing check). The artifact `tui-shot` holds the `.raw`/`.html`/PNGs and the log. No model is called.
+
+When the omp pin is bumped, a KNOWN scenario that turns red may mean upstream fixed the limit it pins: update its kind instead of weakening the check.
 
 ### Add a scenario
 

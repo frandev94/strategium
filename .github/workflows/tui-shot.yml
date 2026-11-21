@@ -5,10 +5,16 @@ on:
     paths:
       - extensions/**
       - tools/tui-shot/**
+      - skills/strategium/todo.ts
+      - alarm/**
       - package.json
       - bun.lock
       - .github/workflows/tui-shot.yml
   workflow_dispatch:
+
+concurrency:
+  group: tui-shot-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -28,14 +34,24 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - run: bun install --frozen-lockfile
       - name: Replays
+        id: replays
         shell: bash
         run: python tools/tui-shot/shot.py --all --no-png --omp="$OMP" --out="$RUNNER_TEMP/tui-shot" 2>&1 | tee "$RUNNER_TEMP/tui-shot.log"
-      - name: PNGs of the failing scenarios
-        if: failure()
+      - name: Summary table
+        # Also on green: the table is the only place that shows which KNOWN scenarios still pin an upstream limit.
+        if: always() && steps.replays.outcome != 'skipped'
         shell: bash
         run: |
-          # Scenario-level lines start at column 0 ("FAIL NAME (R)"); per-check lines are indented.
-          sed -n 's/^FAIL \([^ ]*\) .*/\1/p' "$RUNNER_TEMP/tui-shot.log" | tr -d '\r' | sort -u | while read -r n; do
+          if [ -f "$RUNNER_TEMP/tui-shot.log" ]; then
+            { echo '```'; sed -n '/^scenario /,$p' "$RUNNER_TEMP/tui-shot.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: PNGs of the failing scenarios
+        if: failure() && steps.replays.outcome == 'failure'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          # Scenario-level lines start at column 0 ("FAIL NAME (R)"); per-check lines are indented. At most 5 reruns.
+          sed -n 's/^FAIL \([^ ]*\) .*/\1/p' "$RUNNER_TEMP/tui-shot.log" | tr -d '\r' | sort -u | head -5 | while read -r n; do
             python tools/tui-shot/shot.py --replay="$n" --all-png --omp="$OMP" --out="$RUNNER_TEMP/tui-shot/rerun" || true
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
