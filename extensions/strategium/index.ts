@@ -782,6 +782,10 @@ export default function (pi: ExtensionAPI) {
 		archmagosBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_ARCHMAGOS?.trim() ?? "");
 	const archmagosState = (sid: string) =>
 		`${archmagosOn(sid) ? "on" : "off"} (${archmagosBySession.has(sid) ? "this session" : "STRATEGIUM_ARCHMAGOS"})`;
+	// /strategium-config commit on|off per session id; it wins over STRATEGIUM_COMMIT (1, true, on, yes), which is off when unset.
+	const commitBySession = new Map<string, boolean>();
+	const commitOn = (sid: string) => commitBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_COMMIT?.trim() ?? "");
+	const commitState = (sid: string) => `${commitOn(sid) ? "on" : "off"} (${commitBySession.has(sid) ? "this session" : "STRATEGIUM_COMMIT"})`;
 	// Minutes of idle before the clock pauses: /strategium-config idle <min> per session wins over STRATEGIUM_IDLE_MIN
 	// (whole minutes; unset or invalid → 3; 0 = off).
 	const idleBySession = new Map<string, number>();
@@ -1168,7 +1172,7 @@ export default function (pi: ExtensionAPI) {
 						return text(addMin(run, params.minutes ?? 0));
 					}
 					case "status":
-						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}\nTIERS ${tiersState()}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}`);
+						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}\nCOMMIT ${commitState(sid)}\nTIERS ${tiersState()}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}`);
 					case "report":
 						return text(report(params.date));
 					case "end":
@@ -1315,7 +1319,7 @@ export default function (pi: ExtensionAPI) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
 		let preview = false;
 		if (arg !== undefined) {
@@ -1325,9 +1329,10 @@ export default function (pi: ExtensionAPI) {
 			const i = arg.match(/^idle\s+(\d+)$/);
 			const vo = arg.match(/^volume(?:\s+(\d+))?(\s+preview)?$/);
 			const a = arg.match(/^archmagos\s+(on|off)$/);
+			const c = arg.match(/^commit\s+(on|off)$/);
 			const k = arg.match(/^cockpit-key\s+(\S+)$/);
 			const th = arg.match(/^cockpit-theme\s+(\S+)$/);
-			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !k && !th) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
 			else if (to) toastBySession.set(sid, to[1] === "on");
@@ -1339,6 +1344,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				preview = !!vo[2];
 			} else if (a) archmagosBySession.set(sid, a[1] === "on");
+			else if (c) commitBySession.set(sid, c[1] === "on");
 			else if (th) {
 				const v = th[1].toLowerCase();
 				if (v === "default") rmSync(themeFile(), { force: true });
@@ -1373,6 +1379,7 @@ export default function (pi: ExtensionAPI) {
 				`toast: ${toastState(sid)}`,
 				`idle: ${idleState(sid)}`,
 				`archmagos: ${archmagosState(sid)}`,
+				`commit: ${commitState(sid)}`,
 				`cockpit-key: ${cockpitKey.key} (${cockpitKey.from})${next.key !== cockpitKey.key || next.from !== cockpitKey.from ? `; next omp start: ${next.key} (${next.from})` : ""}`,
 				`cockpit-theme: ${theme.name} (${theme.from})`,
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
@@ -1459,6 +1466,8 @@ export default function (pi: ExtensionAPI) {
 					if (idle !== undefined) idleBySession.set(sid, idle);
 					const arch = archmagosBySession.get(prevSid);
 					if (arch !== undefined) archmagosBySession.set(sid, arch);
+					const commit = commitBySession.get(prevSid);
+					if (commit !== undefined) commitBySession.set(sid, commit);
 				} catch {
 					// Another session took the key meanwhile: the run stays where it is.
 				}
