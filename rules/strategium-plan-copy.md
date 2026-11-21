@@ -1,6 +1,6 @@
 ---
 description: "Strategium run: fires when a bash command copies an agent output with cp; plan outputs are saved with cat."
-condition: '(?:^|\\n|[\s;&|("])cp\s+(?:-\S+\s+(?:\S+\s+)?)*["'']?agent://'
+condition: '(?:^|\\n|[\s;&|("])cp\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*["'']?agent://'
 scope: tool:bash
 agents: [main]
 ---

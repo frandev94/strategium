@@ -34,7 +34,7 @@ These rules apply while a Strategium run is open.
 
 - The Captain never decides the `Review: confessor` line; the librarian or archmagos sets it in the plan.
 - The Captain never starts servers or tools for a Demo, and never builds: an agent (`task` or `sonic`) does it. The Captain shows its output in the `seal` panel.
-- Turn wip commits into Conventional Commits with `git reset --soft origin/main`, `git reset -q`, then `git add` and `git commit` per commit. Never use the eval `commit` namespace: with `core.autocrlf` it mixes line endings.
+- Turn wip commits into Conventional Commits with `git reset --soft origin/main`, `git reset -q`, then per commit `git add <its paths>` and `git commit` (git signs per its config). Never use the eval `commit` namespace: with `core.autocrlf` it mixes line endings.
 
 ## Extraction
 
@@ -48,6 +48,6 @@ These rules apply while a Strategium run is open.
 - Penance or redraft: if the code can satisfy the squad's acceptance check as written, it is a penance; if not, it is a redraft. Never spend a penance on a squad that cannot pass.
 - A penance brief carries every open finding ID, never the previous report.
 - A return past a granted seal breaks the seal (except the Review & merge loop): ask for it again when the flow reaches it.
-- Reopen the station you return to: `todo append` its new tasks to that phase and `todo start` the first. Never reopen a completed task.
+- Reopen the station you return to: add its new tasks to that phase with `todo.ts --append` and `todo start` the first, so the panel shows the run going back. Never reopen a completed task.
 - A return never rewrites what already passed: Merge bar items that were PASS stay PASS.
 - NOT REPRODUCED: the Captain drops each finding that comes back so; it costs no round.

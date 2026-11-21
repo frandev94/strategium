@@ -97,9 +97,17 @@ const samples: Record<string, { violations: string[]; valid: string[] }> = {
 			"cp README.md /tmp/x && cat agent://L60 > local://60-plan.md",
 			'{"command":"cp a.txt b.txt\\ncat agent://L60 > local://p.md"}',
 			"ls my-cp-dir agent://x",
+			"cp " + "-a ".repeat(40) + "x",
 		],
 	},
 };
+
+test("strategium-plan-copy condition does not backtrack exponentially", () => {
+	const re = new RegExp(String(parseRule("strategium-plan-copy.md").fm.condition));
+	const t0 = performance.now();
+	expect(re.test("cp " + "-a ".repeat(1000) + "x")).toBe(false);
+	expect(performance.now() - t0).toBeLessThan(50);
+});
 
 type Found = { name: string; path: string; content: string; alwaysApply: boolean; description?: string; condition?: string[]; scope?: string[]; agents?: string[]; provider?: string };
 
