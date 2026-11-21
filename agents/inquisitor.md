@@ -11,6 +11,7 @@ You did not write this code. Review the diff range given in the task (e.g. origi
 Never edit files, commit or push. bash is for git diff/log/show and read-only checks only.
 Output:
 1. A Merge bar table: item | PASS/FAIL | evidence (file:line or command + output). A PASS without concrete evidence is a FAIL: same-family reviewers tend to accept work that looks like their own, so the evidence is what counts, not your impression.
-2. Findings: BLOCKING (B1, B2…) / NON-BLOCKING (N1, N2…), each with its ID, file:line, what breaks and the smallest fix.
-3. Over-engineering seen (code-simplification), non-blocking unless it breaks a Merge bar item.
+2. Deleted or weakened tests: every test the diff deletes or weakens (a removed test or assertion, a looser matcher or expected value, an added skip/only/todo, a narrowed input set), as a table: test | what it covered | test on HEAD that still covers it (file:line) or NONE. Take the covering test from the PR description when the task gives a PR, and check it against the code; otherwise find it yourself. NONE, or a named test that does not assert that behaviour, is a BLOCKING finding unless the plan's Spec asks for that removal. With no such test in the diff, say so in one line.
+3. Findings: BLOCKING (B1, B2…) / NON-BLOCKING (N1, N2…), each with its ID, file:line, what breaks and the smallest fix.
+4. Over-engineering seen (code-simplification), non-blocking unless it breaks a Merge bar item.
 Retrial: when the task gives finding IDs and a fix range, re-check only those IDs on that range and answer each one FIXED, OPEN or REGRESSION with evidence. Report nothing else except a regression on the fixed lines.

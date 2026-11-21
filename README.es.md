@@ -36,11 +36,11 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 ```
 
 1. **Muster** — el objetivo y las órdenes: Plan por defecto, Demo y MR cuando aplican (Demo cuando el objetivo tiene algo que ver funcionando: una pantalla, una API HTTP, una DLL cargada por un host) y, con ticketing, la reserva. Solo se te pregunta cuando hay elección (una reserva, activar o no Demo o MR, `Review & merge`, un campo del teatro o la casilla del Archmagos); si no, la run toma los valores por defecto y pasa directa a Auspex.
-2. **Auspex** — los scouts mapean el código que toca el objetivo.
+2. **Auspex** — los scouts mapean el código que toca el objetivo y los tiers de checks del repo (fast, squad, full); un `sonic` cronometra los checks completos sobre `main` como línea base y marca como flaky un fallo que pasa al repetirlo una vez.
 3. **Scriptorium** — un librarian escribe una especificación, de 1 a 5 squads y una Merge bar; cuando el objetivo se divide en áreas, un librarian por área y después un líder une las partes (con el Archmagos Dominus marcado en Muster, un `archmagos` integra las partes en lugar del líder).
 4. **Deployment** — una rama para la run, los squads declarados con sus ficheros; cada agente aislado trabaja en su propio checkout de omp.
-5. **Skirmish** — un `battle-brother` implementa cada squad con los tests primero; un `apothecary` intenta romper los tests nuevos, solo en squads con lógica nueva y dentro de un presupuesto fijo.
-6. **Inquisition** — un `inquisitor` revisa el diff contra la Merge bar, y se une un `confessor` de otra familia de modelos (si está disponible) cuando el plan marca el diff como grande o arriesgado, o en el bucle Review & merge; un `sonic` ejecuta las comprobaciones del repo.
+5. **Skirmish** — un `battle-brother` implementa cada squad con los tests primero, con los tiers de checks fast y squad (los checks completos quedan para `sonic`); un `apothecary` intenta romper los tests nuevos, solo en squads con lógica nueva y dentro de un presupuesto fijo.
+6. **Inquisition** — un `inquisitor` revisa el diff contra la Merge bar y comprueba que cada test borrado o debilitado sigue cubierto por otro, y se une un `confessor` de otra familia de modelos (si está disponible) cuando el plan marca el diff como grande o arriesgado, o en el bucle Review & merge; un `sonic` ejecuta las comprobaciones completas del repo y da sus tiempos junto a los de la línea base.
 7. **Extraction** — el commit y la merge request, después de tu sello. Con el sello opcional `Review & merge`, un inquisitor y un confessor nuevos revisan la PR cuando el CI está en verde, como máximo 2 rondas, y una revisión limpia termina en el merge.
 
 ```mermaid
@@ -54,7 +54,7 @@ flowchart TB
   end
   subgraph auspex["II · AUSPEX"]
     direction LR
-    A1["scout ×1-3<br/>mapean el código"] --> A2["sonic<br/>línea base"]
+    A1["scout ×1-3<br/>mapean el código"] --> A2["sonic<br/>línea base cronometrada"]
   end
   subgraph scriptorium["III · SCRIPTORIUM"]
     direction LR
@@ -73,7 +73,7 @@ flowchart TB
   end
   subgraph inquisition["VI · INQUISITION"]
     direction LR
-    Q1["inquisitor"] --> Q4["sonic<br/>checks"]
+    Q1["inquisitor"] --> Q4["sonic<br/>checks completos · tiempos"]
     QF{"¿diff grande<br/>o arriesgado?"} -->|"sí"| Q2["confessor"] --> Q4
     QF -->|"no"| Q4
     QS{"¿auth<br/>o red?"} -->|"sí"| Q3["security-reviewer"] --> Q4
@@ -121,7 +121,7 @@ Una run vuelve atrás en vez de avanzar, y cada vuelta tiene un detonante, un de
 | **Recon** | el mapa del código está equivocado | un `scout` más con ese hueco concreto | 1 por run |
 | **Redraft** | el plan está equivocado, o el check de un squad no se puede cumplir tal cual está escrito, o rechazas el plan en el sello Plan | primero vuelta a Auspex: uno o dos scouts refrescan el mapa con lo que cambió (una sección `## Redraft`, nunca un barrido completo). Luego el mismo `librarian` reescribe el trabajo restante (con áreas, solo el área afectada, y el líder vuelve a unir; en una run marcada para el Archmagos Dominus, un `archmagos` nuevo vuelve a integrar solo esa área), y el sello Plan se pide otra vez | 1 por run |
 | **Penance** | el código está equivocado: check rojo, supervivientes o crashes del fuzz del apothecary, hallazgos BLOCKING | un `battle-brother` de reparación con todos los IDs de hallazgos abiertos en un solo brief, nunca el informe anterior; primero reproduce cada hallazgo, y el que no puede reproducir vuelve como NOT REPRODUCED | 2 rondas por squad, luego un `veteran` |
-| **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez (el `confessor` revisa sus propios IDs), solo sobre los IDs de hallazgos abiertos y el rango del arreglo, y luego `sonic` para los checks | 2 rondas por item del Merge bar |
+| **Retrial** | el código reparado necesita otra mirada | el `inquisitor` otra vez (el `confessor` revisa sus propios IDs), solo sobre los IDs de hallazgos abiertos y el rango del arreglo, y luego `sonic` para los checks completos | 2 rondas por item del Merge bar |
 | **Stand down** | se agotó el presupuesto, o el fallo no está en el código | tú, con los puntos abiertos | — |
 
 Si el código puede cumplir el check del squad tal como está escrito, es un penance; si no puede, el squad se cortó mal y es un redraft. Una vuelta que pasa por delante de un sello ya concedido rompe el sello (salvo el bucle Review & merge) y hay que pedirlo otra vez. Lo que ya pasó, sigue pasado.
@@ -136,13 +136,13 @@ El Capitán planifica y delega; cada uno de los demás papeles es un agente que 
 | <img src="docs/icons/radar.svg" width="18" alt=""> `scout` | Auspex | mapea el código que toca el objetivo; de 1 a 3 a la vez, cada uno con su foco | escribe ficheros o ejecuta bash | `@smol` / medium |
 | <img src="docs/icons/book-open-page-variant.svg" width="18" alt=""> `librarian` | Scriptorium | escribe la spec, los squads y el Merge bar; uno por área cuando el objetivo se divide, y luego un líder une las partes | edita ficheros del repositorio | `@plan` / high |
 | <img src="docs/icons/head-cog.svg" width="18" alt=""> `archmagos` | Scriptorium | integra los planes de cada área en uno, comprobando cada supuesto contra el código; solo si se marcó en Muster | edita, escribe o lanza agentes | `@plan` / xhigh |
-| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | construye un squad con los tests primero y reporta la evidencia rojo/verde | hace commits o toca ficheros fuera de su squad | el [tier](#tiers) de su squad |
-| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rehace un squad que falló dos veces, después de averiguar por qué | hace commits | tier heavy (`@slow:high`); solo para escalar |
+| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | construye un squad con los tests primero, con los tiers de checks fast y squad, y reporta la evidencia rojo/verde | hace commits, toca ficheros fuera de su squad o ejecuta los checks completos | el [tier](#tiers) de su squad |
+| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rehace un squad que falló dos veces, después de averiguar por qué | hace commits o ejecuta los checks completos | tier heavy (`@slow:high`); solo para escalar |
 | <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | muta las líneas cambiadas del squad y hace fuzzing de la entrada no fiable, para enseñar dónde los tests no protegen el código | edita los tests que audita, o deja el árbol cambiado | `@task` / medium |
-| <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | revisa el diff contra el Merge bar; un PASS necesita evidencia con fichero:línea o un comando | edita, hace commits o push | `@slow` / high |
+| <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | revisa el diff contra el Merge bar y cada test borrado o debilitado; un PASS necesita evidencia con fichero:línea o un comando | edita, hace commits o push | `@slow` / high |
 | <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | una segunda revisión, independiente y de otra familia de modelos, cuando el plan marca el diff como grande o arriesgado, o en el bucle Review & merge | lee el informe del inquisitor | gpt-6-astra (si no, `@task`) / high |
 | <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | entra cuando el diff toca auth, entrada externa, secretos o la red | edita | incluido en omp, el modelo de tu sesión |
-| <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | ejecuta los checks del repo: primero la línea base, al final los checks completos | arregla lo que falla | `@smol` / medium |
+| <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | ejecuta los checks completos del repo: primero la línea base cronometrada (un fallo que pasa al repetirlo una vez es flaky), al final los checks completos con sus tiempos junto a los de la línea base | arregla lo que falla | `@smol` / medium |
 
 #### Modelos
 
