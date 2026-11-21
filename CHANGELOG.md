@@ -1,3 +1,17 @@
+## [0.2.22] - 2026-11-21
+
+### 🚀 Features
+
+- *(skills)* Seal Demo replaces seal UI, and a Contract section at seal Plan
+
+### 📚 Documentation
+
+- *(skills)* Agents run the Demo surface, and the Contract item covers waivers
+- *(skills)* The Captain starts no server, the agent stops what it started
+
+### 🧪 Testing
+
+- Use the Demo seal name in cockpit tests and tui-shot replays
 ## [0.2.21] - 2026-11-21
 
 ### 🚀 Features
