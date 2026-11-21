@@ -1,6 +1,6 @@
 """Run the real omp + this plugin in a Windows ConPTY, seed a run, and screenshot what the user sees, or replay past regressions. Windows only.
 
-  python tools/tui-shot/shot.py [--seed=scriptorium|skirmish|timed] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
+  python tools/tui-shot/shot.py [--seed=scriptorium|skirmish|timed|restart] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
                                 [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png]
   python tools/tui-shot/shot.py --replay=NAME | --all  [--plugin=DIR] [--suffix=-x] [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png] [--keep-work]
 
@@ -44,6 +44,20 @@ SEEDS = {
         "where": {"station": "Scriptorium", "seal": "Plan"}, "extra": {}, "timed": 240,
         "phases": [MUSTER, AUSPEX, SCRIPTORIUM]},
 }
+SEEDS["restart"] = {**SEEDS["skirmish"], "cockpit": {  # skirmish plus a saved cockpit (runs/<sid>.cockpit): what an omp restart must bring back
+    "chronicle": [
+        {"at": "10:01", "who": "STRATEGOS", "text": "station Skirmish"},
+        {"at": "10:02", "who": "✠ SEAL", "text": "Plan granted", "tone": "seal"},
+        {"at": "10:03", "who": "SQUAD alpha", "text": "battle-brother deployed"},
+        {"at": "10:04", "who": "SQUAD beta", "text": "✓ returned", "tone": "ok"},
+        {"at": "10:05", "who": "SQUAD gamma", "text": "escalated to VETERAN", "tone": "fail"},
+        {"at": "10:06", "who": "SQUAD delta", "text": "✗ failed", "tone": "fail"}],
+    "notes": {"gamma": {"veteran": True}, "delta": {"failed": True}},
+    "deployed": [
+        ["AlphaBrother", {"who": "AlphaBrother", "role": "battle-brother", "squad": "alpha", "station": "Skirmish", "state": "active"}],
+        ["GammaVeteran", {"who": "GammaVeteran", "role": "veteran", "squad": "gamma", "station": "Skirmish", "state": "active"}],
+        ["BetaBrother", {"who": "BetaBrother", "role": "battle-brother", "squad": "beta", "station": "Skirmish", "state": "done"}],
+        ["DeltaBrother", {"who": "DeltaBrother", "role": "battle-brother", "squad": "delta", "station": "Skirmish", "state": "failed"}]]}}
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
 ap.add_argument("--seed", default="scriptorium", choices=SEEDS)
@@ -122,6 +136,8 @@ class Run:
         with open(self.runfile, "w") as f:
             json.dump({"key": KEY, "theatre": "none", "sid": SID, **({} if S.get("timed") else {"untimed": True}), "where": S["where"], "phases": S["phases"],
                        "slices": [sl(i) for i in ("alpha", "beta", "gamma", "delta")], **S["extra"]}, f)
+        if S.get("cockpit"):  # the file index.ts writes (cockpit file contract: key, chronicle oldest first, notes, deployed [id, Deployed][])
+            with open(os.path.join(self.state, "runs", SID + ".cockpit"), "w", encoding="utf8") as f: json.dump({"key": KEY, **S["cockpit"]}, f)
         if S.get("timed"):  # the day file startKey would have written: local date, local time with offset
             now = datetime.datetime.now().astimezone().replace(microsecond=0)
             ts = max(now - datetime.timedelta(minutes=10), now.replace(hour=0, minute=0, second=0))
@@ -132,36 +148,48 @@ class Run:
         self.beat = os.path.join(self.state, "runs", SID + ".beat")  # the extension writes it on its first tick
         self.log = os.path.join(self.work, "replay.log")
         self.cmd = f'"{omp}" --no-extensions --session-dir "{self.sess}" --resume "{self.sfile}" -e "{PLUGIN}"' + (f' -e "{ponytail}"' if ponytail else "")
-        env = os.environ.copy()
-        env.update(STRATEGIUM_STATE_DIR=self.state, STRATEGIUM_GLYPHS="1", TERM_PROGRAM="Windows_Terminal", WT_SESSION="00000000-0000-0000-0000-000000000001")
+        self.env = os.environ.copy()
+        self.env.update(STRATEGIUM_STATE_DIR=self.state, STRATEGIUM_GLYPHS="1", TERM_PROGRAM="Windows_Terminal", WT_SESSION="00000000-0000-0000-0000-000000000001")
         if ext:  # every model role pinned to the fake provider: side turns (title...) never reach a real model either
             with open(os.path.join(self.work, "replay.yml"), "w") as f:
                 f.write("modelRoles:\n" + "".join(f"  {r}: replay/ask\n" for r in ("default", "slow", "plan", "advisor", "task", "vision", "commit", "smol")))
             self.cmd += f' -e "{EXT}" --model replay/ask --config "{self.work}\\replay.yml"'
-            env["STRATEGIUM_REPLAY_DIR"] = self.work
+            self.env["STRATEGIUM_REPLAY_DIR"] = self.work
+        self.out = bytearray()
+        self.events = []  # in call order: ("s", name, offset, png) snapshots and ("r", offset, cols, rows) resizes, replayed by the page
+        self._launch()
+
+    def _launch(self):
+        """Start omp (self.cmd, self.env, self.cwd) in a new ConPTY at the current size, with a reader thread appending to self.out."""
         inR, inW, outR, outW = w.HANDLE(), w.HANDLE(), w.HANDLE(), w.HANDLE()
         k.CreatePipe(ctypes.byref(inR), ctypes.byref(inW), None, 0); k.CreatePipe(ctypes.byref(outR), ctypes.byref(outW), None, 0)
-        self.hpc = HPCON(); assert k.CreatePseudoConsole(COORD(COLS, ROWS), inR, outW, 0, ctypes.byref(self.hpc)) == 0
+        self.hpc = HPCON(); assert k.CreatePseudoConsole(COORD(self.cols, self.rows), inR, outW, 0, ctypes.byref(self.hpc)) == 0
         sz = ctypes.c_size_t(); k.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(sz))
         self.buf = ctypes.create_string_buffer(sz.value)
         assert k.InitializeProcThreadAttributeList(ctypes.byref(self.buf), 1, 0, ctypes.byref(sz))
         assert k.UpdateProcThreadAttribute(ctypes.byref(self.buf), 0, 0x20016, self.hpc, ctypes.sizeof(HPCON), None, None)
         si = SIEX(); si.si.cb = ctypes.sizeof(SIEX); si.attr = ctypes.cast(self.buf, ctypes.c_void_p); si.si.fl = 0x100
         self.pi = PI(); self.inW = inW; self.outR = outR
-        envblock = "\0".join(f"{a}={b}" for a, b in env.items()) + "\0\0"
+        envblock = "\0".join(f"{a}={b}" for a, b in self.env.items()) + "\0\0"
         assert k.CreateProcessW(None, ctypes.create_unicode_buffer(self.cmd), None, None, False, 0x80000 | 0x400, ctypes.create_unicode_buffer(envblock), self.cwd, ctypes.byref(si), ctypes.byref(self.pi)), ctypes.get_last_error()
-        self.out = bytearray()
-        self.events = []  # in call order: ("s", name, offset, png) snapshots and ("r", offset, cols, rows) resizes, replayed by the page
-        threading.Thread(target=self._read, daemon=True).start()
+        threading.Thread(target=self._read, args=(outR,), daemon=True).start()
 
-    def _read(self):
+    def _read(self, outR):
         b = ctypes.create_string_buffer(65536); n = w.DWORD()
-        while k.ReadFile(self.outR, b, 65536, ctypes.byref(n), None) and n.value: self.out.extend(b.raw[:n.value])
+        while k.ReadFile(outR, b, 65536, ctypes.byref(n), None) and n.value: self.out.extend(b.raw[:n.value])
 
     def stop(self):
         k.TerminateProcess(self.pi.hp, 0); kill_tree(self.pi.pid)
         k.ClosePseudoConsole(self.hpc)
         for h in (self.pi.hp, self.pi.ht, self.inW): k.CloseHandle(h)  # not outR: closing it under the reader thread's pending ReadFile deadlocks
+
+    def restart(self):
+        """Kill omp (a crash: no shutdown hook) and start it again on the same work dir, seed untouched. One stream: the old process's bytes stay,
+        then a reset (leave the alternate buffer, RIS) so the page replays the new process on a clean screen. Waits for the new process's first heartbeat."""
+        self.stop(); time.sleep(0.5)  # lets the old reader thread drain its closed pipe before the reset marker
+        self.out.extend(b"\x1b[?1049l\x1bc")
+        if os.path.exists(self.beat): os.remove(self.beat)
+        self._launch(); self.settle()
 
     def cleanup(self):
         if not A.keep_work: shutil.rmtree(self.work, ignore_errors=True)
@@ -515,6 +543,37 @@ def checks_select(C):
 def steps_ponytail(R): R.snap("screen")
 def checks_ponytail(C): C.ck("Strategium loaded: is in the stream", b"Strategium loaded:" in C.R.out, None, None, C.s["screen"])
 
+def cockpit_count(R):
+    """Chronicle entries in the saved runs/<SID>.cockpit, or None if there is no readable file."""
+    try: return len(json.load(open(os.path.join(R.state, "runs", SID + ".cockpit"), encoding="utf8"))["chronicle"])
+    except (OSError, ValueError, KeyError): return None
+
+def chronicle_rows(s):
+    """The CHRONICLE rows of the open cockpit, newest first, without the frame."""
+    y = s.where("CHRONICLE")
+    if y < 0: return []
+    end = next((i for i in range(y + 1, s.rows) if s.row(i).startswith("╚")), s.rows)
+    return [s.row(i).strip("║ ") for i in range(y + 1, end) if s.row(i).strip("║ ")]
+
+def squad_marks(s):
+    """(mark, icon, squad, state) of every squad line in the boxes, by squad; ▷ (the blink frame of ▶) is read as ▶."""
+    return sorted(((m.replace("▷", "▶"), ic, sq, st) for m, ic, sq, st in re.findall(r"([▶▷✓✗○])\s*(\S+)\s+squad (\w+) (forging|returned|failed|awaiting deployment)", "\n".join(s.rows_text))), key=lambda x: x[2])
+
+def steps_cockpit_restart(R):
+    R.open(); R.snap("before", True); R.notes = {"before": cockpit_count(R)}
+    R.restart()
+    R.open(); R.snap("after", True); R.notes["after"] = cockpit_count(R)
+def checks_cockpit_restart(C):
+    b, a = C.s["before"], C.s["after"]; rb, ra = chronicle_rows(b), chronicle_rows(a)
+    want = ("station Skirmish", "Plan granted", "SQUAD alpha", "SQUAD beta", "SQUAD gamma", "SQUAD delta")
+    C.ck("before: CHRONICLE rows contain the seeded entries", all(any(x in r for r in rb) for x in want) and any("✓ returned" in r for r in rb) and any("✗ failed" in r for r in rb), rb, want, b)
+    C.ck("after: CHRONICLE rows equal before's, row for row", bool(rb) and ra == rb, ra, rb, a)
+    mb, ma = squad_marks(b), squad_marks(a)
+    by = {sq: (m, ic) for m, ic, sq, _ in mb}
+    C.ck("before: agent marks are ▶ alpha, ✓ beta, veteran ▶ gamma (icon differs from alpha's), ✗ delta", len(mb) == 4 and [by.get(q, ("?",))[0] for q in ("alpha", "beta", "gamma", "delta")] == ["▶", "✓", "▶", "✗"] and by["gamma"][1] != by["alpha"][1], mb, None, b)
+    C.ck("after: agent marks and veteran icon equal before's", ma == mb, ma, mb, a)
+    C.ck("runs/<SID>.cockpit has the same number of chronicle entries after the restart (no duplicates)", C.R.notes["before"] is not None and C.R.notes["after"] == C.R.notes["before"], C.R.notes, None)
+
 # name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, settle (False: wait only for the first heartbeat), steps, checks
 REPLAYS = {
     "fullscreen-height":  {"r": "R9", "kind": "FIXED", "seed": "scriptorium", "steps": steps_fullscreen_height, "checks": checks_fullscreen_height},
@@ -535,6 +594,7 @@ REPLAYS = {
     "capslock-altc":      {"r": "R1", "kind": "KNOWN", "seed": "scriptorium", "steps": steps_capslock, "checks": checks_capslock},
     "select-behind-cockpit": {"r": "R10", "kind": "KNOWN", "seed": "scriptorium", "ext": True, "steps": steps_select, "checks": checks_select},
     "ponytail-notice":    {"r": "R16", "kind": "OPEN", "seed": "scriptorium", "ponytail": True, "settle": False, "steps": steps_ponytail, "checks": checks_ponytail},
+    "cockpit-restart":    {"r": "#19", "kind": "FIXED", "seed": "restart", "steps": steps_cockpit_restart, "checks": checks_cockpit_restart},
 }
 
 def parse_snaps(dom):

@@ -21,7 +21,7 @@ import {
 } from "./timer";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -134,6 +134,12 @@ const today = () => dayFile(stateDir(), new Date());
 const runFile = (sid: string) => path.join(runsDir(), `${sid}.json`);
 // The session's heartbeat (local ISO time), rewritten every minute while it lives; see closeGap.
 const beatFile = (sid: string) => path.join(runsDir(), `${sid}.beat`);
+// The cockpit's chronicle, agent registry and squad marks, saved beside the run (not in it: see drawCockpit).
+const cockpitFile = (sid: string) => path.join(runsDir(), `${sid}.cockpit`);
+/** Remove everything a session left for its run. */
+const dropFiles = (sid: string) => {
+	for (const f of [runFile(sid), beatFile(sid), cockpitFile(sid)]) rmSync(f, { force: true });
+};
 
 /** Write through a temp file and rename, so a reader in another session never sees half a file. */
 function writeAtomic(file: string, data: string): void {
@@ -178,8 +184,7 @@ function ownRun(sid: string): Run | undefined {
 	const run = readRun(sid);
 	if (!run) return undefined;
 	if (holds(stateDir(), run.key, sid)) return run;
-	rmSync(runFile(sid), { force: true });
-	rmSync(beatFile(sid), { force: true });
+	dropFiles(sid);
 	return undefined;
 }
 
@@ -312,8 +317,7 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	if (other) {
 		// Force: the ticket changes hands, so its open block ends here whatever the heartbeat gap is.
 		closeGap(other, true);
-		rmSync(runFile(other.sid), { force: true });
-		rmSync(beatFile(other.sid), { force: true });
+		dropFiles(other.sid);
 	}
 	const mine = readRun(sid);
 	if (mine && mine.key !== key) {
@@ -370,8 +374,7 @@ function endRun(sid: string, key?: string, takeover?: string): string {
 	}
 	stopKey(run.key);
 	release(stateDir(), run.key, sid);
-	rmSync(runFile(run.sid), { force: true });
-	rmSync(beatFile(run.sid), { force: true });
+	dropFiles(run.sid);
 	return `ENDED ${run.key}`;
 }
 
@@ -841,14 +844,14 @@ export default function (pi: ExtensionAPI) {
 	let theme = themeSetting();
 	let pal = palette(colorDepth(), THEMES[theme.name]);
 
-	// The cockpit: an overlay on demand while this session has a run. Everything it
-	// shows beyond the run file (chronicle, squad notes, agent ids) is in memory, keyed by run key, so the plan-approval
-	// move to a new session keeps it and an omp restart loses it.
+	// The cockpit: an overlay on demand while this session has a run. Everything it shows beyond the run file
+	// (chronicle, squad notes, agent ids) lives in memory, keyed by run key, and drawCockpit saves it beside the run in
+	// runs/<sid>.cockpit when it changed (dirty), so the plan-approval move and an omp restart both keep it.
 	const cockpit = {
 		key: undefined as string | undefined,
 		chronicle: [] as Entry[],
 		notes: {} as Record<string, Note>,
-		// shortcut: the agent registry is in memory, so an omp restart loses it and only todo tasks and run squads show; upgrade by persisting it in Run if users need it.
+		dirty: false,
 		deployed: new Map<string, Deployed>(),
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
@@ -862,10 +865,32 @@ export default function (pi: ExtensionAPI) {
 		cockpit.notes = {};
 		cockpit.deployed.clear();
 		cockpit.clock = undefined;
+		cockpit.dirty = key !== undefined;
+	};
+	/** Take the saved state of this session's run, replacing memory; a missing, corrupt or other-key file is a clean start. */
+	const loadCockpit = (sid: string, key: string) => {
+		try {
+			const saved = JSON.parse(readFileSync(cockpitFile(sid), "utf8"));
+			const jobs: unknown = saved.deployed;
+			const shaped =
+				saved.key === key &&
+				Array.isArray(saved.chronicle) && saved.chronicle.every((e: unknown) => e && typeof e === "object" && typeof (e as Entry).text === "string") &&
+				saved.notes && typeof saved.notes === "object" && !Array.isArray(saved.notes) &&
+				Array.isArray(jobs) && jobs.every(d => Array.isArray(d) && typeof d[0] === "string" && d[1] && typeof d[1] === "object");
+			if (!shaped) throw new Error("another run's or a malformed state");
+			resetCockpit(key);
+			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP);
+			cockpit.notes = saved.notes;
+			for (const [id, job] of saved.deployed as [string, Deployed][]) cockpit.deployed.set(id, job);
+			cockpit.dirty = false;
+		} catch {
+			resetCockpit(key);
+		}
 	};
 	const log = (key: string, who: string, text: string, tone?: Entry["tone"]) => {
 		if (cockpit.key !== key) resetCockpit(key);
 		cockpit.chronicle = pushEntry(cockpit.chronicle, { at: new Date().toTimeString().slice(0, 5), who, text, ...(tone ? { tone } : {}) });
+		cockpit.dirty = true;
 	};
 	/** A deployed agent ended: log it once, keep it in the registry as done or failed, and note its squad as failed or not. */
 	const endJob = (key: string, id: string, ok: boolean) => {
@@ -902,6 +927,14 @@ export default function (pi: ExtensionAPI) {
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
 		});
+		if (cockpit.dirty) {
+			try {
+				writeAtomic(cockpitFile(run.sid), JSON.stringify({ key: cockpit.key, chronicle: cockpit.chronicle, notes: cockpit.notes, deployed: [...cockpit.deployed] }));
+				cockpit.dirty = false;
+			} catch {
+				// Kept dirty: the next draw tries again.
+			}
+		}
 		cockpit.overlay?.requestRender();
 	};
 	const openCockpit = (ctx: SessionCtx) => {
@@ -960,6 +993,8 @@ export default function (pi: ExtensionAPI) {
 
 	/** Begin `key` for the session: the tool's `begin` and the /strategium command both come here, so the edit guard is armed the same way. */
 	async function beginRun(sid: string, key: string, theatre: string, booked?: number, spent?: number, takeover?: string, archmagos?: boolean): Promise<string> {
+		// A session that lost its ticket drops its files here; its in-memory cockpit goes too, or a begin of the same key would bring it back.
+		if (!ownRun(sid)) resetCockpit();
 		begin(sid, key, theatre, booked, spent, takeover);
 		// A block start always restarts the idle count.
 		idleSince = undefined;
@@ -1395,6 +1430,7 @@ export default function (pi: ExtensionAPI) {
 		// The mark is spent by the first switch after the review closed.
 		const reviewed = reviewSid;
 		reviewSid = undefined;
+		let carried = false;
 		// The fresh session of an approved plan takes over the run of the session that asked for the review.
 		if (e.reason === "new" && prevSid && prevSid === reviewed && prevSid !== sid && !readRun(sid)) {
 			const moved = ownRun(prevSid);
@@ -1404,8 +1440,12 @@ export default function (pi: ExtensionAPI) {
 					// omp cancelled the old session's background agents: none runs any more.
 					// The old session's station is not where the fresh one starts.
 					writeRun(settle({ ...moved, sid, where: undefined }, {}, Object.values(moved.agents ?? {})));
-					rmSync(runFile(prevSid), { force: true });
-					rmSync(beatFile(prevSid), { force: true });
+					// The cockpit in memory is the moved run's: the next draw saves it under the new sid.
+					if (cockpit.key === moved.key) {
+						cockpit.dirty = true;
+						carried = true;
+					}
+					dropFiles(prevSid);
 					beat(sid);
 					const n = notifyBySession.get(prevSid);
 					if (n !== undefined) notifyBySession.set(sid, n);
@@ -1436,8 +1476,7 @@ export default function (pi: ExtensionAPI) {
 				claim(stateDir(), own.key, sid);
 				held = true;
 			} catch {
-				rmSync(runFile(sid), { force: true });
-				rmSync(beatFile(sid), { force: true });
+				dropFiles(sid);
 			}
 			// A reload closes the session and opens it again; the run goes on by itself, across days too. A run the
 			// user stopped carries no mark and stays paused. The heartbeat is renewed so tick does not read the gap
@@ -1448,6 +1487,8 @@ export default function (pi: ExtensionAPI) {
 				if (resume) resumeOrWarn(own, sid, ctx);
 			}
 		}
+		// Before the first tick, so its draw never overwrites the saved state with an empty one.
+		if (held && !carried) loadCockpit(sid, own!.key);
 		refreshFooter = tick;
 		if (!timerSet) {
 			timerSet = true;

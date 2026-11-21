@@ -286,12 +286,12 @@ describe("view", () => {
 });
 
 describe("chronicle and jobs", () => {
-	test("pushEntry keeps the newest 20, newest last", () => {
+	test("pushEntry keeps the newest 200, newest last", () => {
 		let list: Entry[] = [];
-		for (let i = 0; i < 25; i++) list = pushEntry(list, { at: "10:00", who: "X", text: String(i) });
-		expect(list).toHaveLength(20);
+		for (let i = 0; i < 205; i++) list = pushEntry(list, { at: "10:00", who: "X", text: String(i) });
+		expect(list).toHaveLength(200);
 		expect(list[0].text).toBe("5");
-		expect(list[19].text).toBe("24");
+		expect(list[199].text).toBe("204");
 	});
 
 	test("jobEnds returns ids and statuses of task jobs that stopped running", () => {

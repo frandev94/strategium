@@ -65,7 +65,8 @@ export function grantedSeals(before: Phase[] | undefined, after: Phase[]): Seal[
 	return sealsFrom(after).filter(s => s.state === "granted" && was.has(s.id) && was.get(s.id) !== "granted");
 }
 
-export const pushEntry = (list: Entry[], e: Entry, cap = 20): Entry[] => [...list, e].slice(-cap);
+export const CHRONICLE_CAP = 200;
+export const pushEntry = (list: Entry[], e: Entry, cap = CHRONICLE_CAP): Entry[] => [...list, e].slice(-cap);
 
 // Esc as omp's matchesKey("escape") takes it: a bare ESC or kitty CSI-u for 27 (optional shifted/base keys, either may be empty, and trailing text) whose modifier is 1 plus any Caps/Num Lock bits (64, 128), not a release (event 3).
 // Not imported from pi-tui: extensions load with no runtime dependency on omp's packages.
@@ -166,7 +167,6 @@ export function cockpitView(input: ViewInput) {
 	const ids = [...new Set([...(input.slices ?? []), ...(input.stopped ?? [])].map(s => s.id))];
 	const building = new Set(Object.values(input.agents ?? {}).map(s => s.id));
 	const returned = new Set((input.stopped ?? []).map(s => s.id));
-	// shortcut: a squad's veteran mark comes from in-memory notes, lost on restart; [veteran] todo tasks still show ‡.
 	const squads = ids.map(id => {
 		const note = input.notes[id] ?? {};
 		const [kind, state]: [Kind, string] = building.has(id)

@@ -17,3 +17,6 @@ skills-lock.json
 *.log
 .DS_Store
 Thumbs.db
+
+# python bytecode
+__pycache__/
