@@ -1,3 +1,13 @@
+## [0.2.14] - 2026-11-21
+
+### 🚀 Features
+
+- *(skills)* A redraft re-plans from a refreshed map
+- *(extension)* Redraft in both plan paths waits for a refresh scout
+
+### 📚 Documentation
+
+- *(skills)* Say what a deferred plan-mode redraft does not cover
 ## [0.2.13] - 2026-11-21
 
 ### 🚀 Features
