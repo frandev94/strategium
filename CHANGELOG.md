@@ -1,3 +1,21 @@
+## [0.2.30] - 2026-11-21
+
+### 🚀 Features
+
+- *(cockpit)* Cost per agent in the cockpit and the debrief
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Cost totals say they are agents only and list price
+- *(cockpit)* One cost check, and a debrief that survives absurd costs
+
+### 📚 Documentation
+
+- *(cockpit)* Describe the cost per agent
+
+### 🧪 Testing
+
+- *(tooling)* Tui-shot replay of the cost on agent rows
 ## [0.2.29] - 2026-11-21
 
 ### 🚀 Features
