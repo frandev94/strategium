@@ -1431,17 +1431,17 @@ describe("the run follows an approved plan", () => {
 		await approve(s, sm, ctx);
 		for (const word of ["seal Plan", "Scriptorium", "Muster"]) expect(s.shown()).not.toContain(word);
 		// The rebuild: omp starts the first task of the new todo by itself.
-		const stations = (objective: string, rest: "pending" | "completed") => [
-			phase("Muster", [`[captain] ${objective}`, rest], ["[captain] Orders", rest]),
+		const stations = (rest: "pending" | "completed") => [
+			phase("Muster", ["[captain] Objective", rest], ["[captain] Orders", rest]),
 			phase("Auspex", ["[scout] Map", rest]),
 			phase("Scriptorium", ["[librarian] Plan", rest], ["[seal] Plan", rest]),
 			phase("Deployment", ["[captain] Branch and squads", "pending"]),
 		];
-		const init = stations("Objective", "pending");
+		const init = stations("pending");
 		init[0].tasks[0].status = "in_progress";
 		await todoResult(s, ctx, "init", init);
 		expect(s.shown()).not.toContain("Muster");
-		const done = stations("Objective", "completed");
+		const done = stations("completed");
 		done[3].tasks[0].status = "in_progress";
 		await todoResult(s, ctx, "done", done);
 		expect(s.shown()).toContain("Deployment › Branch and squads");
