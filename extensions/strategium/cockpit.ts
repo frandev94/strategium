@@ -51,7 +51,7 @@ function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): 
 		if (done > 0 && done < total) parts.push(`~${span(Math.max(1, Math.ceil((ms * (total - done)) / done / 60_000)))}`);
 		parts.push(oneLine(live?.current));
 	} else parts.push(oneLine(live?.intent) || oneLine(live?.tool));
-	const start = Math.max(d.at ?? 0, live?.at ?? 0); // the same idle start index.ts marks
+	const start = live?.at ?? 0; // the same idle start index.ts marks
 	const stalled = start > 0 && d.stalled === start;
 	return { detail: `${stalled ? `stalled ${minutes(now - start)}m · ` : ""}${parts.filter(Boolean).join(" · ")}`, ...(stalled ? { stalled: true as const } : {}) };
 }

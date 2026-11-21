@@ -1012,8 +1012,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			if (job.state !== "active") continue;
 			const row = readLive(run.sid, id);
 			if (row) rows.set(id, row);
-			// The idle period starts at the later of the deploy and the last tool call; with neither on record there is nothing to count from.
-			const start = Math.max(job.at ?? 0, row?.at ?? 0);
+			// The idle period starts at the last tool call; an agent with no live row has nothing to count from (it may be an eval spawn or another process), so it is never stalled.
+			const start = row?.at ?? 0;
 			if (!start || row?.busy || now - start < STALL_MS || job.stalled === start) continue;
 			job.stalled = start;
 			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");

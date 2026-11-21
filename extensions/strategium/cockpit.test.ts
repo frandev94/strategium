@@ -1044,12 +1044,10 @@ describe("live agent lines", () => {
 		expect(draw(scout(l, { stalled: NOW - 8 * MIN })).join("\n")).not.toContain(`${GOLD}▶`);
 	});
 
-	test("an agent with no live entry marked stalled at its deploy draws gold with minutes and elapsed", () => {
+	test("an agent with no live entry is not gold even when marked stalled", () => {
 		const at = NOW - 10 * MIN;
-		expect(rows(scout(undefined, { stalled: at })).join("\n")).toContain("stalled 10m · 10m");
-		const raw = draw(scout(undefined, { stalled: at })).join("\n");
-		expect(raw).toContain(`${GOLD}▶\x1b[39m ${GOLD}A\x1b[39m`);
-		expect(raw).toContain(`${GOLD}stalled 10m`);
+		expect(rows(scout(undefined, { stalled: at })).join("\n")).not.toContain("stalled");
+		expect(draw(scout(undefined, { stalled: at })).join("\n")).not.toContain(`${GOLD}▶`);
 	});
 
 	test("an agent with no live entry and no stall mark draws elapsed only, not gold", () => {

@@ -4830,12 +4830,22 @@ describe("cockpit", () => {
 
 		test("a saved agent with a non-numeric at or stalled is read as having none", async () => {
 			const { s } = await running();
+			s.todo([{ name: "Auspex", tasks: [{ content: "[scout] Map the code", status: "in_progress" }] }]);
+			s.handlers.before_subagent_spawn.forEach(h => h({ agent: "scout", spawnKey: "A" }, s.ctx));
+			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "scout", name: "A", task: "look" }] }, details: { progress: [{ index: 0, id: "A", status: "running" }] }, isError: false }, s.ctx));
+			await peek(s, uiCtx(s));
 			const file = join(s.dir, "runs", "sess-0001.cockpit");
-			writeFileSync(file, JSON.stringify({ key: "K-1", chronicle: [], notes: {}, deployed: [["A", { who: "SCOUT", role: "scout", state: "active", at: "soon", stalled: "x" }]] }));
+			const saved = JSON.parse(readFileSync(file, "utf8"));
+			for (const [, d] of saved.deployed) Object.assign(d, { at: "soon", stalled: "x" });
+			writeFileSync(file, JSON.stringify(saved));
 			const again = setup("sess-0001", s.dir);
 			const ui = uiCtx(again);
 			await again.start();
-			expect(await chron(again, ui)).not.toContain("stalled");
+			again.todo([{ name: "Auspex", tasks: [{ content: "[scout] Map the code", status: "in_progress" }] }]);
+			at(10 * MIN);
+			const text = await peek(again, ui);
+			expect(text).not.toContain("stalled");
+			expect(text).not.toContain("NaN");
 		});
 
 		describe("an agent with no live row", () => {
@@ -4848,14 +4858,11 @@ describe("cockpit", () => {
 				return { s, ui };
 			}
 
-			test("is stalled 5 min after it was deployed, logged once", async () => {
+			test("is never stalled, however long it is left: elapsed only", async () => {
 				const { s, ui } = await scout();
-				at(4 * MIN);
+				at(10 * MIN);
 				expect(await chron(s, ui)).not.toContain("stalled");
-				at(6 * MIN);
-				expect(await chron(s, ui)).toContain("stalled 6m");
-				await peek(s, ui);
-				expect((await chron(s, ui)).match(/stalled/g)).toHaveLength(1);
+				expect(top(await peek(s, ui))).not.toContain("stalled");
 			});
 
 			test("the 5 minutes count from its last live row once it has one", async () => {
@@ -4873,9 +4880,10 @@ describe("cockpit", () => {
 			const { s, ui } = await squad();
 			const c = child(s);
 			c.start("read");
+			at(2000);
 			c.end("read");
 			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A")] }, details: { progress: [{ index: 0, id: "A", status: "completed" }] }, isError: false }, s.ctx));
-			at(6 * MIN);
+			at(10 * MIN);
 			const t = await chron(s, ui);
 			expect(t).toContain("returned");
 			expect(t).not.toContain("stalled");
