@@ -21,7 +21,7 @@ import {
 } from "./timer";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -193,15 +193,17 @@ const LIVE_BYTES = 4096; // a live file is a few hundred bytes; a bigger one is 
 const LIVE_TEXT = 200;
 const STALL_MS = 5 * 60_000; // no tool call in flight and none ended for this long
 const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
-/** What an agent wrote about itself (contract v1: `since` and `at` in ms; `busy` the tool calls in flight; the rest as `Live`). The file is untrusted: anything of another shape is undefined. */
+/** What an agent wrote about itself (contract v2: `since` and `at` in ms; `busy` the tool calls in flight; the rest as `Live`, which v1 files lack). The file is untrusted: anything of another shape is undefined. */
 function readLive(sid: string, id: string): (Live & { busy?: number }) | undefined {
 	try {
 		const f = liveFile(sid, id);
 		if (statSync(f).size > LIVE_BYTES) return undefined;
 		const v = JSON.parse(readFileSync(f, "utf8"));
 		if (!v || typeof v !== "object" || !isCount(v.since) || !isCount(v.at)) return undefined;
-		if (["busy", "done", "total"].some(k => v[k] !== undefined && !isCount(v[k]))) return undefined;
-		if (["tool", "intent", "current"].some(k => v[k] !== undefined && typeof v[k] !== "string")) return undefined;
+		if (["busy", "done", "total", "eta_min"].some(k => v[k] !== undefined && !isCount(v[k]))) return undefined;
+		if (v.pct !== undefined && (!isCount(v.pct) || v.pct > 100)) return undefined;
+		if (["tool", "intent", "current", "line"].some(k => v[k] !== undefined && typeof v[k] !== "string")) return undefined;
+		if (v.blocked !== undefined && typeof v.blocked !== "boolean") return undefined;
 		return v;
 	} catch {
 		return undefined;
@@ -971,6 +973,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			for (const [id, job] of saved.deployed as [string, Deployed][]) {
 				// Hand-edited or damaged numbers are read as absent.
 				for (const k of ["at", "stalled"] as const) if (typeof job[k] !== "number") delete job[k];
+				if (job.blocked !== true) delete job.blocked;
 				cockpit.deployed.set(id, job);
 			}
 			cockpit.seal = saved.seal && { id: saved.seal.id, lines: saved.seal.lines.slice(0, SEAL_LINES).map((l: string) => l.slice(0, SEAL_LINE_CHARS)) };
@@ -1002,8 +1005,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.view = { ...cockpit.view!, status: cockpit.status };
 		cockpit.overlay.requestRender();
 	};
+
 	/** Rebuild the view from the run and the in-memory state, then repaint an open overlay. Never ticks the timer. */
-	const drawCockpit = (run: Run) => {
+	const drawCockpit = (run: Run, ctx: SessionCtx) => {
 		if (cockpit.key !== run.key) resetCockpit(run.key);
 		// What each active agent wrote about itself. A stalled one (no tool call in flight, none ended for 5 min) is logged once per `at`.
 		const now = Date.now();
@@ -1014,6 +1018,22 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			// A file older than this deploy is a previous agent's with the same id.
 			const row = raw && raw.since >= (job.at ?? 0) ? raw : undefined;
 			if (row) rows.set(id, row);
+			// A row that stopped saying it is blocked re-arms the alarm for the next block.
+			if (row && !row.blocked && job.blocked) {
+				delete job.blocked;
+				cockpit.dirty = true;
+			}
+			// shortcut: a block undone before the parent's next read (≤1 s with the cockpit open, ≤60 s closed) is never seen; upgrade if agents unblock themselves that fast.
+			if (row?.blocked === true) {
+				// Once per transition. A blocked row still falls through to the stall rule below.
+				if (!job.blocked) {
+					job.blocked = true;
+					const line = cap(oneLine(row.line));
+					log(run.key, job.who, line ? `blocked: ${line}` : "blocked", "warn");
+					const err = alert(run.sid, "attention", `${run.key}: ${job.who} is blocked${line ? `: ${line}` : ""}`, ctx);
+					if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+				}
+			}
 			// The idle period starts at the last tool call; an agent with no live row has nothing to count from (it may be an eval spawn or another process), so it is never stalled.
 			const start = row?.at ?? 0;
 			if (!start || row?.busy || now - start < STALL_MS || job.stalled === start) continue;
@@ -1054,7 +1074,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		if (!ctx.hasUI || typeof ctx.ui.custom !== "function") return ctx.ui.notify("Strategium: the cockpit needs the interactive UI", "warning");
 		if (cockpit.close) return;
 		cockpit.status = agentStatus(ctx);
-		drawCockpit(run);
+		drawCockpit(run, ctx);
 		const closed = () => {
 			cockpit.close = undefined;
 			cockpit.overlay = undefined;
@@ -1071,7 +1091,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 							// Every second frame the children's files are read again: at most once a second.
 							// readRun, not ownRun: a transient lock read failure must not drop the run.
 							const own = frame % 2 === 0 ? readRun(sidOf(ctx)) : undefined;
-							if (own) drawCockpit(own);
+							if (own) drawCockpit(own, ctx);
 							tui.requestRender();
 						} catch {
 							// A timer never throws; the next frame tries again.
@@ -1220,7 +1240,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			if (cockpit.key !== key) resetCockpit(key);
 			if (running) maybeAlert(ctx, sid, file, evs, key, now, el, bk);
 			cockpit.clock = { running, el, ...(bk ? { bk } : {}) };
-			drawCockpit(found);
+			drawCockpit(found, ctx);
 		} catch (err) {
 			ctx.ui.notify(`Strategium timer: ${err instanceof Error ? err.message : String(err)}`, "warning");
 		}
@@ -1228,7 +1248,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	pi.setLabel("Strategium");
 
 	const schema = z.object({
-		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft", "seal"]),
+		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft", "seal", "signal"]),
 		key: z.string().optional(),
 		booked: z.number().int().positive().optional(),
 		spent: z.number().int().nonnegative().optional(),
@@ -1242,16 +1262,20 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		archmagos: z.boolean().optional(),
 		slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()), tier: z.enum(["light", "standard", "heavy"]).optional() })).optional(),
 		lines: z.array(z.string()).optional(),
+		pct: z.number().int().min(0).max(100).optional(),
+		eta_min: z.number().int().min(0).max(10080).optional(),
+		line: z.string().optional(),
+		blocked: z.boolean().optional(),
 	});
 
 	pi.registerTool({
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft, seal (lines). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft, seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
-			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
+			if (ctx?.agent?.kind === "sub" && input.action !== "signal") return text("ERROR strategium tool is for the main session only");
 			const sid = sidOf(ctx);
 			try {
 				// The host validated input against `schema` before calling execute.
@@ -1336,7 +1360,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 						if (cockpit.key !== run.key) resetCockpit(run.key);
 						cockpit.seal = { id: waiting.id, lines };
 						cockpit.dirty = true;
-						drawCockpit(run);
+						drawCockpit(run, ctx);
 						return text(`SEAL ${waiting.id} panel ${lines.length} lines`);
 					}
 					case "redraft": {
@@ -1347,6 +1371,22 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 						return text(
 							`REDRAFT ${run.key}: back to Auspex; no librarian or archmagos until a scout spawned now has finished${run.archmagosSpawned ? "; then one more archmagos may be spawned" : ""}`,
 						);
+					}
+					case "signal": {
+						// Subagents only, and only their own row: the id comes from the host's ctx, never from a parameter.
+						if (ctx?.agent?.kind !== "sub") return text("ERROR signal is for subagents: it writes the caller's own cockpit row");
+						if (!ctx.agent.id) return text("ERROR signal needs the caller's agent id");
+						const own = ["action", "pct", "eta_min", "line", "blocked"];
+						const extra = Object.keys(params).filter(k => !own.includes(k) && (params as Record<string, unknown>)[k] !== undefined);
+						if (extra.length) return text(`ERROR signal writes only your own row; it takes pct, eta_min, line, blocked (got: ${extra.join(", ")})`);
+						const { pct, eta_min, line, blocked } = params;
+						if (pct === undefined && eta_min === undefined && line === undefined && blocked === undefined) return text("ERROR signal needs pct, eta_min, line or blocked");
+						if ((pct !== undefined && (!isCount(pct) || pct > 100)) || (eta_min !== undefined && (!isCount(eta_min) || eta_min > 10080)) || (line !== undefined && typeof line !== "string") || (blocked !== undefined && typeof blocked !== "boolean"))
+							return text("ERROR signal takes pct 0-100, eta_min 0-10080, line text, blocked true or false");
+						if (blocked && !cap(oneLine(line))) return text("ERROR signal blocked: true needs a non-empty line saying what you wait for: the Captain reads it in the alarm");
+						// A change of blocked is written at once: the Captain must not wait for the 1 s throttle to hear it.
+						const ok = recordLive(ctx, 0, { pct, eta_min, line: cap(oneLine(line)) || undefined, blocked: blocked || undefined }, !!blocked !== mine.wroteBlocked);
+						return text(ok ? "SIGNAL ok" : "SIGNAL ignored (no Strategium run)");
 					}
 				}
 			} catch (err) {
@@ -1957,7 +1997,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			cockpit.seal = undefined;
 			cockpit.dirty = true;
 		}
-		drawCockpit({ ...run, phases });
+		drawCockpit({ ...run, phases }, ctx);
 	});
 
 	// An agent deployed: the host allocates its id in the task result. An agent spawned by eval agent() is registered by its spawn hook (below).
@@ -1988,7 +2028,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active", at: Date.now() });
 			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
 		}
-		drawCockpit(run);
+		drawCockpit(run, ctx);
 	});
 
 	// An agent returned or failed: its job ends, or its eval cell reports its end, in a message to the model. An id ends once.
@@ -1998,7 +2038,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const run = ends.length ? ownRun(sidOf(ctx)) : undefined;
 		if (!run) return;
 		for (const j of ends) endJob(run.key, j.id, j.status === "completed");
-		drawCockpit(run);
+		drawCockpit(run, ctx);
 	});
 
 	pi.on("before_subagent_spawn", (e, ctx) => {
@@ -2012,7 +2052,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		// The spawnKey is the agent's id: its job label and its eval status events, so the context hook above ends it.
 		// shortcut: an eval spawn without spawnKey has nothing to match its end, so it stays ▶ until the run key changes; upgrade if a host omits spawnKey.
 		cockpit.deployed.set(id, { who: agent.toUpperCase(), role: agent, station: activeStation(run.phases ?? []), state: "active", at: Date.now() });
-		drawCockpit(run);
+		drawCockpit(run, ctx);
 	});
 
 	// The session that spawns children leaves a pointer for them (they share its pid); it goes with the session.
@@ -2032,11 +2072,12 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	// shortcut: a child in another OS process reads no pointer (its pid differs) and writes nothing; upgrade if omp moves subagents out of process.
 	// shortcut: a lost tool_execution_end leaves `busy` up, so that agent never counts as stalled; upgrade if the host drops those events.
 	const LIVE_MS = 1000;
-	const mine = { since: 0, at: 0, busy: 0, wrote: 0, row: {} as Partial<Live>, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+	const mine = { since: 0, at: 0, busy: 0, wrote: 0, wroteBlocked: false, row: {} as Partial<Live>, timer: undefined as ReturnType<typeof setTimeout> | undefined };
 	const cap = (s: string) => s.slice(0, LIVE_TEXT);
-	const recordLive = (ctx: { agent?: { kind?: string; id?: string } } | undefined, busy: number, row: Partial<Live>) => {
+	/** Records the row; true when a run pointer is valid (written or scheduled). `force` writes at once, past the 1 s throttle. */
+	const recordLive = (ctx: { agent?: { kind?: string; id?: string } } | undefined, busy: number, row: Partial<Live>, force = false) => {
 		const id = ctx?.agent?.id;
-		if (ctx?.agent?.kind !== "sub" || !id) return;
+		if (ctx?.agent?.kind !== "sub" || !id) return false;
 		try {
 			const now = Date.now();
 			mine.since ||= now;
@@ -2044,31 +2085,35 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			mine.busy = Math.max(0, mine.busy + busy);
 			Object.assign(mine.row, row);
 			// A write is pending and carries the latest state: no pointer read, no stat.
-			if (mine.timer) return;
+			if (mine.timer && !force) return true;
 			const sid = readFileSync(pidFile(), "utf8").trim();
 			// A pointer to a run that is gone is inert.
-			if (!/^[\w.-]+$/.test(sid) || !existsSync(runFile(sid))) return;
+			if (!/^[\w.-]+$/.test(sid) || !existsSync(runFile(sid))) return false;
 			const write = () => {
 				clearTimeout(mine.timer);
 				mine.timer = undefined;
 				mine.wrote = Date.now();
+				mine.wroteBlocked = !!mine.row.blocked;
 				try {
 					if (existsSync(runFile(sid))) writeAtomic(liveFile(sid, id), JSON.stringify({ since: mine.since, at: mine.at, busy: mine.busy, ...mine.row }));
 				} catch {
 					// The next update writes again.
 				}
 			};
-			if (now - mine.wrote >= LIVE_MS) write();
+			if (force || now - mine.wrote >= LIVE_MS) write();
 			else {
 				mine.timer = setTimeout(write, LIVE_MS - (now - mine.wrote));
 				mine.timer.unref();
 			}
+			return true;
 		} catch {
 			// No pointer or no file: nothing to show.
+			return false;
 		}
 	};
-	pi.on("tool_execution_start", (e, ctx) => recordLive(ctx, 1, { tool: cap(bareName(e.toolName)), intent: typeof e.intent === "string" ? cap(e.intent) : undefined }));
-	pi.on("tool_execution_end", (_e, ctx) => recordLive(ctx, -1, {}));
+	// A block clears only with a later signal without blocked (or when the agent is no longer active): an agent waiting on the Captain does so inside a tool call, so a tool start must not undo it.
+	pi.on("tool_execution_start", (e, ctx) => void recordLive(ctx, 1, { tool: cap(bareName(e.toolName)), intent: typeof e.intent === "string" ? cap(e.intent) : undefined }));
+	pi.on("tool_execution_end", (_e, ctx) => void recordLive(ctx, -1, {}));
 	pi.on("tool_result", (e, ctx) => {
 		const phases = (e.details as { phases?: unknown } | undefined)?.phases;
 		if (ctx?.agent?.kind !== "sub" || e.toolName.replace(/^_+/, "") !== "todo" || e.isError || !Array.isArray(phases)) return;

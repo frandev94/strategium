@@ -355,7 +355,12 @@ function toast(msg: string) {
 		run("powershell", ["-NoProfile", "-Command", ps], { VOX_MSG: msg });
 	} else if (process.platform === "darwin") {
 		run("osascript", ["-e", 'display notification (system attribute "VOX_MSG") with title "Strategium"'], { VOX_MSG: msg });
-	} else run("notify-send", ["Strategium", msg]);
+	} else run("notify-send", ["Strategium", escapeMarkup(msg)]);
+}
+
+/** notify-send renders libnotify markup: escape & first, then < and >. */
+export function escapeMarkup(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /** Which channels an alarm run uses: a toast needs a message; the sound plays unless STRATEGIUM_SOUND is 0, false, off or no. */

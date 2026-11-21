@@ -1057,6 +1057,81 @@ describe("live agent lines", () => {
 		expect(rows(scout(undefined, { stalled: NOW - 3 * MIN })).join("\n")).not.toContain("stalled");
 	});
 
+	test("a signalled line, eta and todo render in the documented order", () => {
+		const out = rows(squad(live({ done: 2, total: 5, current: "x", line: "GREEN parser", eta_min: 4 })));
+		expect(out[out.findIndex(l => l.includes("squad a forging")) + 1]).toContain("10m · 2/5 · ~4m · GREEN parser");
+	});
+
+	test("pct replaces done/total", () => {
+		const out = rows(squad(live({ done: 2, total: 5, pct: 60, current: "x" }))).join("\n");
+		expect(out).toContain("10m · 60% · ~15m · x");
+		expect(out).not.toContain("2/5");
+		expect(rows(scout(live({ pct: 0 }))).join("\n")).toContain("10m · 0%");
+	});
+
+	test("eta_min shows with no todo; 0 reads ~<1m", () => {
+		expect(rows(scout(live({ eta_min: 4 }))).join("\n")).toContain("10m · ~4m");
+		expect(rows(scout(live({ eta_min: 0 }))).join("\n")).toContain("10m · ~<1m");
+	});
+
+	test("an empty line falls back to current, then intent", () => {
+		expect(rows(squad(live({ done: 1, total: 2, current: "Write tests", line: "  " }))).join("\n")).toContain("Write tests");
+		expect(rows(scout(live({ intent: "Reading", line: "" }))).join("\n")).toContain("10m · Reading");
+	});
+
+	test("a blocked row says so first and draws gold", () => {
+		const raw = draw(scout(live({ blocked: true, line: "need the API shape" }))).join("\n");
+		expect(plain(raw)).toContain("blocked · 10m · need the API shape");
+		expect(raw).toContain(`${GOLD}blocked · 10m`);
+		expect(raw).toContain(`${GOLD}▶\x1b[39m ${GOLD}A\x1b[39m`);
+	});
+
+	test("blocked and stalled together read blocked · stalled Nm · …", () => {
+		const l = live({ at: NOW - 6 * MIN, blocked: true, line: "why" });
+		expect(rows(scout(l, { stalled: l.at })).join("\n")).toContain("blocked · stalled 6m · 10m · why");
+	});
+
+	test("a hostile line renders as one clean row", () => {
+		const hostile = "\x1b[31mred\x1b[0m \x1b]8;;http://evil\x07link\x1b]8;;\x07\x00\x07\u202eevil\u2066\u2028next\r\nend";
+		const out = rows(scout(live({ line: hostile })));
+		const row = out.find(l => l.includes("10m · ")) ?? "";
+		expect(row).toContain("10m · red link evil next end");
+		for (const r of out) expect(r).not.toMatch(/[\p{Cc}\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/u);
+	});
+
+	test("a 300-character line is cut with … inside the box at 100 and 140 columns", () => {
+		for (const w of [100, 140]) {
+			const out = rows(scout(live({ line: "w".repeat(300) })), w);
+			const row = out.find(l => l.includes("10m · w")) ?? "";
+			expect(row).toContain("…");
+			for (const r of out) expect(Bun.stringWidth(r)).toBeLessThanOrEqual(w);
+		}
+	});
+
+	test("properties: hostile fields keep rows clean and inside the box; ~ iff eta_min or a part-done todo", () => {
+		let seed = 115;
+		const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff), seed % n);
+		const pieces = ["a", "界", "\x1b[31m", "\x1b]8;;u\x07", "\x00", "\u202e", "\u2028", "\n", " ", "…", "x".repeat(80), "\ud83d\ude00"];
+		const txt = () => Array.from({ length: rnd(12) }, () => pieces[rnd(pieces.length)]).join("");
+		for (let i = 0; i < 300; i++) {
+			const total = rnd(4) === 0 ? undefined : rnd(6);
+			const done = total === undefined ? undefined : rnd(total + 1);
+			const eta_min = rnd(2) ? rnd(100) : undefined;
+			const l = live({ done, total, eta_min, pct: rnd(2) ? rnd(101) : undefined, line: txt(), current: txt(), intent: txt(), blocked: rnd(2) ? true : undefined });
+			const width = 40 + rnd(120);
+			const out = draw(scout(l), width);
+			for (const r of out) {
+				expect(r.replace(/\x1b\[[0-9;]*m/g, "")).not.toMatch(/[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/u);
+				expect(Bun.stringWidth(r)).toBeLessThanOrEqual(width);
+			}
+			// the detail is the second row under the agent line; ~ can only come from eta_min or the computed ETA
+			const text = (done !== undefined && total !== undefined && total > 0 && eta_min === undefined && done > 0 && done < total) || eta_min !== undefined;
+			const detail = out.map(plain).find(r => /\b10m\b/.test(r)) ?? "";
+			const head = detail.split("│")[1]?.trim().split(" · ").slice(0, l.blocked ? 4 : 3).join(" · ") ?? "";
+			if (width >= 100 && !/…/.test(head)) expect(/(^| )~/.test(head)).toBe(text);
+		}
+	});
+
 	test("a warn chronicle entry is gold", () => {
 		const raw = draw(input({ chronicle: [{ at: "10:00", who: "A", text: "stalled 6m", tone: "warn" }] })).join("\n");
 		expect(raw).toContain(`${GOLD}stalled 6m`);
