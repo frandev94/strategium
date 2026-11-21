@@ -21,7 +21,7 @@ SID, KEY = "01a1eb00-0000-7000-8000-00000000d3a0", "demo-shot"  # the session id
 # --- seeds: data only. Task text is "[role] Title"; status completed|in_progress|pending. To add one, add an entry here. ---
 def t(c, s): return {"content": c, "status": s}
 def sl(i): return {"id": i, "parallel": True, "files": []}
-MUSTER = {"name": "Muster", "tasks": [t("[captain] Begin run", "completed"), t("[seal] Seals", "completed")]}
+MUSTER = {"name": "Muster", "tasks": [t("[captain] Begin run", "completed"), t("[captain] Orders", "completed")]}
 AUSPEX = {"name": "Auspex", "tasks": [t("[scout] Map the cockpit code", "completed")]}
 INQ = {"name": "Inquisition", "tasks": [t("[inquisitor] Review the branch", "pending"), t("[seal] UI", "pending")]}
 SCRIPTORIUM = {"name": "Scriptorium", "tasks": [t("[librarian] Plan area cockpit", "completed"), t("[librarian] Plan area docs", "completed"),

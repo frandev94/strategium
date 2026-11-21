@@ -131,5 +131,5 @@ test("the skill's todo example builds without errors", async () => {
 		"Extraction",
 		"Debrief",
 	]);
-	expect(call.op === "init" && call.list[0].items).toEqual(["[captain] Objective", "[seal] Seals"]);
+	expect(call.op === "init" && call.list[0].items).toEqual(["[captain] Objective", "[captain] Orders"]);
 });
