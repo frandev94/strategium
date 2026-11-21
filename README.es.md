@@ -86,7 +86,7 @@ flowchart TB
   end
   subgraph debrief["VIII · DEBRIEF"]
     direction LR
-    F[/"informe del día"/]
+    F[/"debrief · informe del día"/]
   end
 
   muster --> auspex --> scriptorium --> deployment --> skirmish --> inquisition --> extraction --> debrief --> E(["fin de la run"])
@@ -236,12 +236,14 @@ Luego, en una sesión nueva, ejecuta `/skill:strategium-setup`. Comprueba el plu
 /strategium-status                    todas las runs y su tiempo
 /strategium-config [notify on|off | sound on|off | toast on|off | volume <0-100> [preview] | idle <min> | archmagos on|off | commit on|off | cockpit-key <key> | cockpit-theme <name>|default]    ajustes; notify, sound o toast on|off, el volumen de la alarma (preview la reproduce a ese volumen), los minutos de inactividad, archmagos o commit on|off para esta sesión; cockpit-key <key> fija la tecla del cockpit desde el próximo arranque de omp; cockpit-theme <name> fija el tema del cockpit y lo aplica al instante
 /strategium-cockpit                   abre el cockpit (también Alt+C, o la tecla fijada con cockpit-key)
-/strategium-end                       cierra la run
+/strategium-end                       cierra la run y escribe su debrief
 ```
 
 El texto libre necesita las comillas, para no chocar nunca con un subcomando. Sin ticket, el librarian propone los criterios de aceptación y tú los confirmas en el sello Plan, que no se puede saltar. El comando inicia la run de inmediato, sin temporizador, bajo una KEY tomada del objetivo (una clave tal cual, el nombre base de un fichero, o las primeras palabras del texto libre en kebab-case).
 
 Cada sesión es dueña de una run, con una reserva atómica, así que varias sesiones de omp pueden trabajar en objetivos distintos a la vez. Cerrar una sesión pausa su run y libera la reserva; al reabrir esa sesión la recupera y la reanuda sola, salvo que tú la hubieras pausado (`/strategium-pause`, acción `stop`, el stand down). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy. Una run que sigue contando a medianoche no se para: su bloque termina a las 00:00 en el fichero del día anterior y empieza otro a las 00:00 de hoy, así que `status`, `report` y el pie siguen contando; una run con temporizador cuenta ahí sin reserva y sin las alertas de 50/80/100 (pie `<elapsed> min · new day: /strategium-resume <min>`) hasta que `/strategium-resume <min>` da la de hoy. El Capitán no puede editar el repositorio de la run: desde `begin`, `edit` y `ast_edit` se ocultan de la sesión principal y se rechazan los agentes fuera del plantel de Strategium; cuando `strategium repo` arma la guardia, `ast_edit` y `write` quedan bloqueados dentro del repo de la run y de su carpeta `<repo>-worktrees`, los ejecutores de tests y builds por bash y las escrituras de ficheros por bash están bloqueados (solo pasan las redirecciones a `$TEMP`, `$TMP`, `$TMPDIR`, `%TEMP%`, `/tmp/`, `local://`, `out://`, `/dev/null` y descriptores de fichero) y se rechazan los battle-brothers hasta que se declaren los squads del plan (`strategium` `slices`; los squads en paralelo no pueden compartir un fichero). En el modo plan de omp la run recorre las mismas estaciones, pero su todo solo contiene las que pueden correr ahí: Muster (Orders sin la casilla Plan), Auspex y Scriptorium, con los squads declarados antes de `xd://propose`. El plan propuesto abre con las estaciones ya hechas y lista solo lo que arranca la aprobación. "Approve and execute" abre una sesión nueva y la run se va con ella (reserva, marca de Archmagos y squads incluidos); su todo contiene de Deployment en adelante y empieza en la primera tarea de Deployment. Un `/new` normal deja la run en su propia sesión.
+
+El debrief: `end` (y `/strategium-end`) escribe el informe de la run en `<state dir>/debriefs/<key>-<date>.md`, que se queda tras terminar la run, y devuelve su ruta más un resumen corto en el chat (tiempo, sellos, spawns). Sus secciones son el tiempo por estación (minutos activos y en pausa, que suman el total de la run), los sellos (pedido, concedido, espera), los squads (ejecuciones del builder, penances, ejecuciones del veteran, último resultado, estado) y los agentes lanzados por rol y por modelo; estos números son exactos, salen de los registros propios del plugin y sobreviven a un reinicio de omp. El Capitán pasa los números que informaron los agentes en el parámetro opcional `reported` de `end` (`apothecary`: `killed`, `survived`, `crashes`; `review`: `pass`, `fail`, `opened`, `fixed`, `not_reproduced`); solo aparecen en las secciones `Apothecary (reported)` y `Review (reported)`, o como `Not reported.`. Después copia el fichero junto a los demás de la run con `cat "<path>" > local://<KEY>-debrief.md`.
 
 <details>
 <summary><strong>Pausa por inactividad, pie y cockpit</strong></summary>

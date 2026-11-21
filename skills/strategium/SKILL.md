@@ -263,6 +263,8 @@ Hard rules: `rule://strategium-stations` (Extraction).
 - If omp left task branches (see the auspex `## Isolation probe`), delete this run's: `git branch -D omp/task/<agent id>` for each agent of the run.
 
 ### 7. Debrief [captain]
-- `strategium` `end` (plays the Strategium theme).
+- Before `end`, collect the numbers the agents reported in this run: apothecary (mutants killed, survivors, fuzz crashes) and review (Merge bar PASS, Merge bar FAIL, findings opened, fixed, NOT REPRODUCED). Pass only those present, as `reported` (`apothecary {killed, survived, crashes}`, `review {pass, fail, opened, fixed, not_reproduced}`); never invent a missing number.
+- `strategium` `end` (plays the Strategium theme) writes the debrief and returns `DEBRIEF <path>` and summary lines (`TIME`, `SEALS`, `SPAWNS`); if it says `DEBRIEF not written`, it returns the markdown instead.
+- Copy the file: `cat "<DEBRIEF path>" > local://<KEY>-debrief.md`; show the summary lines in chat.
 - **[theatre]** Records.
 - `strategium` `report` gives the day's real blocks; for a timed run, the theatre says when and how to book them.
