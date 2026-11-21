@@ -28,7 +28,7 @@ The light banner swaps the roles: Bone background, Vellum panel, Blood title, Ol
 
 ## Type and marks
 
-- Titles: Cinzel (OFL), converted to paths by `tools/banner/banner.py`, so no font loads at view time.
+- Titles: Cinzel (OFL), converted to paths by `tools/banner/banner.ts` (`bun tools/banner/banner.ts path/to/Cinzel[wght].ttf docs`), so no font loads at view time.
 - Diagrams: `Georgia, serif`.
 - Icons: Material Design Icons (`docs/icons/`, licence in `docs/icons/LICENSE`) filled with Gold. No Games Workshop artwork, logos or fonts.
 
@@ -40,10 +40,10 @@ Station names, agent names and alerts carry the theme. Section headings, tickets
 
 | Place | What |
 |---|---|
-| `tools/banner/banner.py` (`THEMES`) | `docs/banner-dark.svg`, `docs/banner-light.svg` |
+| `tools/banner/banner.ts` (`THEMES`) | `docs/banner-dark.svg`, `docs/banner-light.svg` |
 | `README.md`, `README.es.md` | badge colours, the mermaid `init`, `classDef` and `linkStyle` lines |
 | `docs/icons/*.svg` | the `fill` attribute |
 | `extensions/strategium/themes.ts` (`THEMES['blood-angels']`) | the cockpit's default theme |
-| `README.md`, `README.es.md` (release badge `logo=`) | `docs/icons/skull.svg` URL-encoded in base64; a grep for the hex does not find it. After changing Gold, re-encode: `python -c "import base64,urllib.parse;print(urllib.parse.quote('data:image/svg+xml;base64,'+base64.b64encode(open('docs/icons/skull.svg','rb').read()).decode(),safe=':;,'))"` |
+| `README.md`, `README.es.md` (release badge `logo=`) | `docs/icons/skull.svg` URL-encoded in base64; a grep for the hex does not find it. After changing Gold, re-encode: `bun -e "console.log(encodeURIComponent('data:image/svg+xml;base64,'+require('fs').readFileSync('docs/icons/skull.svg').toString('base64')).replace(/%3A/g,':').replace(/%3B/g,';').replace(/%2C/g,','))"` |
 
 The cockpit's default `blood-angels` theme uses this palette: the Night background, Gold and Bone, with Ember (red text) and Ash (muted text) from Derived, so text keeps 4.5:1 on Night. The other cockpit themes (`ultramarines`, `dark-angels`, `cogitator`) have their own palettes.

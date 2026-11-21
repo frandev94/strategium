@@ -5,21 +5,21 @@ description: Use when developing or debugging the Strategium cockpit, footer or 
 
 # Screenshot the real omp TUI
 
-`tools/tui-shot/shot.py` runs the real `omp --no-extensions -e <this repo>` in a Windows ConPTY (140x45), with an isolated `STRATEGIUM_STATE_DIR` and a run seeded on disk, then renders the captured VT stream with xterm.js 5.5 (vendored under `tools/tui-shot/vendor/`, no network) and turns it into a PNG with headless Edge (throwaway profile). No model call is spent: omp resumes a hand-written session whose id matches the run's claim (`01a1eb00-…-d3a0`, key `demo-shot`), so the extension sees an owned run on its first tick.
+`tools/tui-shot/shot.ts` runs the real `omp --no-extensions -e <this repo>` in a Windows ConPTY (140x45), with an isolated `STRATEGIUM_STATE_DIR` and a run seeded on disk, then renders the captured VT stream with xterm.js 5.5 (vendored under `tools/tui-shot/vendor/`, no network) and turns it into a PNG with headless Edge (throwaway profile). No model call is spent: omp resumes a hand-written session whose id matches the run's claim (`01a1eb00-…-d3a0`, key `demo-shot`), so the extension sees an owned run on its first tick.
 
 ## Run (from the repo root)
 
 ```
-python tools/tui-shot/shot.py --seed=skirmish           # screen.png (the footer the seeded run draws, before Alt+C) + overlay.png (after Alt+C)
-python tools/tui-shot/shot.py --seed=scriptorium --ponytail   # also load ponytail -> screen-ponytail.png, overlay-ponytail.png
-python tools/tui-shot/shot.py --replay=NAME | --all     # regression replays, see below
+bun tools/tui-shot/shot.ts --seed=skirmish           # screen.png (the footer the seeded run draws, before Alt+C) + overlay.png (after Alt+C)
+bun tools/tui-shot/shot.ts --seed=scriptorium --ponytail   # also load ponytail -> screen-ponytail.png, overlay-ponytail.png
+bun tools/tui-shot/shot.ts --replay=NAME | --all     # regression replays, see below
 ```
 
-Output goes to `%TEMP%\strategium-tui-shot\` (`<name>.png`, `.html`, `.raw`), never into the repo. It takes about 15-40 s. Options: `--suffix=-x` names the outputs, `--plugin=DIR` another checkout, worktree or export (default: this repo), `--ponytail=DIR`, `--omp=EXE`, `--edge=EXE`, `--out=DIR`, `--no-png` (keep only `.html`/`.raw`), `--all-png` (replays: PNG of every snapshot, not only the `png=True` ones), `--keep-work` (replays: keep the work dir). Edge, omp and ponytail are discovered; the script exits with the flag to pass if one is missing. Different `--suffix` values can run in parallel.
+Output goes to `%TEMP%\strategium-tui-shot\` (`<name>.png`, `.html`, `.raw`), never into the repo. It takes about 15-40 s. Options: `--suffix=-x` names the outputs, `--plugin=DIR` another checkout, worktree or export (default: this repo), `--ponytail=DIR`, `--omp=EXE`, `--edge=EXE`, `--out=DIR`, `--no-png` (keep only `.html`/`.raw`), `--all-png` (replays: PNG of every snapshot, not only the ones marked `png`), `--keep-work` (replays: keep the work dir). Edge, omp and ponytail are discovered; the script exits with the flag to pass if one is missing. Different `--suffix` values can run in parallel.
 
 Read the PNG with `read` (it decodes images inline) and describe what you see: footer text, overlay layout, truncation, colors, glyph vs emoji. Check the `.png` exists before claiming anything.
 
-## Seeds (the `SEEDS` dict in shot.py)
+## Seeds (the `SEEDS` dict in shot.ts)
 
 | seed | where | shows |
 |---|---|---|
@@ -34,8 +34,8 @@ Add a seed: add an entry to `SEEDS` with `phases` (list of `{name, tasks:[{conte
 ## Replays: regressions as scenarios
 
 ```
-python tools/tui-shot/shot.py --replay=ask-behind-cockpit --plugin=%TEMP%\strategium-tui-shot\plugin-head   # one scenario: exit 0 PASS, 1 FAIL, 2 unknown name (lists the names)
-python tools/tui-shot/shot.py --all --plugin=%TEMP%\strategium-tui-shot\plugin-head                          # every scenario, then a table with the plugin's sha; exit 1 if a FIXED or KNOWN one does not PASS
+bun tools/tui-shot/shot.ts --replay=ask-behind-cockpit --plugin=%TEMP%\strategium-tui-shot\plugin-head   # one scenario: exit 0 PASS, 1 FAIL, 2 unknown name (lists the names)
+bun tools/tui-shot/shot.ts --all --plugin=%TEMP%\strategium-tui-shot\plugin-head                          # every scenario, then a table with the plugin's sha; exit 1 if a FIXED or KNOWN one does not PASS
 ```
 
 Each scenario starts its own omp in the ConPTY (work dir `work<suffix>-<name>`), sends keys (win32-input-mode records, the `KEYS` table), resizes the console (`ResizePseudoConsole`, logged by byte offset), waits, and takes named snapshots. A snapshot is the screen xterm.js holds after the stream up to that byte (the page replays the resizes at their offsets, so the size is right), read as text: one string per cell, wide cells and their continuation cells, the active buffer (`normal`/`alternate`). The checks read that text, never the PNG. It prints one line per check (`ok`/`FAIL`, with got/expected and the screen on failure), then `PASS NAME (R..)` or `FAIL NAME (R..)`. Outputs in `%TEMP%\strategium-tui-shot\`: `<scenario>-<checkpoint>.raw` (the stream up to there), `.html`, and `.png` for the checkpoints marked png (`--no-png` skips only the PNGs; Edge is always needed for the text). `--keep-work` keeps the work dir (state, `replay.log`). A scenario takes about 10-20 s, `run-end-closes` up to 70 s (it waits for the 60 s tick).
@@ -82,20 +82,20 @@ Not replayable on screen: R11 (the code path is gone; `no-widget` covers its rep
 
 ### In CI
 
-`.github/workflows/tui-shot.yml` runs `python tools/tui-shot/shot.py --all --no-png` on `windows-latest` for pull requests that touch `extensions/`, `tools/tui-shot/`, `skills/strategium/todo.ts`, `alarm/` (the two files outside `extensions/` that the cockpit imports), `package.json`, `bun.lock` or the workflow itself (and by hand with `workflow_dispatch`); a newer push to the same ref cancels the run in progress. omp is the devDependency's `node_modules\.bin\omp.exe`: bump the pin on purpose, the replays run on the bump. When the Replays step fails, a step reruns each `FAIL` scenario (at most 5, 5 minutes) with `--all-png` (a PNG of every snapshot) into `rerun/`, so the main run's `.raw`/`.html` stay intact. Pass or fail, the job summary shows the `--all` table (scenario, R, kind, result, first failing check). The artifact `tui-shot` holds the `.raw`/`.html`/PNGs and the log. No model is called.
+`.github/workflows/tui-shot.yml` runs `bun tools/tui-shot/shot.ts --all --no-png` on `windows-latest` for pull requests that touch `extensions/`, `tools/tui-shot/`, `skills/strategium/todo.ts`, `alarm/` (the two files outside `extensions/` that the cockpit imports), `package.json`, `bun.lock` or the workflow itself (and by hand with `workflow_dispatch`); a newer push to the same ref cancels the run in progress. omp is the devDependency's `node_modules\.bin\omp.exe`: bump the pin on purpose, the replays run on the bump. When the Replays step fails, a step reruns each `FAIL` scenario (at most 5, 5 minutes) with `--all-png` (a PNG of every snapshot) into `rerun/`, so the main run's `.raw`/`.html` stay intact. Pass or fail, the job summary shows the `--all` table (scenario, R, kind, result, first failing check). The artifact `tui-shot` holds the `.raw`/`.html`/PNGs and the log. No model is called.
 
 When the omp pin is bumped, a KNOWN scenario that turns red may mean upstream fixed the limit it pins: update its kind instead of weakening the check.
 
 ### Add a scenario
 
-1. A `steps_<name>(R)` function drives the run: `R.open()` (Alt+C, then quiet), `R.key("esc"|"q"|"down"|"enter"|…)` (add a record to `KEYS`), `R.type_text(s)`, `R.send(raw)`, `R.resize(c, r)`, `R.wait_quiet(quiet, timeout)`, `R.wait_for(b"word", timeout)` (a word without spaces: ConPTY may paint a gap as a cursor move), `R.alt_open()` (last `?1049h`/`?1049l` in the stream), `R.sleep(s)`, `R.snap("checkpoint", png=True)`. The run is settled first (heartbeat and 2 s of quiet); `"settle": False` waits for the heartbeat only.
+1. A scenario step function `async (R) => {…}` drives the run, and it must `await` every `R.*` call (an un-awaited call reorders keys or stops the stream reader; never use a synchronous sleep). Methods: `R.open()` (Alt+C, then quiet), `R.key("esc"|"q"|"down"|"enter"|…)` (add a record to `KEYS`), `R.typeText(s)`, `R.send(raw)`, `R.resize(c, r)`, `R.waitQuiet(quiet, timeout)`, `R.waitFor(Buffer.from("word"), 10)` (a word without spaces: ConPTY may paint a gap as a cursor move), `R.altOpen()` (last `?1049h`/`?1049l` in the stream), `R.sleep(s)`, `R.snap("checkpoint", …)` (the second argument asks for a PNG). Also `waitBeat`, `settle`, `logEvents`, `stop` and `cleanup`; fields `out`, `events`, `notes`, `state`, `work`, `runfile`, `cmd`. Stream offsets are bytes (`out` is a Buffer): never decode before slicing. The run is settled first (heartbeat and 2 s of quiet); `settle: false` waits for the heartbeat only.
    `R.restart()` kills omp (a crash, no shutdown hook), deletes the heartbeat, starts omp again with the same command, env and work dir (no reseed) and settles on the new process's first heartbeat. The stream stays one: the old bytes, a reset (`?1049l` + RIS), the new bytes; snapshots before and after the restart reach the checks as usual. Replays that restart must run alone.
-2. A `checks_<name>(C)` function: `C.s["checkpoint"]` is a `Snap` (`row(y)`, `at(y, x)`, `has(text)`, `where(text)`, `col_of(y, text)`, `last_col(y)`, `wide_cells()`, `framed()`, `type`, `cols`, `rows`); record with `C.ck(name, ok, got, want, snap)` (the snap is printed on failure); `C.log_has("tool_call", name="ask")` reads `replay.log`; `C.say(line)` prints a note.
-3. An entry in `REPLAYS`: `r`, `kind`, `seed`, optionally `ext: True` (fake provider), `ponytail: True`, `settle: False`. Never weaken a check to make a scenario pass: a FAIL on a fixed scenario is a finding.
+2. A checks function `(C) => {…}`: `C.s.get("checkpoint")` is a `Snap` (`row(y)`, `at(y, x)`, `has(text)`, `where(text)`, `colOf(y, text)`, `lastCol(y)`, `wideCells()`, `framed()`, `dump()`, fields `name`, `type`, `cols`, `rows`, `cells`, `rowsText`, `wide`); record with `C.ck(name, ok, got, want, snap)` (the snap is printed on failure); `C.logHas("tool_call", {name: "ask"})` reads `replay.log`; `C.say(line)` prints a note.
+3. An entry in `REPLAYS`: `{r, kind, seed, ext?, ponytail?, settle?, steps, checks}`: `ext: true` (fake provider), `ponytail: true`, `settle: false`. Never weaken a check to make a scenario pass: a FAIL on a fixed scenario is a finding.
 
 ### The fake provider (`tools/tui-shot/replay-ext.ts`)
 
-Dev-only, loaded as an extra `-e` by the scenarios with `ext: True`; not in `package.json`, `tsconfig.json` or the plugin manifest. It does nothing unless `STRATEGIUM_REPLAY_DIR` is set (the harness sets it to the work dir). It registers the provider `replay` with model `ask`; `ext: True` also writes `replay.yml` pinning every `modelRoles` entry to `replay/ask` and starts omp with `--model replay/ask --config replay.yml`, so no real model is ever called (no network, no tokens). When the user message ends in `replay-ask`, the fake stream starts, waits for the file `<work>/go`, then calls the real `ask` tool (or `write xd://ask`) with a form `REPLAY: pick one` (`Yes`/`No`); after the tool result it answers `REPLAY-ANSWER <result>`. Any other turn (title...) gets the text `replay`. `/replay-select` opens `ctx.ui.select` after 3 s. `replay.log` (JSONL, `ev`: `input` = the bytes `onTerminalInput` saw, `tool_call`, `tool_result`, `stream`, `select`) is what the checks read. `ask` is not mounted in `-p` mode, so this only works in the interactive ConPTY.
+Dev-only, loaded as an extra `-e` by the scenarios with `ext: true`; not in `package.json` or the plugin manifest (`tsconfig.json` type-checks it with the rest of `tools/`). It does nothing unless `STRATEGIUM_REPLAY_DIR` is set (the harness sets it to the work dir). It registers the provider `replay` with model `ask`; `ext: true` also writes `replay.yml` pinning every `modelRoles` entry to `replay/ask` and starts omp with `--model replay/ask --config replay.yml`, so no real model is ever called (no network, no tokens). When the user message ends in `replay-ask`, the fake stream starts, waits for the file `<work>/go`, then calls the real `ask` tool (or `write xd://ask`) with a form `REPLAY: pick one` (`Yes`/`No`); after the tool result it answers `REPLAY-ANSWER <result>`. Any other turn (title...) gets the text `replay`. `/replay-select` opens `ctx.ui.select` after 3 s. `replay.log` (JSONL, `ev`: `input` = the bytes `onTerminalInput` saw, `tool_call`, `tool_result`, `stream`, `select`) is what the checks read. `ask` is not mounted in `-p` mode, so this only works in the interactive ConPTY.
 
 ## Cleanup
 
@@ -103,11 +103,10 @@ The script removes its work dir (state, session, edge profile) itself (unless `-
 
 ## Limits
 
-- Windows 10 1809+ only (ConPTY via ctypes); Python 3 stdlib only.
-- Piped output (CI, `| tee`) needs `PYTHONUTF8=1` on Windows: the default cp1252 cannot print the box glyphs of the screen dump (`UnicodeEncodeError`). The workflow sets it.
+- Windows 10 1809+ only (ConPTY via `bun:ffi`); Bun only, no dependency.
 - The picture is xterm.js, not Windows Terminal: font (`CaskaydiaCove Nerd Font Mono` if installed, else a fallback, so glyphs may show as boxes), colors, ligatures and line height differ. It is right for layout, text and truncation, not for exact pixels.
 - Emoji width: the Unicode 11 addon makes emoji 2 cells wide, as Windows Terminal does; other terminals differ.
-- No network needed: xterm.js 5.5.0 (`xterm.js`, `xterm.css`) and `@xterm/addon-unicode11` 0.8.0 are vendored under `tools/tui-shot/vendor/`, byte-identical to the npm packages, with their MIT `LICENSE` files. `shot.py` checks the three files it loads against `vendor/SHA256SUMS` before writing any page and exits naming the file on a mismatch (`git checkout -- tools/tui-shot/vendor` restores them). `.gitattributes` marks `vendor/**` `-text` so `core.autocrlf` never rewrites them. To update: copy the files from the new npm tarballs into new version folders, regenerate `SHA256SUMS` (`sha256sum` format, paths relative to `vendor/`) and update `XTERM` in `shot.py`.
+- No network needed: xterm.js 5.5.0 (`xterm.js`, `xterm.css`) and `@xterm/addon-unicode11` 0.8.0 are vendored under `tools/tui-shot/vendor/`, byte-identical to the npm packages, with their MIT `LICENSE` files. `shot.ts` checks the three files it loads against `vendor/SHA256SUMS` before writing any page and exits naming the file on a mismatch (`git checkout -- tools/tui-shot/vendor` restores them). `.gitattributes` marks `vendor/**` `-text` so `core.autocrlf` never rewrites them. To update: copy the files from the new npm tarballs into new version folders, regenerate `SHA256SUMS` (`sha256sum` format, paths relative to `vendor/`) and update `XTERM` in `shot.ts`.
 - Alt+C is sent as a win32-input-mode record. A snapshot is the final screen after the stream up to that byte, so flicker and animation between checkpoints are not seen (take a checkpoint where it matters). The CSI-u Esc variants of `esc-close` pass through conhost's own parser, so they show what omp really received, not what Windows Terminal would send.
 - The harness can drive `ask` through the fake provider; it still does not exercise booking tools, ticketing or real agents, and never calls a model.
 - The footer shows the cwd `strategium-tui-shot\work<suffix>\cwd` (fixed name, so shots compare). Start size 140x45; the seeded run is `untimed` with `theatre: none` unless the seed is `timed`.
