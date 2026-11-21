@@ -4969,13 +4969,16 @@ describe("cockpit", () => {
 			expect(existsSync(join(s.dir, "runs", "sess-0001.live"))).toBe(false);
 		});
 
+		// A recent `at`, so only the shape or size of the file, not the age, can make the reader ignore it.
+		const row = (over: object) => JSON.stringify({ since: T0, at: T0, intent: "SHOWN", ...over });
 		test.each([
 			["not JSON", "{nope"],
-			["too big", JSON.stringify({ since: 1, at: 1, current: "x".repeat(5000) })],
-			["wrong shape", JSON.stringify({ since: "1", at: 1 })],
-			["a negative number", JSON.stringify({ since: -1, at: 1 })],
-			["a fraction", JSON.stringify({ since: 1, at: 1.5 })],
-			["a number for the text", JSON.stringify({ since: 1, at: 1, current: 7 })],
+			["too big", row({ current: "x".repeat(5000) })],
+			["wrong shape", row({ since: "1" })],
+			["a negative number", row({ since: -1 })],
+			["a fraction", row({ at: 1.5 })],
+			["a number for the text", row({ current: 7 })],
+			["a string for busy", row({ busy: "x" })],
 		])("a live file that is %s is ignored", async (_why, body) => {
 			const { s, ui } = await squad();
 			mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
@@ -4983,7 +4986,46 @@ describe("cockpit", () => {
 			at(4 * MIN); // before the 5 minutes a deployed agent with no valid row may idle
 			const t = await peek(s, ui);
 			expect(t).toContain("4m");
+			expect(t).not.toContain("SHOWN");
 			expect(t).not.toContain("stalled");
+		});
+
+		test("a re-deployed id is not stalled by the previous agent's old live file", async () => {
+			const { s, ui } = await squad();
+			mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+			writeFileSync(liveFile(s), JSON.stringify({ since: T0 - 12 * MIN, at: T0 - 10 * MIN, intent: "OLDAGENT" }));
+			at(1 * MIN);
+			const t = await peek(s, ui);
+			expect(t).not.toContain("OLDAGENT");
+			expect(await chron(s, ui)).not.toContain("stalled");
+		});
+
+		test("a todo's abandoned task is not counted in the total", async () => {
+			const { s } = await squad();
+			child(s).fire("tool_result", { toolName: "todo", isError: false, details: { phases: [{ name: "W", tasks: [{ content: "a", status: "completed" }, { content: "b", status: "abandoned" }, { content: "c", status: "pending" }] }] } });
+			expect(readLive(s)).toMatchObject({ done: 1, total: 2 });
+		});
+
+		test("a tool named with a leading underscore is shown by its bare name", async () => {
+			const { s } = await squad();
+			child(s).start("_read");
+			expect(readLive(s)).toMatchObject({ tool: "read" });
+		});
+
+		test("an id with a star maps to a file name Windows accepts", async () => {
+			const { s } = await squad();
+			child(s, "a*b").start("read");
+			expect(readdirSync(join(s.dir, "runs", "sess-0001.live"))).toEqual(["a%2Ab.json"]);
+		});
+
+		test("an overlay tick with its lock unreadable leaves the run file alone", async () => {
+			vi.useFakeTimers();
+			const { s, ui } = await squad();
+			await s.sub("cockpit");
+			rmSync(lockPath(s.dir, "K-1"), { force: true });
+			vi.advanceTimersByTime(1000);
+			expect(existsSync(join(s.dir, "runs", "sess-0001.json"))).toBe(true);
+			ui.opened.at(-1)!.component.handleInput!("q");
 		});
 
 		test("a sub agent's tool_call is still not judged", async () => {

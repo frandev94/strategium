@@ -6,7 +6,7 @@ export type Phase = { name: string; tasks: { content: string; status: string }[]
 export type Seal = { id: string; state: "granted" | "waiting" | "pending" };
 export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" | "warn" };
 export type Note = { veteran?: true; failed?: true };
-export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; stalled?: number }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. stalled: the idle start (later of `at` and the live entry's `at`) the reader marked stalled
+export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; stalled?: number }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. stalled: the live entry's `at` (the idle start) the reader marked stalled
 /** What a child writes about itself, already validated by the reader (contract v1): ms timestamps, its todo counts and its last tool call. */
 export type Live = { since: number; at: number; tool?: string; intent?: string; done?: number; total?: number; current?: string };
 export type Depth = "truecolor" | "256";
@@ -39,7 +39,7 @@ const oneLine = (s: unknown) => (typeof s === "string" ? clean(Bun.stripANSI(s))
 const span = (min: number) => (min < 1 ? "<1m" : min < 60 ? `${min}m` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}m`);
 const minutes = (ms: number) => Math.floor(Math.max(0, ms) / 60_000);
 
-/** The row under an active agent's line: elapsed, then its todo (`done/total · ~eta · current`) or its last intent (else tool); `stalled Nm · ` first when the reader marked this idle start (the later of deploy and live entry) stalled. */
+/** The row under an active agent's line: elapsed, then its todo (`done/total · ~eta · current`) or its last intent (else tool); `stalled Nm · ` first when the reader marked the live entry's `at` (the idle start) stalled. */
 function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): Pick<Line, "detail" | "stalled"> {
 	const from = d.at ?? live?.since;
 	if (d.state !== "active" || from === undefined || now === undefined) return {};

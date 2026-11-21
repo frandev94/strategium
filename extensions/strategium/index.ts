@@ -188,7 +188,7 @@ const sweepPointers = () => {
 	}
 };
 /** A live row's file in a session's `.live` dir; the agent id is encoded, it is not a path. */
-const liveFile = (sid: string, id: string) => path.join(liveDir(sid), `${encodeURIComponent(id)}.json`);
+const liveFile = (sid: string, id: string) => path.join(liveDir(sid), `${encodeURIComponent(id).replaceAll("*", "%2A")}.json`); // encodeURIComponent already encodes <>:"|? but leaves `*`, which Windows refuses in a file name
 const LIVE_BYTES = 4096; // a live file is a few hundred bytes; a bigger one is not ours
 const LIVE_TEXT = 200;
 const STALL_MS = 5 * 60_000; // no tool call in flight and none ended for this long
@@ -1010,7 +1010,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const rows = new Map<string, Live>();
 		for (const [id, job] of cockpit.deployed) {
 			if (job.state !== "active") continue;
-			const row = readLive(run.sid, id);
+			const raw = readLive(run.sid, id);
+			// A file older than this deploy is a previous agent's with the same id.
+			const row = raw && raw.since >= (job.at ?? 0) ? raw : undefined;
 			if (row) rows.set(id, row);
 			// The idle period starts at the last tool call; an agent with no live row has nothing to count from (it may be an eval spawn or another process), so it is never stalled.
 			const start = row?.at ?? 0;
@@ -1067,7 +1069,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 							frame++;
 							if (live) setAgentStatus(live); // the host's idle flag lags agent_end, and the last job ending sends no event
 							// Every second frame the children's files are read again: at most once a second.
-							const own = frame % 2 === 0 ? ownRun(sidOf(ctx)) : undefined;
+							// readRun, not ownRun: a transient lock read failure must not drop the run.
+							const own = frame % 2 === 0 ? readRun(sidOf(ctx)) : undefined;
 							if (own) drawCockpit(own);
 							tui.requestRender();
 						} catch {
@@ -2064,7 +2067,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			// No pointer or no file: nothing to show.
 		}
 	};
-	pi.on("tool_execution_start", (e, ctx) => recordLive(ctx, 1, { tool: cap(e.toolName), intent: typeof e.intent === "string" ? cap(e.intent) : undefined }));
+	pi.on("tool_execution_start", (e, ctx) => recordLive(ctx, 1, { tool: cap(bareName(e.toolName)), intent: typeof e.intent === "string" ? cap(e.intent) : undefined }));
 	pi.on("tool_execution_end", (_e, ctx) => recordLive(ctx, -1, {}));
 	pi.on("tool_result", (e, ctx) => {
 		const phases = (e.details as { phases?: unknown } | undefined)?.phases;

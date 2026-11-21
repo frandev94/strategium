@@ -1094,6 +1094,35 @@ describe("live agent lines", () => {
 		expect(box.at(-1)).toContain(`+${6 - shown} more`);
 	});
 
+	test("an even number of rows drawn still leaves one for +N more, and no pair is split", () => {
+		const many = Array.from({ length: 6 }, (_, i) => [`A${i}`, dep({ at: NOW - 10 * MIN })] as const);
+		const i = input({ phases: phases(["[captain] x", "in_progress"]), deployed: new Map(many), live: new Map(many.map(([id]) => [id, live({ intent: `intent ${id}` })])), now: NOW });
+		const out = rows(i);
+		const box = out.slice(out.findIndex(l => l.includes("┌")) + 1, out.findIndex(l => l.includes("└")));
+		expect(box).toHaveLength(7); // 3 whole pairs (6 rows), the next pair would reach 8 = cap, so +N more takes the last row
+		expect(box.filter(r => /▶ A\d/.test(r))).toHaveLength(3);
+		expect(box.at(-1)).toContain("+3 more");
+	});
+
+	test("a squad whose brother failed and whose veteran is active shows the veteran's row", () => {
+		const i = input({
+			phases: [{ name: "Skirmish", tasks: [{ content: "[battle-brother] build", status: "in_progress" }] }],
+			slices: [{ id: "a" }],
+			agents: { Veteran: { id: "a" } },
+			notes: { a: { veteran: true, failed: true } },
+			deployed: new Map([
+				["B", dep({ role: "battle-brother", squad: "a", station: "Skirmish", state: "failed", at: NOW - 20 * MIN })],
+				["V", dep({ role: "veteran", squad: "a", station: "Skirmish", at: NOW - 10 * MIN })],
+			]),
+			live: new Map([["V", live({ done: 1, total: 2, current: "Veteran work" })]]),
+			now: NOW,
+		});
+		const out = rows(i);
+		const at = out.findIndex(l => l.includes("squad a forging"));
+		expect(at).toBeGreaterThan(-1);
+		expect(out[at + 1]).toContain("10m · 1/2 · ~10m · Veteran work");
+	});
+
 	test("a rendered row is 2 cells in for a detail, in iron when not stalled", () => {
 		const raw = draw(scout(live({ intent: "Reading" }))).find(l => l.includes("Reading"))!;
 		expect(raw).toContain(`  ${TRUE.iron}10m · Reading`);
