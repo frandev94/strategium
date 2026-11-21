@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allExit, type Args, parseArgs, parseSnaps, rec, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+import { allExit, type Args, parseArgs, parseSnaps, rec, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
 
 const args = (argv: string[]) => {
 	const a = parseArgs(argv);
@@ -90,4 +90,26 @@ test("rec() writes a win32-input-mode record", () => {
 test("squadMarks reads ▷ as ▶ and sorts by squad", () => {
 	const s = snap([[..."║ ▷ ⛨ squad gamma forging"], [..."║ ✓ ⛨ squad beta returned "]]);
 	expect(squadMarks(s)).toEqual([["✓", "⛨", "beta", "returned"], ["▶", "⛨", "gamma", "forging"]]);
+});
+
+test("parseArgs: a value flag followed by a flag is an error; -h wins even with a bad seed", () => {
+	expect(parseArgs(["--replay", "--all"])).toEqual({ error: "argument --replay: expected one argument" });
+	expect(parseArgs(["--seed=nope", "-h"])).toMatchObject({ help: true });
+});
+
+test("unifiedDiff merges changes 6 equal lines apart into one hunk and splits them at 7 (difflib n=3)", () => {
+	const mk = (gap: number) => {
+		const a = Array.from({ length: gap + 10 }, (_, i) => String(i)), b = [...a];
+		b[3] = "x";
+		b[3 + gap + 1] = "y";
+		return unifiedDiff(a, b, "e", "g").filter(l => l.startsWith("@@")).length;
+	};
+	expect(mk(6)).toBe(1);
+	expect(mk(7)).toBe(2);
+});
+
+test("snapOf names the missing checkpoint and the ones it has", () => {
+	const C = { s: new Map([["a", snap([["x"]])], ["b", snap([["y"]])]]) } as any;
+	expect(snapOf(C, "a")).toBe(C.s.get("a"));
+	expect(() => snapOf(C, "zz")).toThrow('no snapshot "zz" (have: a, b)');
 });

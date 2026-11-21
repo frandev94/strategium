@@ -115,13 +115,16 @@ function die(msg: string): never {
 	throw new Fatal(msg);
 }
 
-// Set by main() (shot.py's module globals): the parsed args and what they resolve to.
+// Set by main(): the parsed args and what they resolve to.
 let A: Args;
 let SFX = "", OUT = "", PLUGIN = "", omp = "", edge: string | null = null, PAGE = "";
 const EXT = join(ROOT, "tools", "tui-shot", "replay-ext.ts"); // dev-only fake provider, always the harness's own copy
 
+// omp's bash exports __COMPAT_LAYER, under which headless Edge produces nothing.
+const COMPAT_HINT = process.env.__COMPAT_LAYER ? " (__COMPAT_LAYER is set: rerun with env -u __COMPAT_LAYER)" : "";
+
 function find(opt: string | null, name: string, cands: string[]): string {
-	if (opt) return existsSync(opt) ? opt : die(`${name} not found: ${opt}`);
+	if (opt) return existsSync(opt) ? opt : Bun.which(opt) ?? die(`${name} not found: ${opt}`);
 	return cands.find(c => existsSync(c)) || Bun.which(name) || die(`${name} not found: pass --${name}=PATH`);
 }
 function findPony(): string | null {
@@ -387,7 +390,7 @@ async function shoot(prof: string, name: string) {
 	const png = join(OUT, name + ".png");
 	if (existsSync(png)) unlinkSync(png);
 	await edgeRun(prof, ["--screenshot=" + png, pathToFileURL(join(OUT, name + ".html")).href]);
-	if (!existsSync(png)) die(`edge produced no ${png}`);
+	if (!existsSync(png)) die(`edge produced no ${png}${COMPAT_HINT}`);
 }
 
 // --- default mode: the two shots ---
@@ -450,7 +453,7 @@ export class Snap {
 		if (i < 0) return -1;
 		let n = 0;
 		for (let x = 0; x < row.length; x++) {
-			if (n >= i && row[x] !== "") return x; // text never starts on a wide cell's continuation (shot.py returned it)
+			if (n >= i && row[x] !== "") return x; // text never starts on a wide cell's continuation
 			n += row[x].length;
 		}
 		return -1;
@@ -500,7 +503,7 @@ async function openSnap(R: Run, png = true) {
 	await R.open();
 	await R.snap("open", png);
 }
-const snapOf = (C: Ctx, name: string) => C.s.get(name)!;
+export const snapOf = (C: Ctx, name: string) => C.s.get(name) ?? die(`no snapshot "${name}" (have: ${[...C.s.keys()].join(", ")})`);
 const repr = (v: unknown) => (typeof v === "string" ? JSON.stringify(v) : Bun.inspect(v));
 const range = (a: number, b: number) => Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i);
 
@@ -941,7 +944,7 @@ async function replay(name: string): Promise<[string, string | null]> {
 			const dom = (await edgeRun(prof, ["--dump-dom", pathToFileURL(join(OUT, `${name}-all.html`)).href], true)).toString("utf8");
 			snaps = parseSnaps(dom);
 			const want = R.events.filter(e => e[0] === "s").length;
-			if (snaps.size !== want) err = `edge returned ${snaps.size} snapshots of ${want}`;
+			if (snaps.size !== want) err = `edge returned ${snaps.size} snapshots of ${want}${COMPAT_HINT}`;
 			for (const e of R.events) if (e[0] === "s" && (e[3] || A.allPng) && !A.noPng && err === null) await shoot(prof, `${name}-${e[1]}`);
 		}
 		C = new Ctx(R, snaps);

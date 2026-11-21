@@ -91,7 +91,7 @@ When the omp pin is bumped, a KNOWN scenario that turns red may mean upstream fi
 1. A scenario step function `async (R) => {…}` drives the run, and it must `await` every `R.*` call (an un-awaited call reorders keys or stops the stream reader, and tsc does not catch a forgotten `await`; never use a synchronous sleep). Methods: `R.open()` (Alt+C, then quiet), `R.key("esc"|"q"|"down"|"enter"|…)` (add a record to `KEYS`), `R.typeText(s)`, `R.send(raw)`, `R.resize(c, r)`, `R.waitQuiet(quiet, timeout)`, `R.waitFor(Buffer.from("word"), 10)` (a word without spaces: ConPTY may paint a gap as a cursor move), `R.altOpen()` (last `?1049h`/`?1049l` in the stream), `R.sleep(s)`, `R.snap("checkpoint", …)` (the second argument asks for a PNG). Also `waitBeat`, `settle`, `logEvents`, `stop` and `cleanup`; fields `out`, `events`, `notes`, `state`, `work`, `runfile`, `cmd`. Stream offsets are bytes (`out` is a Buffer): never decode before slicing. The run is settled first (heartbeat and 2 s of quiet); `settle: false` waits for the heartbeat only.
    `R.restart()` kills omp (a crash, no shutdown hook), deletes the heartbeat, starts omp again with the same command, env and work dir (no reseed) and settles on the new process's first heartbeat. The stream stays one: the old bytes, a reset (`?1049l` + RIS), the new bytes; snapshots before and after the restart reach the checks as usual. Replays that restart must run alone.
 2. A checks function `(C) => {…}`: `snapOf(C, "checkpoint")` is a `Snap` (`row(y)`, `at(y, x)`, `has(text)`, `where(text)`, `colOf(y, text)`, `lastCol(y)`, `wideCells()`, `framed()`, `dump()`, fields `name`, `type`, `cols`, `rows`, `cells`, `rowsText`, `wide`); record with `C.ck(name, ok, got, want, snap)` (the snap is printed on failure); `C.logHas("tool_call", {name: "ask"})` reads `replay.log`; `C.say(line)` prints a note.
-(`Run`, `Snap` and `Ctx` read module globals that `main()` sets (`A`, `OUT`, `PLUGIN`, ...), so tests construct only the pure helpers.)
+(`Run` and the page/Edge functions read module globals that `main()` sets (`A`, `OUT`, `PLUGIN`, ...); `Snap` and `Ctx` are pure, so tests construct them and the other pure helpers directly.)
 3. An entry in `REPLAYS`: `{r, kind, seed, ext?, ponytail?, settle?, steps, checks}`: `ext: true` (fake provider), `ponytail: true`, `settle: false`. Never weaken a check to make a scenario pass: a FAIL on a fixed scenario is a finding.
 
 ### The fake provider (`tools/tui-shot/replay-ext.ts`)
@@ -104,6 +104,7 @@ The script removes its work dir (state, session, edge profile) itself (unless `-
 
 ## Limits
 
+- omp's bash exports `__COMPAT_LAYER`, under which headless Edge produces nothing; a run that fails with `edge returned N snapshots` or `edge produced no ….png` while it is set says so: rerun with `env -u __COMPAT_LAYER`.
 - Windows 10 1809+ only (ConPTY via `bun:ffi`); Bun only, no dependency.
 - The picture is xterm.js, not Windows Terminal: font (`CaskaydiaCove Nerd Font Mono` if installed, else a fallback, so glyphs may show as boxes), colors, ligatures and line height differ. It is right for layout, text and truncation, not for exact pixels.
 - Emoji width: the Unicode 11 addon makes emoji 2 cells wide, as Windows Terminal does; other terminals differ.
