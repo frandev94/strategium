@@ -1750,6 +1750,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 						cockpit.dirty = true;
 						carried = true;
 					}
+					// The plan-mode agents' live rows (their costs) go with the run; a name the new dir already holds is the newer one.
+					try {
+						const from = readdirSync(liveDir(prevSid));
+						mkdirSync(liveDir(sid), { recursive: true, mode: 0o700 });
+						for (const f of from) if (!existsSync(path.join(liveDir(sid), f))) renameSync(path.join(liveDir(prevSid), f), path.join(liveDir(sid), f));
+					} catch {
+						// No live rows, or one that would not move: dropFiles leaves the rest inert.
+					}
 					dropFiles(prevSid);
 					beat(sid);
 					// The old id must not keep a setting its run took away.
@@ -2218,7 +2226,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	// shortcut: a child in another OS process reads no pointer (its pid differs) and writes nothing; upgrade if omp moves subagents out of process.
 	// shortcut: a lost tool_execution_end leaves `busy` up, so that agent never counts as stalled; upgrade if the host drops those events.
 	const LIVE_MS = 1000;
-	const mine = { since: 0, at: 0, busy: 0, wrote: 0, wroteBlocked: false, row: {} as Partial<Live>, timer: undefined as ReturnType<typeof setTimeout> | undefined, flush: undefined as (() => void) | undefined };
+	const mine = { since: 0, at: 0, busy: 0, wrote: 0, wroteBlocked: false, row: {} as Partial<Live>, timer: undefined as ReturnType<typeof setTimeout> | undefined };
 	const cap = (s: string) => s.slice(0, LIVE_TEXT);
 	/** The session's own usage as omp counts it, read when the file is written. Unknown stays absent: no tokens, no price (cost 0 with tokens) or a failing read give no field. */
 	// shortcut: tokens include nested sync spawns' tokens (omp has no per-nested token split; cost excludes them); upgrade if omp adds one.
@@ -2267,7 +2275,6 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			};
 			if (force || now - mine.wrote >= LIVE_MS) write();
 			else {
-				mine.flush = write;
 				mine.timer = setTimeout(write, LIVE_MS - (now - mine.wrote));
 				mine.timer.unref();
 			}
@@ -2290,12 +2297,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	// An assistant message ended: the throttled write carries the usage and moves `at`. The turn's end writes at once so the final figure lands.
 	pi.on("message_end", (e, ctx) => void (asObj(asObj(e).message).role === "assistant" && recordLive(ctx, 0, {})));
 	pi.on("agent_end", (_e, ctx) => void recordLive(ctx, 0, {}, true));
-	// A pending trailing write is the last figure of a parked child: write it (it clears its own timer) before the handler below drops the timer.
+	// A parked child writes its last figure now (this clears the pending timer), whether or not one was pending.
 	pi.on("session_shutdown", (_e, ctx) => {
-		if (ctx?.agent?.kind === "sub" && mine.timer) mine.flush?.();
-	});
-	pi.on("session_shutdown", (_e, ctx) => {
-		if (ctx?.agent?.kind === "sub") clearTimeout(mine.timer);
+		if (ctx?.agent?.kind !== "sub") return;
+		recordLive(ctx, 0, {}, true);
+		clearTimeout(mine.timer);
 	});
 
 	pi.on("session_shutdown", (_e, ctx) => {

@@ -213,7 +213,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 		"",
 		"## Cost",
 		"",
-		"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', the figure omp's agent view shows). A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+		"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents’; cost does not. Agents only: the Captain’s own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
 		"",
 		...(agents.length
 			? [
@@ -225,9 +225,9 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 						}),
 					),
 					"",
-					...table(["Role", "Agents", "Cost", "Share"], [...byRole.map(r => [cell(r.role), String(r.n), r.text, "█".repeat(top > 0 ? Math.round((10 * r.sum) / top) : 0)]), ["Total", String(agents.length), spend.text, "—"]]),
+					...table(["Role", "Agents", "Cost", "Share"], [...byRole.map(r => [cell(r.role).replace(/^Total( \(agents\))?$/, "Total (role)"), String(r.n), r.text, "█".repeat(top > 0 ? Math.round((10 * r.sum) / top) : 0)]), ["Total (agents)", String(agents.length), spend.text, "—"]]),
 					"",
-					...(rate ? [`Cost per booked hour: ${rate} (total ${spend.text} over ${booked} booked min)${spend.some ? " (known agents only)" : ""}`, ""] : []),
+					...(rate ? [`Cost per booked hour: ${rate} (agents only; total ${spend.text} over ${booked} booked min)${spend.some ? " (known agents only)" : ""}`, ""] : []),
 				]
 			: ["None.", ""]),
 		...reported("Apothecary (reported)", ap, ["Mutants killed", "Survivors", "Fuzz crashes"], [ap?.killed, ap?.survived, ap?.crashes]),
@@ -242,7 +242,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 			seals.length ? `SEALS ${seals.map(s => `${oneLine(s.id)} ${s.wait === undefined ? "—" : `${s.wait}m`}`).join(", ")}` : "SEALS none",
 			`SPAWNS ${total(roles)}${roles.length ? `: ${list(roles)}` : ""}`,
 			agents.length
-				? `COST ${spend.text} · ${byRole.map(r => `${oneLine(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
+				? `COST (agents, list price) ${spend.text} · ${byRole.map(r => `${oneLine(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
 				: "COST none",
 		],
 	};

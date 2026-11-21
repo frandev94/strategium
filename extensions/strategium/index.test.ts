@@ -1449,6 +1449,22 @@ describe("the run follows an approved plan", () => {
 	};
 	const movedRun = (dir: string) => JSON.parse(readFileSync(join(dir, "runs", "sess-B.json"), "utf8"));
 
+	test("the move carries the plan-mode agents' live rows, keeping the newer row on a clash", async () => {
+		const { s, sm, ctx } = await owner();
+		const live = (sid: string, id: string, cost: number) => {
+			mkdirSync(join(s.dir, "runs", `${sid}.live`), { recursive: true });
+			writeFileSync(join(s.dir, "runs", `${sid}.live`, `${id}.json`), JSON.stringify({ since: 1, at: 1, busy: 0, cost }));
+		};
+		live("sess-A", "P", 0.5);
+		live("sess-A", "Q", 0.1);
+		live("sess-B", "Q", 0.9);
+		await approve(s, sm, ctx);
+		const read = (id: string) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.live", `${id}.json`), "utf8")).cost;
+		expect(read("P")).toBe(0.5);
+		expect(read("Q")).toBe(0.9);
+		expect(existsSync(join(s.dir, "runs", "sess-A.live"))).toBe(false);
+	});
+
 	test("the move carries the cockpit state to the new session and drops the old file", async () => {
 		const { s, sm, ctx } = await owner();
 		await todoResult(s, ctx, "start", [phase("Plan", ["[seal] Plan", "in_progress"])]);
@@ -5407,7 +5423,7 @@ describe("cockpit", () => {
 				const { s, ui } = await squad();
 				at(10 * MIN);
 				const base = `"since":${T0},"at":${T0 + 10 * MIN},"busy":0,"line":"kept?"`;
-				for (const bad of ['"cost":-1', '"cost":"0.4"', '"cost":null', '"cost":Infinity', '"tokens_in":1.5', '"cache_read":-2', '"tokens_out":"9"']) {
+				for (const bad of ['"cost":-1', '"cost":"0.4"', '"cost":null', '"cost":1e999', '"tokens_in":1.5', '"cache_read":-2', '"tokens_out":"9"']) {
 					mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
 					writeFileSync(liveFile(s), `{${base},${bad}}`);
 					const t = await peek(s, ui);
@@ -5428,14 +5444,15 @@ describe("cockpit", () => {
 				expect(md).toContain(`| inquisitor | 1 | ${omp(C)} |`);
 				expect(md).toContain("| scout | 1 | ? |");
 				expect(md).toContain(`| other | 1 | ${omp(E)} |`);
-				expect(md).toContain(`| Total | 5 | ${omp(A, B, C, E)} + ? |`);
-				expect(out.split("\n").some(l => l.startsWith("COST "))).toBe(true);
+				expect(md).toContain(`| Total (agents) | 5 | ${omp(A, B, C, E)} + ? |`);
+				expect(out.split("\n").some(l => l.startsWith("COST (agents, list price) "))).toBe(true);
 			});
 
-			test("7: after a parent restart the roles come from the saved cockpit and the costs are the same", async () => {
+			test("7: after a parent restart the roles and squads come from the saved cockpit and the costs are the same", async () => {
 				const { s } = await fresh();
 				const A = stats(0.4, 0.1), C = stats(0.33);
-				deploy(s, "A", "battle-brother");
+				await s.call({ action: "slices", slices: [{ id: "a", parallel: false, files: ["a.ts"] }] });
+				s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "battle-brother", name: "A", isolated: true, task: "build squad a." }] }, details: { progress: [{ index: 0, id: "A", status: "running" }] }, isError: false }, s.ctx));
 				deploy(s, "C", "inquisitor");
 				kid(s, "A", A).message();
 				kid(s, "C", C).message();
@@ -5444,13 +5461,14 @@ describe("cockpit", () => {
 				const md = debriefText(s);
 				expect(md).toContain(`| battle-brother | 1 | ${omp(A)} |`);
 				expect(md).toContain(`| inquisitor | 1 | ${omp(C)} |`);
+				expect(md).toMatch(/\| A \| battle-brother \| a \|/);
 			});
 
 			test("8: a timed run prints the cost per booked hour, an untimed one does not", async () => {
 				const timed = await fresh(120);
 				kid(timed.s, "A", stats(0.6)).message();
 				await timed.s.call({ action: "end" });
-				expect(debriefText(timed.s)).toContain("Cost per booked hour: $0.30 (total $0.60 over 120 booked min)");
+				expect(debriefText(timed.s)).toContain("Cost per booked hour: $0.30 (agents only; total $0.60 over 120 booked min)");
 				const untimed = await fresh();
 				kid(untimed.s, "A", stats(0.6)).message();
 				await untimed.s.call({ action: "end" });
@@ -5480,6 +5498,27 @@ describe("cockpit", () => {
 				at(2000);
 				c.message();
 				expect(readLive(s).at).toBe(before + 2000);
+			});
+
+			test("11: a sub's message_end of another role is ignored: at and the figures stay", async () => {
+				const { s } = await fresh();
+				const c = kid(s, "A", stats(0.1));
+				c.message();
+				const before = readLive(s);
+				c.box.stats = stats(0.9);
+				at(2000);
+				c.fire("message_end", { message: { role: "user" } });
+				expect(readLive(s)).toEqual(before);
+			});
+
+			test("12: a shutdown with no pending write and no agent_end still writes the latest usage", async () => {
+				const { s } = await fresh();
+				const c = kid(s, "A", stats(0.1));
+				c.message(); // writes at once: nothing pending afterwards
+				c.box.stats = stats(0.5);
+				at(100);
+				c.fire("session_shutdown");
+				expect(readLive(s).cost).toBeCloseTo(0.5, 10);
 			});
 		});
 	});
@@ -5807,7 +5846,7 @@ describe("the debrief at end", () => {
 			"TIME 70 min active, 10 min paused: Muster 10, Auspex 10, Scriptorium 25, Deployment 25",
 			"SEALS Plan 20m",
 			"SPAWNS 3: battle-brother 1, librarian 1, scout 1",
-			"COST ? · battle-brother ?",
+			"COST (agents, list price) ? · battle-brother ?",
 		]);
 		const markdown = readFileSync(file, "utf8");
 		expect(markdown).toBe(
@@ -5858,7 +5897,7 @@ describe("the debrief at end", () => {
 				"",
 				"## Cost",
 				"",
-				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', the figure omp's agent view shows). A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents’; cost does not. Agents only: the Captain’s own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
 				"",
 				"| Agent | Role | Squad | Tokens in | Tokens out | Cache | Cost |",
 				"|---|---|---|---|---|---|---|",
@@ -5867,7 +5906,7 @@ describe("the debrief at end", () => {
 				"| Role | Agents | Cost | Share |",
 				"|---|---|---|---|",
 				"| battle-brother | 1 | ? |  |",
-				"| Total | 1 | ? | — |",
+				"| Total (agents) | 1 | ? | — |",
 				"",
 				"## Apothecary (reported)",
 				"",
@@ -6024,7 +6063,7 @@ describe("the debrief at end", () => {
 		at(9, 30);
 		const out = await s.call({ action: "end" });
 		expect(mdOf(out)).toContain("| S1 | light→standard→heavy | 2 | 1 | 1 | ok | running |");
-		expect(summary(out).slice(-2)).toEqual(["SPAWNS 4: battle-brother 2, archmagos 1, veteran 1", "COST ? · battle-brother ?"]);
+		expect(summary(out).slice(-2)).toEqual(["SPAWNS 4: battle-brother 2, archmagos 1, veteran 1", "COST (agents, list price) ? · battle-brother ?"]);
 	});
 
 	test("(k) a run across midnight counts the events of both days", async () => {

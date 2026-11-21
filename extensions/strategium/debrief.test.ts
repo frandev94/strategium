@@ -203,7 +203,7 @@ describe("debrief markdown", () => {
 				"",
 				"## Cost",
 				"",
-				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', the figure omp's agent view shows). A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents’; cost does not. Agents only: the Captain’s own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
 				"",
 				"None.",
 				"",
@@ -354,7 +354,7 @@ describe("cost", () => {
 	test("per-role totals add the raw floats and round once: three at 0.004 is $0.01", () => {
 		const md = cost([ag("A", "scout", { cost: 0.004 }), ag("B", "scout", { cost: 0.004 }), ag("C", "scout", { cost: 0.004 })]).markdown;
 		expect(md).toContain("| scout | 3 | $0.01 | ██████████ |");
-		expect(md).toContain("| Total | 3 | $0.01 | — |");
+		expect(md).toContain("| Total (agents) | 3 | $0.01 | — |");
 	});
 
 	test("a role of unknown agents prints ?, a mixed role prints $x + ?", () => {
@@ -362,13 +362,13 @@ describe("cost", () => {
 		expect(md).toContain("| scout | 2 | ? |  |");
 		expect(md).toContain("| inquisitor | 2 | $1.00 + ? | █████ |");
 		expect(md).toContain("| veteran | 1 | $2.00 | ██████████ |");
-		expect(md).toContain("| Total | 5 | $3.00 + ? | — |");
+		expect(md).toContain("| Total (agents) | 5 | $3.00 + ? | — |");
 		expect(md).not.toContain("$0.00");
 	});
 
 	test("every agent unknown: the total is ?", () => {
 		const md = cost([ag("A", "scout")]).markdown;
-		expect(md).toContain("| Total | 1 | ? | — |");
+		expect(md).toContain("| Total (agents) | 1 | ? | — |");
 		expect(md).not.toContain("$");
 	});
 
@@ -387,25 +387,31 @@ describe("cost", () => {
 
 	test("the COST summary line: total, then each role", () => {
 		const r = cost([ag("A", "scout", { cost: 0.5 }), ag("B", "inquisitor", { cost: 1.25 }), ag("C", "scout")]);
-		expect(r.summary.at(-1)).toBe("COST $1.75 + ? · inquisitor $1.25, scout $0.50 + ?");
+		expect(r.summary.at(-1)).toBe("COST (agents, list price) $1.75 + ? · inquisitor $1.25, scout $0.50 + ?");
 	});
 
 	test("cost per booked hour sums each day's booking: 60 + 60 min is B = 120", () => {
 		const evs = [start(0, { booked: 60 }), stop(30), start(1440, { booked: 60 }), stop(1470)];
 		const r = debrief({ ...input(evs, { agents: [ag("A", "scout", { cost: 3 })] }), end: at(1500) });
-		expect(r.markdown).toContain("Cost per booked hour: $1.50 (total $3.00 over 120 booked min)");
-		expect(r.summary.at(-1)).toBe("COST $3.00 · scout $3.00 · $1.50/booked h");
+		expect(r.markdown).toContain("Cost per booked hour: $1.50 (agents only; total $3.00 over 120 booked min)");
+		expect(r.summary.at(-1)).toBe("COST (agents, list price) $3.00 · scout $3.00 · $1.50/booked h");
 	});
 
 	test("with an unknown agent the rate says known agents only", () => {
 		const r = cost([ag("A", "scout", { cost: 3 }), ag("B", "scout")], [start(0, { booked: 120 })]);
-		expect(r.markdown).toContain("Cost per booked hour: $1.50 (total $3.00 + ? over 120 booked min) (known agents only)");
+		expect(r.markdown).toContain("Cost per booked hour: $1.50 (agents only; total $3.00 + ? over 120 booked min) (known agents only)");
 	});
 
 	test("an untimed run has no rate line; neither has one with nothing known", () => {
 		expect(cost([ag("A", "scout", { cost: 3 })]).markdown).not.toContain("Cost per booked hour");
 		expect(cost([ag("A", "scout")], [start(0, { booked: 60 })]).markdown).not.toContain("Cost per booked hour");
 		expect(cost([ag("A", "scout", { cost: 3 })]).summary.at(-1)).not.toContain("booked h");
+	});
+
+	test("a role named Total is not the totals row", () => {
+		const rows = lines(cost([ag("A", "Total", { cost: 1 }), ag("B", "Total (agents)", { cost: 2 })]).markdown);
+		expect(rows).toContain("| Total (role) | 1 | $1.00 | ██████ |".replace("██████", "█████"));
+		expect(rows.filter(l => l.startsWith("| Total (agents) |"))).toEqual(["| Total (agents) | 2 | $3.00 | — |"]);
 	});
 
 	test("an id or role with |, ANSI or a newline is one escaped cell", () => {
@@ -440,11 +446,11 @@ describe("cost", () => {
 			const rhead = tables.findIndex(l => l.startsWith("| Role |"));
 			expect(rhead - head).toBe(agents.length + 2);
 			tables.forEach((l, n) => expect(split(l).length).toBe(n < rhead ? 7 : 4));
-			const total = split(tables.find(l => l.startsWith("| Total |"))!)[2].trim();
+			const total = split(tables.find(l => l.startsWith("| Total (agents) |"))!)[2].trim();
 			expect(total).toBe(text(agents));
 			for (const r of new Set(agents.map(a => a.role))) {
 				const mine = agents.filter(a => a.role === r);
-				const cells = tables.slice(rhead + 2).map(split).filter(c => c[0] !== " Total " && c[1].trim() === String(mine.length));
+				const cells = tables.slice(rhead + 2).map(split).filter(c => c[0] !== " Total (agents) " && c[1].trim() === String(mine.length));
 				expect(cells.map(c => c[2].trim())).toContain(text(mine));
 			}
 			expect(total.includes("$0.00") && !known(agents).some(x => x.cost! > 0 || x.cost === 0)).toBe(false);
