@@ -20,4 +20,5 @@ Write its Spec (only its criteria) and Squads, ids prefixed `<area>-`. No Merge 
 Add a `Needs from other areas` line. With the write tool, message that area's librarian through agent://<id> instead of assuming; without it, list the need only.
 Lead mode (the task gives all the local://<KEY>-plan-<area>.md files): merge them into local://<KEY>-plan.md with Spec, Squads and one Merge bar.
 Resolve every `Needs from other areas` entry. Give each shared file one owning squad, or put the squads that share it in sequence (parallel: false).
+Redraft (the task gives the current plan, the gap and the auspex file's `## Redraft` section): re-plan only the remaining work from the refreshed map; landed squads and PASS Merge bar items stay as they are.
 Without the write tool (omp plan mode) return the whole plan as your final answer instead of writing it.
