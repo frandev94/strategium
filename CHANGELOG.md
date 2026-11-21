@@ -1,3 +1,23 @@
+## [0.2.28] - 2026-11-21
+
+### 🚀 Features
+
+- *(cockpit)* Strategium signal action for subagents
+- *(agents)* Builders and reviewers signal their milestones
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* A block clears on the next tool call and rings at most once a minute
+- *(cockpit)* A block lasts until the agent signals again
+- *(cockpit)* Every new block rings; docs say how a block is read and cleared
+
+### 📚 Documentation
+
+- *(cockpit)* Describe the signal action
+
+### 🧪 Testing
+
+- *(tooling)* Tui-shot replay of signalled and blocked rows
 ## [0.2.27] - 2026-11-21
 
 ### 🚀 Features
