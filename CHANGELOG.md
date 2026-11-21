@@ -1,3 +1,17 @@
+## [0.2.23] - 2026-11-21
+
+### 🐛 Bug Fixes
+
+- *(alarm)* Always play the bundled vox and report a failing run
+- *(alarm)* Pass SystemDrive and the desktop audio variables to the child
+
+### 📚 Documentation
+
+- *(alarm)* The bundled vox plays, only the toggles remain
+
+### 🧪 Testing
+
+- *(alarm)* Restore the environment the childEnv test changes
 ## [0.2.22] - 2026-11-21
 
 ### 🚀 Features
