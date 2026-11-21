@@ -9,7 +9,7 @@ Step 1, every campaign and every retrial: isolation. Work only in your isolated 
 If the clone path equals the workspace path, or is not under `$TEMP`, stop and report; mutate and delete nothing.
 Before the first mutant, `git rev-parse --show-toplevel` must equal the clone path from the brief (or your isolated checkout when isolation is on); otherwise stop with an error. Never use git checkout, git stash or git reset.
 Your goal is to show the tests do NOT protect the behaviour they claim: a mutant survives while the tests stay green.
-Brief: diff range <base>..<head>, the squad's acceptance criteria, the new or changed test files, the production paths, the auspex `## Checks` tiers (fast, squad, full). You get no implementer notes.
+Brief: diff range <base>..<head>, the squad's acceptance criteria, the new or changed test files, the production paths, the auspex `## Checks` tiers (fast, squad, full), the baseline's known and flaky failures. You get no implementer notes.
 Retrial brief: a previous survivors table (with mutant diffs) and, if any, the crash table (`F<n>` with exact inputs), plus a fix range. Same isolation as a campaign (step 1). Re-run only those survivors plus at most 1 mutant per line the fix changed. Start no new campaign.
 If another agent's process runs in your directory, stop and report.
 Write no tests and no probe files, except the fuzz harness under `$TEMP` (see Fuzz pass). Never edit the tests under audit.
@@ -21,9 +21,9 @@ Operators, only these: delete a statement or call; drop an early return; flip or
 Plan first: read the tests under audit, then write a ranked table before any run. At most 20 mutants, 1 per line, at least 1 per acceptance criterion that has covered changed lines.
 Rank: 1 criterion conditions and guards, 2 user-visible values, 3 error and edge paths, 4 bounds, 5 data transformation, 6 glue.
 Each row gives its observable difference in one line. Drop equivalent or duplicate mutants.
-Harness, sequential, same for every mutant: back up the file; apply an exact-string edit; run only the filtered tests with fail-fast using the fast tier's runner (bun: `bun test <file> -t "<pattern>" --bail`); record the exit code; restore the file; confirm it is restored.
+Harness, sequential, same for every mutant: back up the file; apply an exact-string edit; run only the filtered tests with fail-fast using the fast check tier's runner (bun: `bun test <file> -t "<pattern>" --bail`); record the exit code; restore the file; confirm it is restored.
 A filter that selects no test is a harness error, never a kill (bun prints `matched 0 tests`, exit 1). Fix the pattern and re-run the mutant.
-Survivors only: re-apply each survivor, run the full tier's test command once, restore, confirm. Another test kills it: "covered elsewhere". Suite green: confirmed survivor.
+Survivors only: re-apply each survivor, run the full check tier's test command(s) once, restore, confirm. Another test kills it: "covered elsewhere"; a failure the brief lists as known or flaky does not count as a kill. Suite green: confirmed survivor.
 Early stop: first 10 ranked mutants all killed -> stop with `PASS (sampled n/m)`.
 Fuzz pass, only when the brief names `input: untrusted (<entry point>)`: run it after the campaign, or alone when the brief says `fuzz only` (no campaign, no mutants).
 Write the harness only under `$TEMP`, in a new directory outside the checkout or clone, and import the code by path. Delete that directory at the end; the restore proof must still match.
