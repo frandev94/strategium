@@ -8,6 +8,8 @@ import {
 	grantedSeals,
 	waitingSeal,
 	jobEnds,
+	navKey,
+	navigate,
 	palette,
 	pushEntry,
 	renderCockpit,
@@ -15,7 +17,10 @@ import {
 	type Deployed,
 	type Entry,
 	type Live,
+	type Nav,
+	type NavKey,
 	type Phase,
+	type View,
 	type ViewInput,
 } from "./cockpit";
 import { AGENTS } from "../../skills/strategium/todo";
@@ -1276,5 +1281,353 @@ describe("live agent lines", () => {
 			const valid = Number.isInteger(done) && Number.isInteger(total) && done! > 0 && done! < total!;
 			expect(detail.includes("~")).toBe(valid);
 		}
+	});
+});
+
+// ---- navigable cockpit (#123): navKey, the cursor model, stations, windows and the selected line ----
+
+const ALL_KEYS = [
+	// VT and SS3
+	["\x1b[A", "up"], ["\x1b[B", "down"], ["\x1b[C", "right"], ["\x1b[D", "left"], ["\x1b[H", "home"],
+	["\x1bOA", "up"], ["\x1bOB", "down"], ["\x1bOC", "right"], ["\x1bOD", "left"], ["\x1bOH", "home"],
+	["\x1b[1~", "home"], ["\x1b[7~", "home"],
+	// xterm/kitty modified form: plain, lock bits, press and repeat events
+	["\x1b[1;1A", "up"], ["\x1b[1;1B", "down"], ["\x1b[1;1C", "right"], ["\x1b[1;1D", "left"], ["\x1b[1;1H", "home"],
+	["\x1b[1;65A", "up"], ["\x1b[1;129B", "down"], ["\x1b[1;193C", "right"], ["\x1b[1;129D", "left"],
+	["\x1b[1;1:1A", "up"], ["\x1b[1;1:2B", "down"], ["\x1b[1;129:1H", "home"], ["\x1b[1;65:2D", "left"],
+	// Tab
+	["\t", "tab"],
+	// kitty CSI-u: tab and the keypad keys
+	["\x1b[9u", "tab"], ["\x1b[9;1u", "tab"],
+	["\x1b[57417u", "left"], ["\x1b[57418u", "right"], ["\x1b[57419u", "up"], ["\x1b[57420u", "down"], ["\x1b[57423u", "home"],
+	["\x1b[57420;1:2u", "down"], ["\x1b[57420;129u", "down"], ["\x1b[57417;65:1u", "left"],
+	// win32-input-mode key down (the replay's records), lock bits allowed
+	["\x1b[38;72;0;1;256;1_", "up"], ["\x1b[40;80;0;1;256;1_", "down"], ["\x1b[37;75;0;1;256;1_", "left"], ["\x1b[39;77;0;1;256;1_", "right"],
+	["\x1b[36;71;0;1;256;1_", "home"], ["\x1b[9;15;9;1;0;1_", "tab"], ["\x1b[40;80;0;1;288;1_", "down"],
+] as const;
+const NOT_KEYS = [
+	"", "\x1b", "q", "a", "\x1b[27u", "\x1b[Z", "\x1b\x1b[A", "\x1b\x1b[1;1A", "\x1b[AB", "x\x1b[A", "\x1b[A\x1b[A", "\x1bOB\x1bOB", "\t\t", " \t",
+	// releases, Alt/Ctrl/Shift chords, a zero modifier
+	"\x1b[1;1:3A", "\x1b[1;129:3B", "\x1b[1;3A", "\x1b[1;5A", "\x1b[1;2A", "\x1b[1;2H", "\x1b[1;0A", "\x1b[1;1;1A",
+	"\x1b[57420;1:3u", "\x1b[57420;5u", "\x1b[57420;3u", "\x1b[9;2u", "\x1b[57421u", "\x1b[57352u",
+	"\x1b[38;72;0;0;256;1_", "\x1b[38;72;0;1;258;1_", "\x1b[38;72;0;1;4;1_", "\x1b[38;72;0;1;16;1_", "\x1b[41;80;0;1;256;1_", "\x1b[38;72;0;1;256;1",
+	// a number too long for a modifier must not wrap around into "no modifier"
+	`\x1b[1;${"9".repeat(400)}A`, `\x1b[38;72;0;1;${"9".repeat(400)};1_`,
+];
+
+describe("navKey", () => {
+	test.each(ALL_KEYS)("navKey(%j) is %p", (data, key) => {
+		expect(navKey(data)).toBe(key);
+	});
+	test.each(NOT_KEYS)("navKey(%j) is undefined", data => {
+		expect(navKey(data)).toBeUndefined();
+	});
+	test("an arrow, Home or Tab is never a close: closes() is false for every encoding, and Esc and q stay closes", () => {
+		for (const [data] of ALL_KEYS) expect(closes(data)).toBe(false);
+		expect(closes("\x1b")).toBe(true);
+		expect(closes("q")).toBe(true);
+		expect(closes("\x1b[27u")).toBe(true);
+		expect(closes("\x1b[A")).toBe(false);
+	});
+	test("a hostile string costs linear time and never throws", () => {
+		const n = 100_000;
+		const hostile = [`\x1b[${"9".repeat(n)}`, `\x1b[${":".repeat(n)}u`, `\x1b[9${":1".repeat(n)}x`, `\x1b[1;1${":".repeat(n)}A`, `\x1b[9;${"1;".repeat(n)}u`, `\x1b[${"1;".repeat(n)}_`, "\x1b".repeat(n), "\t".repeat(n)];
+		const t0 = performance.now();
+		for (const h of hostile) expect(navKey(h)).toBeUndefined();
+		expect(performance.now() - t0).toBeLessThan(1000);
+	});
+	// properties: no property-test library in the repo, so a seeded random walk over the escape alphabet stands in for fast-check.
+	test("property: navKey(x) defined implies closes(x) is false, for random strings over the escape alphabet", () => {
+		let s = 0x9e3779b9;
+		const rnd = (n: number) => ((s = (Math.imul(s ^ (s >>> 15), 0x2c1b3c6d) + 0x297a2d39) | 0), (s >>> 0) % n);
+		const atoms = ["\x1b", "[", "O", ";", ":", "1", "2", "3", "9", "27", "65", "129", "A", "B", "H", "u", "_", "~", "q", "\t", "57420", "38", "256", "0"];
+		let keys = 0;
+		for (let i = 0; i < 20_000; i++) {
+			const x = Array.from({ length: 1 + rnd(9) }, () => atoms[rnd(atoms.length)]).join("");
+			if (navKey(x) !== undefined) {
+				keys++;
+				expect(closes(x)).toBe(false);
+			}
+		}
+		expect(keys).toBeGreaterThan(0);
+	});
+});
+
+// A station with a CAPTAIN box (2 lines), a BATTLE-BROTHERS box (1 line) and a chronicle of 2 entries: 5 items, 3 groups.
+const NAVRUN = (over: Partial<ViewInput> = {}): ViewInput =>
+	input({
+		phases: [{ name: "Skirmish", tasks: [{ content: "[captain] a", status: "in_progress" }, { content: "[captain] b", status: "pending" }, { content: "[battle-brother] c", status: "pending" }] }],
+		chronicle: [{ at: "10:00", who: "CAPTAIN", text: "first" }, { at: "10:01", who: "CAPTAIN", text: "second" }],
+		...over,
+	});
+/** Press `keys` in order from nothing selected, each against the view the previous one produced; the final view. */
+const press = (base: ViewInput, ...keys: NavKey[]): View => {
+	let nav: Nav = {};
+	for (const k of keys) nav = navigate(cockpitView({ ...base, nav }), k);
+	return cockpitView({ ...base, nav });
+};
+const curAt = (v: View) => v.nav.cursor?.at;
+const draw = (v: View, width = 100, height?: number) => renderCockpit(v, width, 0, TRUE, height).map(plain);
+
+describe("cursor model", () => {
+	test("the cockpit opens with no cursor and the first arrow or Tab selects the first item", () => {
+		expect(cockpitView(NAVRUN()).nav).toEqual({});
+		for (const k of ["up", "down", "tab"] as const) expect(curAt(press(NAVRUN(), k))).toBe(0);
+	});
+	test("the flat order is box lines in drawn order, then the chronicle newest first", () => {
+		expect(cockpitView(NAVRUN()).items.map(i => i.group.replace(/^\S+ (?=[A-Z-]+$)/, ""))).toEqual(["CAPTAIN", "CAPTAIN", "BATTLE-BROTHERS", "chronicle", "chronicle"]);
+		expect(cockpitView(NAVRUN()).items.slice(3).map(i => i.id)).toEqual(["log:10:01|CAPTAIN|second#0", "log:10:00|CAPTAIN|first#0"]);
+	});
+	test("up and down move one item, clamp at both ends and cross from a box into the chronicle", () => {
+		expect([1, 2, 3, 4].map(n => curAt(press(NAVRUN(), ...Array<NavKey>(n).fill("down"))))).toEqual([0, 1, 2, 3]);
+		expect(curAt(press(NAVRUN(), ...Array<NavKey>(20).fill("down")))).toBe(4);
+		expect(curAt(press(NAVRUN(), ...Array<NavKey>(20).fill("down"), ...Array<NavKey>(20).fill("up")))).toBe(0);
+		const v = press(NAVRUN(), "down", "down", "down", "down");
+		expect(v.items[v.nav.cursor!.at].group).toBe("chronicle");
+		expect(curAt(press(NAVRUN(), "down", "down", "down", "down", "up"))).toBe(2);
+	});
+	test("tab jumps to the first item of the next group and wraps to the first group", () => {
+		expect([1, 2, 3, 4, 5].map(n => curAt(press(NAVRUN(), ...Array<NavKey>(n).fill("tab"))))).toEqual([0, 2, 3, 0, 2]);
+		expect(curAt(press(NAVRUN(), "down", "tab"))).toBe(2); // from inside a group too
+	});
+	test("with no items the cursor stays off and moves return the nav as it is", () => {
+		const empty = input();
+		for (const k of ["up", "down", "tab", "left", "right", "home"] as const) expect(cockpitView({ ...empty, nav: navigate(cockpitView(empty), k) }).nav).toEqual({});
+	});
+	test("the seal panel lines come first, one item per line, and the default line is one item", () => {
+		const p: Phase[] = [{ name: "Muster", tasks: [{ content: "[seal] Plan", status: "in_progress" }, { content: "[captain] a", status: "pending" }] }];
+		const lines = cockpitView(NAVRUN({ phases: p, seal: { id: "Plan", lines: ["l1", "l2"] } })).items.map(i => i.id);
+		expect(lines.slice(0, 3)).toEqual(["seal:Plan:0", "seal:Plan:1", "task:1:[captain] a"]);
+		expect(cockpitView(NAVRUN({ phases: p })).items.filter(i => i.group === "seal")).toHaveLength(1);
+	});
+	// "no cursor exactly when there are no items" holds once a line was selected: Left, Right and Home keep an unset cursor unset.
+	test("property: after any key sequence the cursor id is in items, and absent exactly when nothing was selected yet or there are no items", () => {
+		let s = 12345;
+		const rnd = (n: number) => ((s = (Math.imul(s, 1103515245) + 12345) | 0), ((s >>> 8) >>> 0) % n);
+		const keys = ["up", "down", "left", "right", "home", "tab"] as const;
+		const bases = [input(), NAVRUN(), NAVRUN({ phases: run(4), chronicle: many(30) }), input({ chronicle: many(3) })];
+		for (const base of bases)
+			for (let round = 0; round < 40; round++) {
+				let nav: Nav = {};
+				let moved = false;
+				for (let i = 0; i < 30; i++) {
+					const k = keys[rnd(keys.length)];
+					moved ||= k === "up" || k === "down" || k === "tab";
+					nav = navigate(cockpitView({ ...base, nav }), k);
+					const w = cockpitView({ ...base, nav });
+					expect(w.nav.cursor === undefined).toBe(!moved || w.items.length === 0);
+					if (w.nav.cursor) expect(w.items[w.nav.cursor.at].id).toBe(w.nav.cursor.id);
+				}
+			}
+	});
+});
+
+describe("cursor identity", () => {
+	const sel = (id: string, pos: number): Nav => ({ cursor: { id, at: pos } });
+	const two = (a: string, b: string) => input({ phases: [{ name: "Skirmish", tasks: [{ content: "[captain] a", status: a }, { content: "[captain] b", status: b }] }] });
+	test("a task that changes state re-sorts and the cursor follows it", () => {
+		const before = cockpitView({ ...two("in_progress", "pending"), nav: sel("task:0:[captain] a", 0) });
+		expect(before.nav.cursor).toEqual({ id: "task:0:[captain] a", at: 0 });
+		const after = cockpitView({ ...two("completed", "in_progress"), nav: before.nav });
+		expect(after.items[0].id).toBe("task:1:[captain] b"); // b runs first now
+		expect(after.nav.cursor).toEqual({ id: "task:0:[captain] a", at: 1 });
+	});
+	test("a new chronicle entry keeps the selected entry", () => {
+		const log = [{ at: "10:00", who: "A", text: "x" }, { at: "10:01", who: "A", text: "y" }];
+		const v = cockpitView({ ...input({ chronicle: log }), nav: sel("log:10:00|A|x#0", 1) });
+		const w = cockpitView({ ...input({ chronicle: pushEntry(log, { at: "10:02", who: "A", text: "z" }) }), nav: v.nav });
+		expect(w.nav.cursor).toEqual({ id: "log:10:00|A|x#0", at: 2 });
+	});
+	test("the trim at the 200 cap keeps the selected entry while it lasts", () => {
+		let log: Entry[] = [];
+		for (let i = 0; i < 200; i++) log = pushEntry(log, { at: "10:00", who: "A", text: `e${i}` });
+		const v = cockpitView({ ...input({ chronicle: log }), nav: sel("log:10:00|A|e100#0", 99) });
+		expect(v.nav.cursor).toEqual({ id: "log:10:00|A|e100#0", at: 99 });
+		const w = cockpitView({ ...input({ chronicle: pushEntry(log, { at: "10:00", who: "A", text: "e200" }) }), nav: v.nav });
+		expect(w.chronicle).toHaveLength(200);
+		expect(w.nav.cursor).toEqual({ id: "log:10:00|A|e100#0", at: 100 });
+	});
+	test("identical entries get distinct ids counted from the oldest", () => {
+		const e = { at: "10:00", who: "A", text: "same" };
+		expect(cockpitView(input({ chronicle: [e, e, e] })).chronicle.map(x => x.id)).toEqual(["log:10:00|A|same#2", "log:10:00|A|same#1", "log:10:00|A|same#0"]);
+	});
+	test("a removed line falls to the nearest position, and past the end to the last item", () => {
+		const v = cockpitView({ ...two("pending", "pending"), nav: sel("task:1:[captain] b", 1) });
+		const w = cockpitView({ ...input({ phases: [{ name: "Skirmish", tasks: [{ content: "[captain] a", status: "pending" }, { content: "[captain] c", status: "pending" }] }] }), nav: v.nav });
+		expect(w.nav.cursor).toEqual({ id: "task:1:[captain] c", at: 1 });
+		const gone = cockpitView({ ...input({ phases: [{ name: "Skirmish", tasks: [{ content: "[captain] a", status: "pending" }] }] }), nav: v.nav });
+		expect(gone.nav.cursor).toEqual({ id: "task:0:[captain] a", at: 0 });
+	});
+	test("squad and agent lines are keyed by squad id and agent id", () => {
+		const v = cockpitView(input({ phases: run(4), slices: [{ id: "a" }], deployed: new Map([["eval-x-1", dep({ role: "battle-brother", station: "Skirmish" })]]) }));
+		const ids = v.items.map(i => i.id);
+		expect(ids).toContain("squad:a");
+		expect(ids).toContain("agent:eval-x-1");
+	});
+});
+
+describe("stations", () => {
+	const R = () => input({ phases: run(4) }); // Skirmish (index 4) is the active station
+	const title = (v: View) => draw(v).find(l => l.startsWith("╟─"))!;
+	test("the title names the active station by default, with no viewing note", () => {
+		const v = cockpitView(R());
+		expect(v.stations).toEqual({ shown: 4, active: 4, count: 8 });
+		expect(title(v)).toContain("▶ Skirmish");
+		expect(title(v)).not.toContain("viewing");
+	});
+	test("left shows the previous station and the title names both, marking the shown one", () => {
+		const v = press(R(), "left");
+		expect(v.nav.shown).toEqual({ phase: 3, from: 4 });
+		expect(title(v)).toContain("✓ Deployment · viewing · active: Skirmish");
+		expect(titles(draw(v).join("\n"))).toEqual(["CAPTAIN"]); // Deployment's boxes, not Skirmish's
+		expect(title(press(R(), "left", "left"))).toContain("✓ Scriptorium · viewing · active: Skirmish");
+		expect(title(press(R(), "right"))).toContain("○ Inquisition · viewing · active: Skirmish");
+	});
+	test("right back onto the active station and home clear the browse; both clamp at the ends", () => {
+		expect(press(R(), "left", "right").nav.shown).toBeUndefined();
+		expect(press(R(), "left", "left", "home").nav.shown).toBeUndefined();
+		expect(title(press(R(), "left", "left", "home"))).toContain("▶ Skirmish");
+		expect(press(R(), ...Array<NavKey>(20).fill("left")).stations.shown).toBe(0);
+		expect(press(R(), ...Array<NavKey>(20).fill("right")).stations.shown).toBe(7);
+	});
+	test("a station change of the run drops the browse; so does an out-of-range phase", () => {
+		const browsing: Nav = { shown: { phase: 3, from: 4 } };
+		expect(cockpitView({ ...R(), nav: browsing }).nav.shown).toEqual({ phase: 3, from: 4 });
+		const moved = cockpitView({ ...input({ phases: run(5) }), nav: browsing });
+		expect(moved.nav.shown).toBeUndefined();
+		expect(title(moved)).toContain("▶ Inquisition");
+		expect(cockpitView({ ...R(), nav: { shown: { phase: 99, from: 4 } } }).nav.shown).toBeUndefined();
+		expect(cockpitView({ ...R(), nav: { shown: { phase: -1, from: 4 } } }).nav.shown).toBeUndefined();
+		expect(cockpitView({ ...R(), nav: { shown: { phase: 1.5, from: 4 } } }).nav.shown).toBeUndefined();
+	});
+	test("the waiting-seal note stays on the active station; the seal panel and chronicle show on every station", () => {
+		const p: Phase[] = [{ name: "Muster", tasks: [{ content: "[captain] a", status: "completed" }] }, { name: "Scriptorium", tasks: [{ content: "[seal] Plan", status: "in_progress" }] }];
+		const base = input({ phases: p, seal: { id: "Plan", lines: ["the details"] }, chronicle: [{ at: "10:00", who: "A", text: "hello" }] });
+		const here = draw(cockpitView(base)).join("\n");
+		expect(here).toContain("seal Plan awaits you");
+		const there = draw(press(base, "left")).join("\n");
+		expect(there).toContain("Muster · viewing · active: Scriptorium");
+		expect(there).not.toContain("seal Plan awaits you");
+		expect(there).toContain("the details");
+		expect(there).toContain("hello");
+	});
+	test("the narrow station line names the shown station too", () => {
+		expect(draw(press(R(), "left"), 50).join("\n")).toContain("✓ Deployment · viewing · active: Skirmish");
+	});
+});
+
+describe("hidden lines and the selected line", () => {
+	const jobs = (n: number): ViewInput => input({ phases: [{ name: "Skirmish", tasks: Array.from({ length: n }, (_, i) => ({ content: `[battle-brother] job ${i}`, status: "pending" })) }] });
+	const downs = (n: number) => Array<NavKey>(n).fill("down");
+	test("a selected hidden line is drawn, the window moves only as far as needed and +k more counts the rest", () => {
+		const none = draw(cockpitView(jobs(12))).join("\n");
+		expect(none).not.toContain("job 10");
+		expect(none).toContain("+5 more (5 idle)");
+		const rows = draw(press(jobs(12), ...downs(11))); // the 11th item: job 10
+		expect(rows.find(l => l.includes("job 10"))).toContain("▸");
+		expect(rows.some(l => l.includes("job 3"))).toBe(false); // the window starts at 4: 4..10 are the 7 rows of cap - 1
+		expect(rows.some(l => l.includes("job 4"))).toBe(true);
+		expect(rows.filter(l => l.includes("job ")).length).toBe(7);
+		expect(rows.join("\n")).toContain("+5 more (5 idle)");
+	});
+	test("a visible selected line does not move the window", () => {
+		const rows = draw(press(jobs(12), ...downs(3))).join("\n");
+		expect(rows).toContain("job 0");
+		expect(rows).toContain("job 6");
+		expect(rows).not.toContain("job 7");
+	});
+	test("the line and its detail stay whole; only the line is marked", () => {
+		const d = new Map(Array.from({ length: 6 }, (_, i) => [`agent-${i}`, dep({ role: "battle-brother", station: "Skirmish", at: 60_000 })] as const));
+		const base = input({ phases: [{ name: "Skirmish", tasks: [] }], deployed: d, now: 120_000, live: new Map() });
+		const rows = draw(press(base, ...downs(6)));
+		const i = rows.findIndex(l => l.includes("agent-5"));
+		expect(i).toBeGreaterThan(0);
+		expect(rows[i]).toContain("▸");
+		expect(rows[i + 1]).not.toContain("▸");
+		expect(rows[i + 1]).toMatch(/\$\?/); // its detail row is right under it
+	});
+	test("a selected seal panel line past SEAL_CAP is drawn, with its own +k more", () => {
+		const p: Phase[] = [{ name: "Muster", tasks: [{ content: "[seal] Plan", status: "in_progress" }] }];
+		const base = input({ phases: p, seal: { id: "Plan", lines: Array.from({ length: 20 }, (_, i) => `line ${i}`) } });
+		const none = draw(cockpitView(base)).join("\n");
+		expect(none).not.toContain("line 15");
+		expect(none).toContain("+9 more");
+		const rows = draw(press(base, ...downs(16)));
+		expect(rows.find(l => l.includes("line 15"))).toContain("▸");
+		expect(rows.join("\n")).toContain("+9 more");
+	});
+	test("the chronicle scrolls to the selected entry at a fixed height", () => {
+		const base = input({ chronicle: many(30) });
+		const unselected = draw(cockpitView(base), 100, 20);
+		expect(unselected).toHaveLength(20);
+		expect(unselected.some(l => /event 1\b/.test(l))).toBe(false);
+		const v = press(base, ...downs(30)); // the oldest entry, event 1
+		const rows = draw(v, 100, 20);
+		expect(rows).toHaveLength(20);
+		expect(rows.find(l => /event 1\b/.test(l))).toContain("▸");
+		expect(rows.some(l => l.includes("event 30"))).toBe(false);
+		expect(draw(v, 50, 20).find(l => /event 1\b/.test(l))).toContain("▸");
+	});
+});
+
+describe("the selected line renders inside the frame", () => {
+	const FULL = (): ViewInput =>
+		input({
+			clock: { running: true, el: 42, bk: 120 },
+			phases: [{ name: "Skirmish", tasks: [{ content: "[seal] Demo", status: "in_progress" }, { content: "[captain] a", status: "pending" }, { content: "[battle-brother] Build squad a", status: "pending" }] }],
+			seal: { id: "Demo", lines: ["one", "two"] },
+			slices: [{ id: "a" }],
+			chronicle: many(6),
+		});
+	const nItems = cockpitView(FULL()).items.length;
+	const downs = (n: number) => Array<NavKey>(n).fill("down");
+	test("the marker sits in the blank cell: every framed row keeps ║ at col 0 and col W-1, and the footer starts at the left", () => {
+		for (const width of [50, 72, 100, 140]) {
+			for (let k = 0; k <= nItems; k++) {
+				const rows = draw(press(FULL(), ...downs(k)), width);
+				expect(rows.some(l => l.includes("▸"))).toBe(k > 0);
+				if (width >= 72) {
+					for (const l of rows) {
+						expect(Bun.stringWidth(l)).toBe(width);
+						if (l.startsWith("║")) expect(l.at(-1)).toBe("║");
+					}
+					expect(rows.at(-1)!.startsWith("╚═ esc/q close")).toBe(true);
+					expect(rows.at(-1)!.endsWith("╝")).toBe(true);
+				} else {
+					for (const l of rows) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
+					expect(rows.at(-1)).toBe("esc/q close");
+				}
+			}
+		}
+	});
+	test("the selected text is inverse video and the marker is gold, with no change to the plain text", () => {
+		const raw = renderCockpit(press(FULL(), ...downs(4)), 100, 0, TRUE).join("\n");
+		expect(raw).toContain("\x1b[7m");
+		expect(raw).toContain(`${GOLD}▸`);
+		const bare = renderCockpit(cockpitView(FULL()), 100, 0, TRUE).join("\n");
+		expect(bare).not.toContain("▸");
+		expect(bare).not.toContain("\x1b[7m");
+	});
+	test("the footer lists the keys on every wide width, still starting with esc/q close", () => {
+		const last = (w: number) => draw(cockpitView(FULL()), w).at(-1)!;
+		for (const w of [72, 100, 140]) expect(last(w)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home ═+╝$/);
+		expect(draw(cockpitView(FULL()), 50).at(-1)).toBe("esc/q close");
+	});
+	test("property: every line is at most the width and exactly the width from 72 columns, with or without a selection", () => {
+		for (let width = 20; width <= 160; width++)
+			for (const k of [0, 1, 5, nItems]) {
+				for (const l of draw(press(FULL(), ...downs(k)), width)) {
+					if (width >= 72) expect(Bun.stringWidth(l)).toBe(width);
+					else expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
+				}
+			}
+	});
+	test("property: at a fixed height the output is exactly that many lines with the selected line visible", () => {
+		for (const height of [14, 20, 30])
+			for (const width of [50, 100]) {
+				const rows = draw(press(FULL(), ...downs(nItems)), width, height); // the oldest chronicle entry
+				expect(rows).toHaveLength(height);
+				expect(rows.some(l => l.includes("▸"))).toBe(true);
+			}
 	});
 });

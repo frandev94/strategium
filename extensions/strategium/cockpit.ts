@@ -12,7 +12,9 @@ export type Live = { since: number; at: number; tool?: string; intent?: string; 
 export type Depth = "truecolor" | "256";
 type Ansi = `\x1b[${string}`; // an escape sequence, not a hex: keeps a Theme out of renderCockpit
 export type Palette = Record<Tone, Ansi> & { bg?: Ansi }; // a foreground sequence per tone, bg a background one
+export type Nav = { cursor?: { id: string; at: number }; shown?: { phase: number; from: number } }; // cursor: the selected line by identity and its position; shown: a browsed station and the active one it was taken at. In memory only (see cockpitView)
 export type ViewInput = {
+	nav?: Nav;
 	key: string;
 	untimed?: true;
 	deployed?: Map<string, Deployed>; // agent id (eval-<role>-<n> for an eval spawn without spawnKey) → what the host deployed, kept by index.ts
@@ -32,7 +34,7 @@ export type ViewInput = {
 export type View = ReturnType<typeof cockpitView>;
 
 type Kind = "active" | "done" | "failed" | "idle";
-type Line = { kind: Kind; mark: string; text: string; detail?: string; stalled?: true }; // detail: its own row under the line
+type Line = { id: string; kind: Kind; mark: string; text: string; detail?: string; stalled?: true }; // id: the line's identity for the cursor; detail: its own row under the line
 
 /** Agent text as one printable line: ANSI sequences stripped, then control and bidi characters and whitespace runs as single spaces. */
 export const oneLine = (s: unknown) => (typeof s === "string" ? clean(Bun.stripANSI(s)).replace(/\s+/g, " ").trim() : "");
@@ -121,6 +123,28 @@ export const closes = (data: string): boolean => {
 	return !!m && ((Number(m[1] ?? 1) - 1) & ~192) === 0 && m[2] !== "3";
 };
 
+const NAV_FINAL: Record<string, NavKey> = { A: "up", B: "down", C: "right", D: "left", H: "home" };
+const NAV_VK: Record<number, NavKey> = { 36: "home", 37: "left", 38: "up", 39: "right", 40: "down", 9: "tab" };
+const NAV_U: Record<number, NavKey> = { 9: "tab", 57417: "left", 57418: "right", 57419: "up", 57420: "down", 57423: "home" };
+const NAV_PLAIN = /^\x1b[[O]([ABCDH])$/;
+const NAV_MOD = /^\x1b\[1;(\d{1,3})(?::(\d))?([ABCDH])$/;
+const NAV_CSI_U = /^\x1b\[(9|5741[789]|57420|57423)(?::\d*)*(?:;(\d{1,3})(?::(\d))?)?(?:;[\d:]*)?u$/;
+const NAV_WIN32 = /^\x1b\[(\d{1,5});\d{0,5};\d{0,5};(\d);(\d{0,10});\d{0,5}_$/;
+const plainMod = (m: string | undefined, ev: string | undefined) => ((Number(m ?? 1) - 1) & ~192) === 0 && (ev === undefined || ev === "1" || ev === "2");
+/** The cursor key `data` is, or undefined. Arrows and Home in VT, SS3, xterm/kitty modified (locks allowed, no other modifier, press or repeat), Home as `CSI 1~`/`CSI 7~`, kitty keypad CSI-u, Tab, and win32-input-mode records (key down, no Alt/Ctrl/Shift). Any other sequence, a release, Alt+arrow and Shift+Tab give undefined, and never a bare Esc: closes() is false for all of them. Every pattern is anchored with bounded numbers, so a hostile string costs linear time. */
+export const navKey = (data: string): NavKey | undefined => {
+	if (data === "\t") return "tab";
+	if (data === "\x1b[1~" || data === "\x1b[7~") return "home";
+	const plain = NAV_PLAIN.exec(data);
+	if (plain) return NAV_FINAL[plain[1]];
+	const mod = NAV_MOD.exec(data);
+	if (mod) return plainMod(mod[1], mod[2]) ? NAV_FINAL[mod[3]] : undefined;
+	const u = NAV_CSI_U.exec(data);
+	if (u) return plainMod(u[2], u[3]) ? NAV_U[Number(u[1])] : undefined;
+	const w = NAV_WIN32.exec(data);
+	return w && w[2] === "1" && (Number(w[3] || 0) & 0x1f) === 0 ? NAV_VK[Number(w[1])] : undefined;
+};
+
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
 
 /** Agents that are no longer running, from what the host sends to the model: a task job's label is its agent id (eval agents are task jobs too), and an eval cell's agent status events carry the id and its last state. */
@@ -197,15 +221,26 @@ const HIDE: Kind[] = ["done", "idle", "failed", "active"]; // the order a +N mor
 export function cockpitView(input: ViewInput) {
 	const ic = icons(!!input.glyphs);
 	const phases = input.phases ?? [];
-	const at = activePhase(phases);
-	const phase = phases.at(at); // at is -1 with no phases: undefined
+	const active = activePhase(phases); // -1 with no phases
+	const browse = input.nav?.shown;
+	// Browsing holds only while the run stays at the station it was taken at.
+	const shown = browse && browse.from === active && browse.phase !== active && Number.isInteger(browse.phase) && browse.phase >= 0 && browse.phase < phases.length ? browse.phase : undefined;
+	const at = shown ?? active;
+	const phase = phases.at(at); // undefined with no phases
 
-	const doing = phase?.tasks.find(t => t.status === "in_progress");
+	const doing = phases.at(active)?.tasks.find(t => t.status === "in_progress");
 	const waiting = waitingSeal(phases);
-	const back = !!doing && phases.slice(at + 1).some(p => p.tasks.some(t => t.status === "completed"));
+	const back = !!doing && phases.slice(active + 1).some(p => p.tasks.some(t => t.status === "completed"));
 	const station: { kind: Kind; mark: string; name: string; note?: string } = !phase
 		? { kind: "idle", mark: "○", name: "no station yet" }
-		: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: phase.name, ...(waiting ? { note: label(ic.seal, `seal ${clean(waiting.id)} awaits you`) } : {}) };
+		: shown !== undefined
+			? (() => {
+					const done = phase.tasks.length > 0 && phase.tasks.every(t => t.status === "completed");
+					const run = phase.tasks.some(t => t.status === "in_progress");
+					const kind: Kind = done ? "done" : run ? "active" : "idle";
+					return { kind, mark: MARK[kind], name: `${phase.name} · viewing · active: ${phases[active].name}` };
+				})()
+			: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: phase.name, ...(waiting ? { note: label(ic.seal, `seal ${clean(waiting.id)} awaits you`) } : {}) };
 	const lines = waiting && input.seal?.id === waiting.id ? input.seal.lines.map(l => clean(l).trimEnd()) : [];
 	const prepared = lines.some(l => l.trim()) ? lines : undefined;
 	const panel = waiting && { title: label(ic.sealWait, `SEAL ${clean(waiting.id).toUpperCase()} · awaits you`), lines: prepared ?? ["the details are in the Captain's message"], prepared: !!prepared };
@@ -222,12 +257,12 @@ export function cockpitView(input: ViewInput) {
 				: returned.has(id)
 					? ["done", "returned"]
 					: ["idle", "awaiting deployment"];
-		return { id, kind, mark: MARK[kind], text: label(note.veteran ? ic.veteran : ic.brother, `squad ${id} ${state}`) };
+		return { id, key: `squad:${id}`, kind, mark: MARK[kind], text: label(note.veteran ? ic.veteran : ic.brother, `squad ${id} ${state}`) };
 	});
 
-	const tasks = (phase?.tasks ?? []).flatMap(t => {
+	const tasks = (phase?.tasks ?? []).flatMap((t, i) => {
 		const m = t.content.match(ROLE_TAG);
-		return m ? [{ status: t.status, role: (m[1] ?? m[2]).toLowerCase(), text: m[3] }] : [];
+		return m ? [{ id: `task:${i}:${t.content}`, status: t.status, role: (m[1] ?? m[2]).toLowerCase(), text: m[3] }] : [];
 	});
 	const seen = phase ? [...(input.deployed ?? [])].filter(([, d]) => d.station === phase.name) : []; // no phases: no station, so no boxes
 	const boxes = BOXES.flatMap(def => {
@@ -241,16 +276,16 @@ export function cockpitView(input: ViewInput) {
 		const lines: Line[] = [
 			...mine.map(t => {
 				const kind = ROLE_LINE[t.status] ?? "failed";
-				return { kind, mark: MARK[kind], text: who(t.role, t.text) };
+				return { id: t.id, kind, mark: MARK[kind], text: who(t.role, t.text) };
 			}),
 			// A forging squad's row is the first active agent deployed for it.
 			...(brothers
-				? squads.map(({ id, ...line }) => {
+				? squads.map(({ id, key, ...line }) => {
 						const hit = line.kind === "active" ? agents.find(([, d]) => d.squad === id && d.state === "active") : undefined;
-						return hit ? { ...line, ...row(...hit) } : line;
+						return hit ? { ...line, id: key, ...row(...hit) } : { ...line, id: key };
 					})
 				: []),
-			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ kind: d.state, mark: MARK[d.state], text: who(d.role, id), ...row(id, d) })),
+			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ id: `agent:${id}`, kind: d.state, mark: MARK[d.state], text: who(d.role, id), ...row(id, d) })),
 		].sort((a, b) => RANK[a.kind] - RANK[b.kind]);
 		const tone = def.tone ?? (lines.some(l => l.kind === "failed") ? "red" : lines.some(l => l.kind !== "idle") ? "green" : "iron");
 		return [{ title: label(ic[def.icon], def.title), tone, lines }];
@@ -272,7 +307,50 @@ export function cockpitView(input: ViewInput) {
 		}
 	}
 
-	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, boxes, chronicle: [...input.chronicle].reverse() };
+	const ord = new Map<string, number>();
+	const chronicle = input.chronicle
+		.map(e => {
+			const k = `${e.at}|${e.who}|${e.text}`;
+			const n = ord.get(k) ?? 0;
+			ord.set(k, n + 1);
+			return { ...e, id: `log:${k}#${n}` };
+		})
+		.reverse();
+	const sealIds = panel && waiting ? panel.lines.map((_, i) => `seal:${waiting.id}:${i}`) : [];
+	const items = [...sealIds.map(id => ({ id, group: "seal" })), ...boxes.flatMap(b => b.lines.map(l => ({ id: l.id, group: b.title }))), ...chronicle.map(e => ({ id: e.id, group: "chronicle" }))];
+	const was = input.nav?.cursor;
+	const found = was ? items.findIndex(i => i.id === was.id) : -1;
+	const to = was && items.length ? (found >= 0 ? found : Math.min(Math.max(0, Math.trunc(was.at) || 0), items.length - 1)) : -1;
+	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }) };
+
+	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav };
+}
+
+/** A cursor move or a station browse, as `navigate` takes them. */
+export type NavKey = "up" | "down" | "left" | "right" | "home" | "tab";
+
+/** The next Nav after `key`, from the view's own (normalized) nav. Pure: ↑/↓ one item, clamped; Tab the first item of the next group, wrapping; ←/→ the shown station ∓1, clamped, landing on the active one clears `shown`; Home clears `shown`. The first ↑, ↓ or Tab selects the first item. */
+export function navigate(view: View, key: NavKey): Nav {
+	const { items, stations, nav } = view;
+	const from = nav.cursor?.at ?? -1;
+	const go = (i: number): Nav => ({ ...nav, ...(items.length ? { cursor: { id: items[i].id, at: i } } : {}) });
+	switch (key) {
+		case "up":
+		case "down":
+			return from < 0 ? go(0) : go(Math.min(items.length - 1, Math.max(0, from + (key === "up" ? -1 : 1))));
+		case "tab": {
+			if (!items.length) return nav;
+			const next = from < 0 ? -1 : items.findIndex((it, i) => i > from && it.group !== items[from].group);
+			return go(Math.max(0, next));
+		}
+		case "home":
+			return { ...(nav.cursor ? { cursor: nav.cursor } : {}) };
+		default: {
+			if (!stations.count) return nav;
+			const to = Math.min(stations.count - 1, Math.max(0, stations.shown + (key === "left" ? -1 : 1)));
+			return { ...(nav.cursor ? { cursor: nav.cursor } : {}), ...(to === stations.active ? {} : { shown: { phase: to, from: stations.active } }) };
+		}
+	}
 }
 
 const paint = (c: string, s: string) => c + s + RESET;
@@ -315,13 +393,13 @@ function sealsText(seals: Seal[], pal: Palette, ic: View["ic"]): string {
 }
 
 const SEAL_CAP = 12;
-// shortcut: a panel taller than the window is cut from the bottom by withHeight; upgrade with the navigable cockpit (#13).
-/** The seal panel as a box: its lines parchment when prepared, else the default line in iron; past SEAL_CAP the first SEAL_CAP - 1 and an iron "+k more". */
-function sealBox(panel: NonNullable<View["panel"]>, pal: Palette): Box {
-	const over = panel.lines.length > SEAL_CAP;
-	const shown = (over ? panel.lines.slice(0, SEAL_CAP - 1) : panel.lines).map(l => paint(panel.prepared ? pal.parchment : pal.iron, l));
-	if (over) shown.push(paint(pal.iron, `+${panel.lines.length - SEAL_CAP + 1} more`));
-	return { title: panel.title, lines: shown, tone: "gold" };
+/** The seal panel as a box: its lines parchment when prepared, else the default line in iron; past SEAL_CAP a window of SEAL_CAP - 1 lines that keeps the selected one (see windowOf) and an iron "+k more". `ids` name its lines for the cursor. */
+function sealBox(panel: NonNullable<View["panel"]>, ids: string[], pal: Palette, selected?: string): Box {
+	const si = ids.indexOf(selected ?? "");
+	const [start, end] = panel.lines.length > SEAL_CAP ? windowOf(panel.lines.map(() => 1), SEAL_CAP, si) : [0, panel.lines.length];
+	const lines = panel.lines.slice(start, end).map(l => paint(panel.prepared ? pal.parchment : pal.iron, l));
+	if (end - start < panel.lines.length) lines.push(paint(pal.iron, `+${panel.lines.length - (end - start)} more`));
+	return { title: panel.title, lines, tone: "gold", ...(si >= start && si < end ? { sel: si - start } : {}) };
 }
 
 function clockText(clock: View["clock"], pal: Palette, bar: boolean): string {
@@ -343,7 +421,10 @@ const entryLine = (e: Entry, pal: Palette) => {
 	return `${paint(pal.iron, e.at)}  ${paint(pal.parchment, pad(clean(e.who), 11))} ${paint(pal[tone], clean(e.text))}`;
 };
 
-type Box = { title: string; lines: string[]; tone: Tone };
+type Box = { title: string; lines: string[]; tone: Tone; sel?: number }; // sel: the row of the selected line
+
+/** The selected line's text in inverse video; SGR 7/27 is zero width, so no column moves. */
+const inverse = (s: string) => `\x1b[7m${s}\x1b[27m`;
 
 function drawBox(b: Box, w: number, pal: Palette): string[] {
 	const [tl, h, tr, v, bl, br] = "┌─┐│└┘";
@@ -351,7 +432,7 @@ function drawBox(b: Box, w: number, pal: Palette): string[] {
 	const title = fit(b.title, w - 5).replace(`…${RESET}`, "");
 	return [
 		c(`${tl}${h} ${title} ${h.repeat(w - Bun.stringWidth(title) - 5)}${tr}`),
-		...b.lines.map(l => `${c(v)} ${pad(fit(l, w - 4), w - 4)} ${c(v)}`),
+		...b.lines.map((l, r) => `${c(v)}${r === b.sel ? paint(pal.gold, "▸") : " "}${pad(r === b.sel ? inverse(fit(l, w - 4)) : fit(l, w - 4), w - 4)} ${c(v)}`),
 		c(`${bl}${h.repeat(w - 2)}${br}`),
 	];
 }
@@ -370,11 +451,12 @@ function grid(boxes: Box[], cols: number, inner: number, pal: Palette): string[]
 	return out;
 }
 
-// With a height: exactly that many lines, the chronicle on the spare rows, `blank` after it, `close` last; a too tall body is cut from the bottom.
-function withHeight(body: string[], entries: string[], blank: string, close: string, height?: number): string[] {
+// With a height: exactly that many lines, the chronicle on the spare rows, `blank` after it, `close` last; a too tall body is cut from the bottom. The chronicle window starts at 0 and follows the entry `sel` when it is past the spare rows.
+function withHeight(body: string[], entries: string[], blank: string, close: string, height?: number, sel = -1): string[] {
 	if (height === undefined) return [...body, ...entries, close];
 	const spare = Math.max(0, height - body.length - 1);
-	const shown = entries.slice(0, spare);
+	const from = sel >= spare ? sel - spare + 1 : 0;
+	const shown = entries.slice(from, from + spare);
 	return [...body, ...shown, ...Array(spare - shown.length).fill(blank)].slice(0, Math.max(0, height - 1)).concat(close);
 }
 
@@ -383,17 +465,35 @@ function withHeight(body: string[], entries: string[], blank: string, close: str
 const boxCap = (height: number | undefined, fixed: number, blocks: number, chrome: number) =>
 	height === undefined || !blocks ? BOX_CAP : Math.max(1, Math.min(BOX_CAP, Math.floor((height - fixed - CHRONICLE_MIN) / blocks) - chrome));
 
-/** A box's rows, at most cap (a detail is a row of its own, 2 cells in; gold when stalled, else iron): past it the whole lines that fit in cap - 1 rows and an iron "+k more (…)" row counting the hidden lines by state in HIDE order. A line and its detail are never split. */
-function boxLines(lines: View["boxes"][number]["lines"], cap: number, pal: Palette, frame: number): string[] {
+/** The lines [start, end) a box past its cap shows in cap - 1 rows (`rows`: the rows of each line): from 0, moved down only as far as the selected line `sel` (-1: none) needs, and always including it even when it alone is taller than the room. */
+function windowOf(rows: number[], cap: number, sel: number): [number, number] {
+	const room = cap - 1;
+	let start = 0;
+	let need = sel < 0 ? 0 : rows.slice(0, sel + 1).reduce((a, b) => a + b, 0);
+	while (start < sel && need > room) need -= rows[start++];
+	let end = start;
+	for (let used = 0; end < rows.length && used + rows[end] <= room; used += rows[end++]);
+	return [start, Math.max(end, sel + 1)];
+}
+
+/** A box's rows, at most cap (a detail is a row of its own, 2 cells in; gold when stalled, else iron): past it the window of whole lines (see windowOf) and an iron "+k more (…)" row counting every hidden line, above and below, by state in HIDE order. A line and its detail are never split. `sel` is the row of the selected line, if drawn. */
+function boxLines(lines: View["boxes"][number]["lines"], cap: number, pal: Palette, frame: number, selected?: string): { lines: string[]; sel?: number } {
 	const rows = (l: Line) => (l.detail ? 2 : 1);
 	const draw = (l: Line) => [markText(l.kind, l.mark, l.text, pal, frame, l.stalled && "gold"), ...(l.detail ? [`  ${paint(pal[l.stalled ? "gold" : "iron"], l.detail)}`] : [])];
-	if (lines.reduce((n, l) => n + rows(l), 0) <= cap) return lines.flatMap(draw);
-	let used = 0;
-	let shown = 0;
-	while (shown < lines.length && used + rows(lines[shown]) <= cap - 1) used += rows(lines[shown++]);
-	const hidden = lines.slice(shown);
-	const parts = HIDE.map(k => [k, hidden.filter(l => l.kind === k).length] as const).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k}`);
-	return [...lines.slice(0, shown).flatMap(draw), paint(pal.iron, `+${hidden.length} more (${parts.join(", ")})`)];
+	const si = lines.findIndex(l => l.id === selected);
+	const [start, end] = lines.reduce((n, l) => n + rows(l), 0) <= cap ? [0, lines.length] : windowOf(lines.map(rows), cap, si);
+	const out: string[] = [];
+	let sel: number | undefined;
+	for (const [i, l] of lines.slice(start, end).entries()) {
+		if (start + i === si) sel = out.length;
+		out.push(...draw(l));
+	}
+	const hidden = [...lines.slice(0, start), ...lines.slice(end)];
+	if (hidden.length) {
+		const parts = HIDE.map(k => [k, hidden.filter(l => l.kind === k).length] as const).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k}`);
+		out.push(paint(pal.iron, `+${hidden.length} more (${parts.join(", ")})`));
+	}
+	return { lines: out, ...(sel === undefined ? {} : { sel }) };
 }
 
 export function renderCockpit(view: View, width: number, frame: number, pal: Palette, height?: number): string[] {
@@ -405,21 +505,25 @@ export function renderCockpit(view: View, width: number, frame: number, pal: Pal
 function cockpitLines(view: View, width: number, frame: number, pal: Palette, height?: number): string[] {
 	const s = view.station;
 	const station = markText(s.kind, s.mark, s.name, pal, frame) + (s.note ? ` · ${paint(pal.gold, s.note)}` : "");
-	const boxes = (cap: number): Box[] => view.boxes.map(b => ({ title: b.title, lines: boxLines(b.lines, cap, pal, frame), tone: b.tone }));
-	const box = view.panel && sealBox(view.panel, pal);
+	const sel = view.nav.cursor?.id;
+	const boxes = (cap: number): Box[] => view.boxes.map(b => ({ title: b.title, tone: b.tone, ...boxLines(b.lines, cap, pal, frame, sel) }));
+	const box = view.panel && sealBox(view.panel, view.sealIds, pal, sel);
 
 	if (width < 72) {
+		const ind = (b: Box) => b.lines.map((l, i) => (i === b.sel ? `${paint(pal.gold, "▸")} ${inverse(l)}` : `  ${l}`));
+		const si = view.chronicle.findIndex(e => e.id === sel);
 		const body = [
 			`${paint(pal.gold, "✠ STRATEGIUM")} · ${paint(pal.parchment, view.key)}`,
 			clockText(view.clock, pal, false),
 			...statusText(view.status, pal, frame),
 			...(view.seals.length ? [`${paint(pal.gold, "SEALS")} ${sealsText(view.seals, pal, view.ic)}`] : []),
 			station,
-			...(box ? [paint(pal.gold, box.title), ...box.lines.map(l => `  ${l}`)] : []),
-			...boxes(boxCap(height, 5 + (view.seals.length ? 1 : 0) + (box ? box.lines.length + 1 : 0) + statusText(view.status, pal, frame).length, view.boxes.length, 1)).flatMap(b => [paint(pal.gold, b.title), ...b.lines.map(l => `  ${l}`)]),
+			...(box ? [paint(pal.gold, box.title), ...ind(box)] : []),
+			...boxes(boxCap(height, 5 + (view.seals.length ? 1 : 0) + (box ? box.lines.length + 1 : 0) + statusText(view.status, pal, frame).length, view.boxes.length, 1)).flatMap(b => [paint(pal.gold, b.title), ...ind(b)]),
 			paint(pal.gold, "CHRONICLE"),
 		];
-		return withHeight(body, view.chronicle.map(e => entryLine(e, pal)), "", paint(pal.iron, "esc/q close"), height).map(l => fit(l, width));
+		const entries = view.chronicle.map((e, i) => (i === si ? `${paint(pal.gold, "▸")} ${inverse(entryLine(e, pal))}` : entryLine(e, pal)));
+		return withHeight(body, entries, "", paint(pal.iron, "esc/q close"), height, si).map(l => fit(l, width));
 	}
 
 	const inner = width - 2;
@@ -436,11 +540,14 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	const title = fit(station, inner - 4); // keeps at least one cell of rule
 	const cols = Math.max(1, Math.min(view.boxes.length, Math.floor((inner - 1) / 27)));
 
+	const si = view.chronicle.findIndex(e => e.id === sel);
+	const hint = "esc/q close · ↑↓ line · ←→ station · tab box · home";
 	return withHeight(
 		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...(box ? grid([box], 1, inner, pal).map(row) : []), ...grid(boxes(boxCap(height, head.length + 4 + (box ? box.lines.length + 2 : 0), Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
-		view.chronicle.map(e => row(` ${entryLine(e, pal)}`)),
+		view.chronicle.map((e, i) => row(i === si ? `${g("▸")}${inverse(entryLine(e, pal))}` : ` ${entryLine(e, pal)}`)),
 		row(""),
-		g(`╚═ esc/q close ${"═".repeat(inner - 14)}╝`),
+		g(`╚═ ${hint} ${"═".repeat(inner - 3 - Bun.stringWidth(hint))}╝`),
 		height,
+		si,
 	);
 }

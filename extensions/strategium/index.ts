@@ -23,7 +23,7 @@ import {
 import { debrief, type AgentCost, type Reported } from "./debrief";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, isCost, jobEnds, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, navKey, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -1061,6 +1061,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		deployed: new Map<string, Deployed>(),
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
+		input: undefined as ViewInput | undefined, // the last view input, so a cursor key recomputes the view without reading files
+		nav: {} as Nav, // the cursor and browsed station: in memory only, never saved
 		overlay: undefined as Tui | undefined,
 		status: undefined as "working" | "awaiting" | undefined,
 		close: undefined as (() => void) | undefined,
@@ -1074,6 +1076,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.deployed.clear();
 		cockpit.clock = undefined;
 		cockpit.seal = undefined;
+		cockpit.nav = {};
 		cockpit.dirty = key !== undefined;
 	};
 	/** Take the saved state of this session's run, replacing memory; a missing, corrupt or other-key file is a clean start. */
@@ -1161,7 +1164,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			job.stalled = start;
 			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
 		}
-		cockpit.view = cockpitView({
+		cockpit.input = {
 			live: rows,
 			now,
 			key: run.key,
@@ -1177,7 +1180,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
 			seal: cockpit.seal,
-		});
+		};
+		cockpit.view = cockpitView({ ...cockpit.input, nav: cockpit.nav });
+		cockpit.nav = cockpit.view.nav; // normalized: a browsed station is dropped when the active one moved
 		if (cockpit.dirty) {
 			try {
 				writeAtomic(cockpitFile(run.sid), JSON.stringify({ key: cockpit.key, chronicle: cockpit.chronicle, notes: cockpit.notes, deployed: [...cockpit.deployed], ...(cockpit.seal ? { seal: cockpit.seal } : {}) }));
@@ -1228,7 +1233,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 					return {
 						render: width => renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows),
 						handleInput: data => {
-							if (closes(data)) close();
+							if (closes(data)) return close();
+							const key = navKey(data);
+							if (!key || !cockpit.view || !cockpit.input) return;
+							cockpit.nav = navigate(cockpit.view, key);
+							cockpit.view = cockpitView({ ...cockpit.input, nav: cockpit.nav });
+							cockpit.nav = cockpit.view.nav;
+							tui.requestRender();
 						},
 						dispose: () => clearInterval(timer),
 					};

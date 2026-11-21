@@ -3511,6 +3511,74 @@ describe("cockpit", () => {
 		});
 	});
 
+	describe("the cursor", () => {
+		const stations = (a: string, b: string, c: string) => [
+			{ name: "Muster", tasks: [{ content: "one", status: a }] },
+			{ name: "Auspex", tasks: [{ content: "two", status: b }] },
+			{ name: "Deployment", tasks: [{ content: "three", status: c }] },
+		];
+		const open = async () => {
+			const { s, ui } = await running();
+			s.todo(stations("completed", "in_progress", "pending"));
+			await s.sub("cockpit");
+			return { s, comp: ui.opened.at(-1)!.component, ui };
+		};
+		const text = (c: { render(w: number): string[] }) => plain(c.render(100).join("\n"));
+
+		test("left shows the previous station and right comes back to the active one", async () => {
+			const { comp } = await open();
+			const before = text(comp);
+			comp.handleInput!("\x1b[D");
+			expect(text(comp)).not.toBe(before);
+			comp.handleInput!("\x1b[C");
+			expect(text(comp)).toBe(before);
+			comp.handleInput!("q");
+		});
+
+		test("down selects a line, and the selection survives a redraw of the run", async () => {
+			const { s, comp } = await open();
+			const before = text(comp);
+			comp.handleInput!("\x1b[B");
+			const selected = text(comp);
+			expect(selected).not.toBe(before);
+			expect(selected).toContain("▸");
+			s.todo(stations("completed", "in_progress", "pending"));
+			expect(text(comp)).toBe(selected);
+			comp.handleInput!("q");
+		});
+
+		test("a station change drops the browsed station and shows the active one", async () => {
+			const { s, comp } = await open();
+			const active = text(comp);
+			comp.handleInput!("\x1b[D");
+			s.todo(stations("completed", "completed", "in_progress"));
+			const moved = text(comp);
+			comp.handleInput!("\x1b[D");
+			comp.handleInput!("\x1b[C");
+			expect(text(comp)).toBe(moved);
+			expect(moved).not.toBe(active);
+			comp.handleInput!("q");
+		});
+
+		test("Esc and q close in one press while browsing", async () => {
+			for (const key of ["\x1b", "q"]) {
+				const { comp, ui } = await open();
+				comp.handleInput!("\x1b[D");
+				comp.handleInput!("\x1b[B");
+				comp.handleInput!(key);
+				expect(ui.draws.closed).toBe(1);
+			}
+		});
+
+		test("cursor keys do not repaint after a close, and the nav is not saved", async () => {
+			const { s, comp } = await open();
+			comp.handleInput!("\x1b[B");
+			comp.handleInput!("q");
+			const saved = readdirSync(join(s.dir, "runs")).filter(f => f.endsWith(".cockpit")).map(f => readFileSync(join(s.dir, "runs", f), "utf8")).join("");
+			expect(saved).not.toContain("cursor");
+		});
+	});
+
 	describe("the overlay", () => {
 		test("with no run it warns", async () => {
 			const s = setup();
