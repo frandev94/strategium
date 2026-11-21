@@ -1,3 +1,17 @@
+## [0.2.13] - 2026-11-21
+
+### 🚀 Features
+
+- *(skills)* Plan mode walks the normal stations
+
+### 🐛 Bug Fixes
+
+- *(extension)* Keep the plan-mode station out of the fresh session's footer
+- *(skills)* Defer plan-mode GitHub writes and place the baseline task
+
+### 🧪 Testing
+
+- *(extension)* Drop the unused stations parameter
 ## [0.2.12] - 2026-11-21
 
 ### 🚀 Features
