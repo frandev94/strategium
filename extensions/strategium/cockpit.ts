@@ -7,8 +7,8 @@ export type Seal = { id: string; state: "granted" | "waiting" | "pending" };
 export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" | "warn" };
 export type Note = { veteran?: true; failed?: true };
 export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; stalled?: number; blocked?: true }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. stalled: the live entry's `at` (the idle start) the reader marked stalled. blocked: its row said so and the alarm rang for it; cleared when the row stops saying it
-/** What a child writes about itself, already validated by the reader (contract v2): ms timestamps, its todo counts, its last tool call and what it signalled (pct, eta_min, line, blocked). */
-export type Live = { since: number; at: number; tool?: string; intent?: string; done?: number; total?: number; current?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean };
+/** What a child writes about itself, already validated by the reader (contract v3): ms timestamps, its todo counts, its last tool call and what it signalled (pct, eta_min, line, blocked), and its usage. Usage is optional and absent means unknown, never 0: cost is USD (finite, >= 0) as omp prices it, its own spend without nested subagents; the tokens are safe integers >= 0. */
+export type Live = { since: number; at: number; tool?: string; intent?: string; done?: number; total?: number; current?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean; cost?: number; tokens_in?: number; tokens_out?: number; cache_read?: number; cache_write?: number };
 export type Depth = "truecolor" | "256";
 type Ansi = `\x1b[${string}`; // an escape sequence, not a hex: keeps a Theme out of renderCockpit
 export type Palette = Record<Tone, Ansi> & { bg?: Ansi }; // a foreground sequence per tone, bg a background one
@@ -38,13 +38,15 @@ type Line = { kind: Kind; mark: string; text: string; detail?: string; stalled?:
 export const oneLine = (s: unknown) => (typeof s === "string" ? clean(Bun.stripANSI(s)).replace(/\s+/g, " ").trim() : "");
 const span = (min: number) => (min < 1 ? "<1m" : min < 60 ? `${min}m` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}m`);
 const minutes = (ms: number) => Math.floor(Math.max(0, ms) / 60_000);
+/** The one money formatter: dollars and cents, rounded once. */
+export const usd = (n: number) => `$${n.toFixed(2)}`;
 
-/** The row under an active agent's line: `[blocked · ][stalled Nm · ]elapsed[ · progress][ · eta][ · text]`. Progress is the agent's `pct%` else `done/total`; eta its `~eta_min` else the one computed from the todo; text its `line`, else the todo's current task, else the intent (else tool). `stalled` is the live entry's `at` (the idle start) the reader marked stalled. A blocked row draws gold like a stalled one. */
+/** The row under an active agent's line: `[blocked · ][stalled Nm · ]elapsed · cost[ · progress][ · eta][ · text]`. Cost is `$x.xx`, or `$?` while the agent's usage is unknown. Progress is the agent's `pct%` else `done/total`; eta its `~eta_min` else the one computed from the todo; text its `line`, else the todo's current task, else the intent (else tool). `stalled` is the live entry's `at` (the idle start) the reader marked stalled. A blocked row draws gold like a stalled one. */
 function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): Pick<Line, "detail" | "stalled"> {
 	const from = d.at ?? live?.since;
 	if (d.state !== "active" || from === undefined || now === undefined) return {};
 	const ms = Math.max(0, now - from);
-	const parts = [span(minutes(ms))];
+	const parts = [span(minutes(ms)), typeof live?.cost === "number" && Number.isFinite(live.cost) && live.cost >= 0 ? usd(live.cost) : "$?"];
 	const { done = 0, total = 0, pct, eta_min } = live ?? {};
 	const todo = Number.isInteger(done) && Number.isInteger(total) && total > 0 && done >= 0 && done <= total;
 	const has = (n: number | undefined, max: number): n is number => Number.isInteger(n) && n! >= 0 && n! <= max;

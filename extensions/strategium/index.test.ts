@@ -4717,7 +4717,7 @@ describe("cockpit", () => {
 			expect(readLive(s)).toMatchObject({ done: 2, total: 5, current: "Write tests", tool: "read", intent: "Reading the cockpit" });
 			const t = await peek(s, ui);
 			expect(t).toContain("squad a forging");
-			expect(t).toContain("10m · 2/5 · ~15m · Write tests");
+			expect(t).toContain("10m · $? · 2/5 · ~15m · Write tests");
 		});
 
 		test("a child's signal writes its own row and the parent shows pct, eta and line in place of the todo's", async () => {
@@ -4730,7 +4730,7 @@ describe("cockpit", () => {
 			expect(readLive(s)).toMatchObject({ line: "GREEN parser", eta_min: 4, pct: 60, done: 2, total: 5 });
 			const t = await peek(s, ui);
 			expect(t).toContain("squad a forging");
-			expect(t).toContain("10m · 60% · ~4m · GREEN parser");
+			expect(t).toContain("10m · $? · 60% · ~4m · GREEN parser");
 		});
 
 		describe("signal", () => {
@@ -4994,7 +4994,7 @@ describe("cockpit", () => {
 			const c = child(s);
 			at(3 * MIN);
 			c.start("read", "Reading the cockpit");
-			expect(await peek(s, ui)).toContain("3m · Reading the cockpit");
+			expect(await peek(s, ui)).toContain("3m · $? · Reading the cockpit");
 		});
 
 		test("a second update within a second reaches the file after the trailing write, and the parent shows it with only a redraw", async () => {
@@ -5181,7 +5181,7 @@ describe("cockpit", () => {
 				at(20 * MIN);
 				const t = await peek(s, ui);
 				expect(t).not.toContain("stalled");
-				expect(t).toContain("20m · Running the tests");
+				expect(t).toContain("20m · $? · Running the tests");
 			});
 
 			test("the 5 minutes count from the end of the last tool call", async () => {
@@ -5206,7 +5206,7 @@ describe("cockpit", () => {
 			c.start("read", "Reading elsewhere");
 			at(4 * MIN);
 			const t = await peek(s, ui);
-			expect(t).toMatch(/│ +4m +│/);
+			expect(t).toMatch(/│ +4m · \$\? +│/);
 			expect(t).not.toContain("Reading elsewhere");
 		});
 
@@ -5303,6 +5303,184 @@ describe("cockpit", () => {
 			const call = (ctx: unknown) => s.handlers.tool_call[0]({ toolName: "task", input: { tasks: [brother("A")] } }, ctx);
 			expect((call(s.ctx) as { block?: boolean }).block).toBe(true);
 			expect(call({ ...s.ctx, agent: { kind: "sub", id: "A" } })).toBeUndefined();
+		});
+
+		describe("agent cost", () => {
+			// omp's UsageStatistics, as `getUsageStatistics()` returns it: cost includes the nested subagents', subagentCost is their part.
+			type Stats = { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: number; subagentCost: number };
+			const stats = (cost: number, subagentCost = 0): Stats => ({ input: 1200, output: 300, cacheRead: 4000, cacheWrite: 50, totalTokens: 5550, cost, subagentCost });
+			const none: Stats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, subagentCost: 0 };
+			// omp's own per-agent figure (registry/agent-lifecycle.ts directCost): the sum is taken before rounding.
+			const omp = (...st: Stats[]) => `$${st.reduce((n, x) => n + (x.cost - x.subagentCost), 0).toFixed(2)}`;
+			const fresh = async (booked?: number) => {
+				at(0);
+				const s = setup();
+				await s.call({ action: "begin", key: "K-1", ...(booked ? { booked } : {}) });
+				const ui = uiCtx(s);
+				await s.start();
+				s.handlers.before_subagent_spawn.forEach(h => h({ agent: "scout" }, s.ctx)); // the pointer the children read
+				return { s, ui };
+			};
+			const deploy = (s: S, id: string, agent: string) =>
+				s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent, task: "x" }] }, details: { progress: [{ index: 0, id, status: "running" }] }, isError: false }, s.ctx));
+			// A subagent session with its own usage object; `box` changes what the session reports.
+			const kid = (s: S, id: string, st?: Stats) => {
+				const f = fakePi();
+				extension(f.pi as never);
+				const box = { stats: st as unknown, fail: false };
+				const sm: Record<string, unknown> = {
+					getSessionId: () => `child-${id}`,
+					getUsageStatistics: () => {
+						if (box.fail) throw new Error("cross-thread session view");
+						return box.stats;
+					},
+				};
+				const ctx = { ...fakeCtx(`child-${id}`, s.dir), agent: { kind: "sub", id }, sessionManager: sm };
+				const fire = (event: string, e: unknown = {}) => f.handlers[event]?.forEach(h => h(e, ctx));
+				return { box, sm, fire, message: () => fire("message_end", { message: { role: "assistant" } }) };
+			};
+			const debriefText = (s: S) => readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8");
+
+			test("1: a sub's assistant message_end writes the usage, cost minus its nested subagents'; a trailing write holds the later figures", async () => {
+				vi.useFakeTimers();
+				const { s } = await fresh();
+				const c = kid(s, "A", stats(0.4, 0.1));
+				c.message();
+				expect(readLive(s)).toMatchObject({ tokens_in: 1200, tokens_out: 300, cache_read: 4000, cache_write: 50 });
+				expect(readLive(s).cost).toBeCloseTo(0.3, 10);
+				c.box.stats = stats(0.9, 0.1);
+				at(300);
+				c.message(); // inside the 1 s throttle: scheduled, not written
+				expect(readLive(s).cost).toBeCloseTo(0.3, 10);
+				c.box.stats = stats(1.1, 0.1); // changes again before the timer: the write reads when it runs
+				vi.advanceTimersByTime(900);
+				expect(readLive(s).cost).toBeCloseTo(1.0, 10);
+			});
+
+			test("2: agent_end writes at once past the throttle, and shutdown flushes a pending write", async () => {
+				const { s } = await fresh();
+				const c = kid(s, "A", stats(0.1));
+				c.message();
+				c.box.stats = stats(0.2);
+				at(100);
+				c.fire("agent_end");
+				expect(readLive(s).cost).toBeCloseTo(0.2, 10);
+				at(5000);
+				c.message(); // writes (past the throttle)
+				c.box.stats = stats(0.7);
+				at(5100);
+				c.message(); // pending
+				expect(readLive(s).cost).toBeCloseTo(0.2, 10);
+				c.fire("session_shutdown");
+				expect(readLive(s).cost).toBeCloseTo(0.7, 10);
+			});
+
+			test("3: no tokens, no price, a missing or throwing getUsageStatistics: unknown fields are absent, nothing throws", async () => {
+				const { s } = await fresh();
+				const zero = kid(s, "A", none);
+				const unpriced = kid(s, "B", stats(0));
+				const thrower = kid(s, "C", stats(0.5));
+				thrower.box.fail = true;
+				const missing = kid(s, "D", stats(0.5));
+				missing.sm.getUsageStatistics = undefined;
+				for (const c of [zero, unpriced, thrower, missing]) expect(() => c.message()).not.toThrow();
+				for (const id of ["A", "C", "D"]) expect(Object.keys(readLive(s, id)).filter(k => /^(cost|tokens_|cache_)/.test(k))).toEqual([]);
+				expect(readLive(s, "B")).toMatchObject({ tokens_in: 1200, tokens_out: 300 });
+				expect(readLive(s, "B")).not.toHaveProperty("cost");
+			});
+
+			test("4: the overlay shows $0.42 after the elapsed span, and $? for an active agent with no cost", async () => {
+				const { s, ui } = await squad();
+				const a = kid(s, "A", stats(0.42));
+				a.message();
+				deploy(s, "B", "scout");
+				kid(s, "B", none).message();
+				at(10 * MIN);
+				a.message();
+				const t = await peek(s, ui);
+				expect(t).toContain("10m · $0.42");
+				expect(t).toContain("$?");
+				expect(t).not.toContain("$0.00");
+			});
+
+			test("5: a live file with a bad cost or token field is ignored without throwing and its row shows $?", async () => {
+				const { s, ui } = await squad();
+				at(10 * MIN);
+				const base = `"since":${T0},"at":${T0 + 10 * MIN},"busy":0,"line":"kept?"`;
+				for (const bad of ['"cost":-1', '"cost":"0.4"', '"cost":null', '"cost":Infinity', '"tokens_in":1.5', '"cache_read":-2', '"tokens_out":"9"']) {
+					mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+					writeFileSync(liveFile(s), `{${base},${bad}}`);
+					const t = await peek(s, ui);
+					expect(t).not.toContain("kept?");
+					expect(t).toContain("$?");
+				}
+			});
+
+			test("6: end writes the Cost section: role totals equal omp's cost − subagentCost over the same stats, unknowns stay ?", async () => {
+				const { s } = await fresh();
+				const A = stats(0.4, 0.1), B = stats(0.25), C = stats(0.33), E = stats(0.07);
+				for (const [id, role] of [["A", "battle-brother"], ["B", "battle-brother"], ["C", "inquisitor"], ["D", "scout"]]) deploy(s, id, role);
+				for (const [id, st] of [["A", A], ["B", B], ["C", C], ["D", none], ["E", E]] as const) kid(s, id, st).message();
+				const out = await s.call({ action: "end" });
+				const md = debriefText(s);
+				expect(md).toContain("## Cost");
+				expect(md).toContain(`| battle-brother | 2 | ${omp(A, B)} |`);
+				expect(md).toContain(`| inquisitor | 1 | ${omp(C)} |`);
+				expect(md).toContain("| scout | 1 | ? |");
+				expect(md).toContain(`| other | 1 | ${omp(E)} |`);
+				expect(md).toContain(`| Total | 5 | ${omp(A, B, C, E)} + ? |`);
+				expect(out.split("\n").some(l => l.startsWith("COST "))).toBe(true);
+			});
+
+			test("7: after a parent restart the roles come from the saved cockpit and the costs are the same", async () => {
+				const { s } = await fresh();
+				const A = stats(0.4, 0.1), C = stats(0.33);
+				deploy(s, "A", "battle-brother");
+				deploy(s, "C", "inquisitor");
+				kid(s, "A", A).message();
+				kid(s, "C", C).message();
+				const restarted = setup("sess-0001", s.dir);
+				await restarted.call({ action: "end" });
+				const md = debriefText(s);
+				expect(md).toContain(`| battle-brother | 1 | ${omp(A)} |`);
+				expect(md).toContain(`| inquisitor | 1 | ${omp(C)} |`);
+			});
+
+			test("8: a timed run prints the cost per booked hour, an untimed one does not", async () => {
+				const timed = await fresh(120);
+				kid(timed.s, "A", stats(0.6)).message();
+				await timed.s.call({ action: "end" });
+				expect(debriefText(timed.s)).toContain("Cost per booked hour: $0.30 (total $0.60 over 120 booked min)");
+				const untimed = await fresh();
+				kid(untimed.s, "A", stats(0.6)).message();
+				await untimed.s.call({ action: "end" });
+				expect(debriefText(untimed.s)).not.toContain("Cost per booked hour");
+			});
+
+			test("9: a live file older than the run is left out, and a file name that does not decode is skipped", async () => {
+				const { s } = await fresh();
+				kid(s, "A", stats(0.2)).message();
+				const dir = join(s.dir, "runs", "sess-0001.live");
+				writeFileSync(join(dir, "OLD.json"), JSON.stringify({ since: T0 - 3_600_000, at: T0 - 3_600_000, busy: 0, cost: 9.99, tokens_in: 5 }));
+				writeFileSync(join(dir, "%E0%A4%A.json"), JSON.stringify({ since: T0, at: T0, busy: 0, cost: 8.88 }));
+				const out = await s.call({ action: "end" });
+				expect(out).toContain("ENDED K-1");
+				const md = debriefText(s);
+				expect(md).not.toContain("9.99");
+				expect(md).not.toContain("8.88");
+				expect(md).not.toContain("OLD");
+				expect(md).toContain("| other | 1 | $0.20 |");
+			});
+
+			test("10: a sub's message_end moves the live at", async () => {
+				const { s } = await fresh();
+				const c = kid(s, "A", stats(0.1));
+				c.message();
+				const before = readLive(s).at;
+				at(2000);
+				c.message();
+				expect(readLive(s).at).toBe(before + 2000);
+			});
 		});
 	});
 });
@@ -5629,6 +5807,7 @@ describe("the debrief at end", () => {
 			"TIME 70 min active, 10 min paused: Muster 10, Auspex 10, Scriptorium 25, Deployment 25",
 			"SEALS Plan 20m",
 			"SPAWNS 3: battle-brother 1, librarian 1, scout 1",
+			"COST ? · battle-brother ?",
 		]);
 		const markdown = readFileSync(file, "utf8");
 		expect(markdown).toBe(
@@ -5676,6 +5855,19 @@ describe("the debrief at end", () => {
 				"| Total | 3 |",
 				"",
 				"Model requested: the selector Strategium asked of the host; the host may run another.",
+				"",
+				"## Cost",
+				"",
+				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', the figure omp's agent view shows). A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+				"",
+				"| Agent | Role | Squad | Tokens in | Tokens out | Cache | Cost |",
+				"|---|---|---|---|---|---|---|",
+				"| bb1 | battle-brother | S1 | ? | ? | ? | ? |",
+				"",
+				"| Role | Agents | Cost | Share |",
+				"|---|---|---|---|",
+				"| battle-brother | 1 | ? |  |",
+				"| Total | 1 | ? | — |",
 				"",
 				"## Apothecary (reported)",
 				"",
@@ -5832,7 +6024,7 @@ describe("the debrief at end", () => {
 		at(9, 30);
 		const out = await s.call({ action: "end" });
 		expect(mdOf(out)).toContain("| S1 | light→standard→heavy | 2 | 1 | 1 | ok | running |");
-		expect(summary(out).at(-1)).toBe("SPAWNS 4: battle-brother 2, archmagos 1, veteran 1");
+		expect(summary(out).slice(-2)).toEqual(["SPAWNS 4: battle-brother 2, archmagos 1, veteran 1", "COST ? · battle-brother ?"]);
 	});
 
 	test("(k) a run across midnight counts the events of both days", async () => {
@@ -5844,7 +6036,7 @@ describe("the debrief at end", () => {
 		spawn(s, { agent: "scout" });
 		setSystemTime(new Date(2026, 10, 17, 0, 20, 0));
 		const out = await s.call({ action: "end" });
-		expect(summary(out)).toEqual(["TIME 30 min active, 0 min paused: (before the todo) 30", "SEALS none", "SPAWNS 2: scout 2"]);
+		expect(summary(out)).toEqual(["TIME 30 min active, 0 min paused: (before the todo) 30", "SEALS none", "SPAWNS 2: scout 2", "COST none"]);
 		expect(mdOf(out)).toContain("11-16 23:50 → 11-17 00:20");
 	});
 
@@ -5860,7 +6052,7 @@ describe("the debrief at end", () => {
 		spawn(s, { agent: "librarian" });
 		at(10, 30);
 		const out = await s.call({ action: "end" });
-		expect(summary(out)).toEqual(["TIME 30 min active, 0 min paused: (before the todo) 30", "SEALS none", "SPAWNS 1: librarian 1"]);
+		expect(summary(out)).toEqual(["TIME 30 min active, 0 min paused: (before the todo) 30", "SEALS none", "SPAWNS 1: librarian 1", "COST none"]);
 	});
 
 	test("(m) a squad id longer than a table cell still counts its builder, and a spawnKey of no squad stores none", async () => {
@@ -5901,7 +6093,7 @@ describe("the debrief at end", () => {
 		expect(mdOf(out)).toContain("| S1 | light | 1 | 0 | 0 | ok | not built |");
 		expect(mdOf(out)).toContain("| (before redraft) | light | 1 | 0 | 0 | — | — |");
 		expect(mdOf(out)).not.toContain("(unmatched)");
-		expect(summary(out).at(-1)).toBe("SPAWNS 2: battle-brother 2");
+		expect(summary(out).slice(-2)).toEqual(["SPAWNS 2: battle-brother 2", "COST none"]);
 	});
 
 	test("(p) the last result comes from the cockpit in memory when the saved file is behind", async () => {
