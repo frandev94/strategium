@@ -39,7 +39,9 @@ type Slice = { id: string; parallel: boolean; files: string[] };
 // `idle`: the clock was stopped by the idle pause; the next turn of the session resumes it.
 // `archmagos`: Muster marked the run for the Archmagos Dominus (begin archmagos: true). `librarians`: this run's librarians by
 // agent id, running or done (finished completed; a failed or cancelled one never counts). `archmagosSpawned`: archmagos
-// spawns let through. `redraft`: the one redraft of the run was used, so one more archmagos may spawn.
+// spawns let through. `redraft`: the run's one redraft (both plan paths): one more archmagos may spawn, and no librarian or
+// archmagos spawns until a scout in `scouts` is done. `scouts`: the scouts spawned after the redraft, by agent id, running
+// or done (finished completed).
 // `phases`: the todo as last seen, so the cockpit boxes and seals come back after a restart.
 type Run = {
 	key: string;
@@ -57,6 +59,7 @@ type Run = {
 	idle?: true;
 	archmagos?: true;
 	librarians?: Record<string, "running" | "done">;
+	scouts?: Record<string, "running" | "done">;
 	archmagosSpawned?: number;
 	redraft?: true;
 	phases?: Phase[];
@@ -443,6 +446,8 @@ const ARCHMAGOS_UNMARKED =
 const archmagosWaits = (n: number) =>
 	`Strategium: the archmagos integrates the librarians' parts: at least 2 librarians of this run must have finished first; ${n} have.`;
 const ARCHMAGOS_AGAIN = "Strategium: this run already spawned its archmagos. Only a redraft allows one more: call strategium action redraft first.";
+const REDRAFT_REFRESH =
+	"Strategium: this run was redrafted and Auspex has not refreshed the map yet: a scout spawned after the redraft must finish before any librarian or archmagos.";
 const ARCHMAGOS_SPENT = "Strategium: this run already spawned its archmagos and spent its one redraft.";
 // Tool input arrives as unknown; anything that is not an object reads as empty.
 const asObj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
@@ -1029,7 +1034,7 @@ export default function (pi: ExtensionAPI) {
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files}]: the plan's squads; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, notify, sound and toast settings. redraft (no params) allows one more archmagos once per run, only after the run's first archmagos and an area's part was redrafted.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files}]: the plan's squads; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
@@ -1109,10 +1114,11 @@ export default function (pi: ExtensionAPI) {
 					case "redraft": {
 						const run = ownRun(sid);
 						if (!run) return text("ERROR no active run in this session");
-						if (!run.archmagosSpawned) return text(`ERROR ${run.key} has no archmagos to redraft`);
 						if (run.redraft) return text(`ERROR the redraft of ${run.key} is spent (1 per run)`);
 						writeRun({ ...run, redraft: true });
-						return text(`REDRAFT ${run.key}: one more archmagos may be spawned`);
+						return text(
+							`REDRAFT ${run.key}: back to Auspex; no librarian or archmagos until a scout spawned now has finished${run.archmagosSpawned ? "; then one more archmagos may be spawned" : ""}`,
+						);
 					}
 				}
 			} catch (err) {
@@ -1499,7 +1505,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// The Captain's roster: during a run only these agents may be spawned, and no battle-brother before the squads.
-	// The archmagos has four more guards, in order: setting, mark, 2 finished librarians, budget.
+	// The archmagos has four more guards, in order: setting, mark, 2 finished librarians, budget. After a redraft, a librarian
+	// or archmagos also waits for a scout spawned after it to finish.
 	pi.on("before_subagent_spawn", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager) return;
 		const sid = sidOf(ctx);
@@ -1507,6 +1514,8 @@ export default function (pi: ExtensionAPI) {
 		if (!run) return;
 		const agent = agentName(String(asObj(e).agent ?? "task"));
 		if (!ROSTER.includes(agent)) return { block: true, reason: `Strategium: during a run only these agents may be spawned: ${ROSTER.join(", ")}.` };
+		if ((agent === "librarian" || agent === "archmagos") && run.redraft && !Object.values(run.scouts ?? {}).includes("done"))
+			return { block: true, reason: REDRAFT_REFRESH };
 		if (agent === "archmagos") {
 			if (!archmagosOn(sid)) return { block: true, reason: ARCHMAGOS_OFF };
 			if (!run.archmagos) return { block: true, reason: ARCHMAGOS_UNMARKED };
@@ -1525,15 +1534,18 @@ export default function (pi: ExtensionAPI) {
 	// The host gives no event when an agent ends; its result reaches the model as a message or a wait result that lists
 	// the background jobs, labelled with the agent id. A builder that is no longer running leaves its squad; the squad
 	// counts as stopped once none of its agents runs. An id ends once: an old message in the history matches nothing.
-	// A running librarian whose job completed counts as done for the archmagos guard (failed or cancelled never do).
+	// A running librarian or post-redraft scout whose job completed counts as done for the guards (failed or cancelled never do).
 	pi.on("context", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager) return;
 		const run = ownRun(sidOf(ctx));
 		if (!run) return;
 		const messages = asObj(e).messages;
 		let next: Run = run;
-		const finished = endedAgents(messages, "completed").filter(id => run.librarians?.[id] === "running");
+		const completed = endedAgents(messages, "completed");
+		const finished = completed.filter(id => run.librarians?.[id] === "running");
 		if (finished.length) next = { ...next, librarians: { ...run.librarians, ...Object.fromEntries(finished.map(id => [id, "done" as const])) } };
+		const scouted = completed.filter(id => run.scouts?.[id] === "running");
+		if (scouted.length) next = { ...next, scouts: { ...run.scouts, ...Object.fromEntries(scouted.map(id => [id, "done" as const])) } };
 		const ended = run.agents ? endedAgents(messages).filter(id => run.agents![id]) : [];
 		if (ended.length) {
 			const agents = { ...run.agents };
@@ -1545,7 +1557,7 @@ export default function (pi: ExtensionAPI) {
 
 	// A task result gives the id the host allocated to each item, with its index in the call. A builder's id is bound to the
 	// squad the item builds (ids are unique, so a reused name or two agents on one squad never share an entry); a
-	// librarian's id is tracked for the archmagos guard, whether or not squads exist.
+	// librarian's id is tracked for the archmagos guard, whether or not squads exist, and after a redraft so is a scout's.
 	pi.on("tool_result", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager || e.toolName.replace(/^_+/, "") !== "task") return;
 		const run = ownRun(sidOf(ctx));
@@ -1554,16 +1566,25 @@ export default function (pi: ExtensionAPI) {
 		const items = taskItems(e.input);
 		const agents = { ...run.agents };
 		const librarians = { ...run.librarians };
+		const scouts = { ...run.scouts };
+		let scouted = false;
 		const launched: Slice[] = [];
 		let tracked = false;
 		for (const p of progress.map(asObj)) {
 			const item = typeof p.index === "number" ? items[p.index] : undefined;
 			if (!item || typeof p.id !== "string") continue;
-			if (agentName(String(item.agent ?? "task")) === "librarian") {
-				if (p.status === "completed") librarians[p.id] = "done";
-				else if (p.status === "pending" || p.status === "running") librarians[p.id] ??= "running";
+			const name = agentName(String(item.agent ?? "task"));
+			// Librarians always; scouts only after a redraft (their end is the refresh).
+			const map = name === "librarian" ? librarians : name === "scout" && run.redraft ? scouts : undefined;
+			if (map) {
+				const before = map[p.id];
+				if (p.status === "completed") map[p.id] = "done";
+				else if (p.status === "pending" || p.status === "running") map[p.id] ??= "running";
 				else continue;
-				tracked = true;
+				if (map[p.id] !== before) {
+					if (map === scouts) scouted = true;
+					else tracked = true;
+				}
 				continue;
 			}
 			const slice = builtSlice(item, run);
@@ -1575,6 +1596,7 @@ export default function (pi: ExtensionAPI) {
 		let next: Run = run;
 		if (launched.length) next = settle(next, agents, launched);
 		if (tracked) next = { ...next, librarians };
+		if (scouted) next = { ...next, scouts };
 		if (next !== run) writeRun(next);
 	});
 

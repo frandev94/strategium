@@ -633,6 +633,20 @@ describe("the station in the footer", () => {
 	});
 	test("no active task, no station", () => expect(whereFrom([phase("Muster", ["[captain] Muster", "pending"])])).toBeUndefined());
 
+	test("a redraft reopens Auspex with the return arrow", async () => {
+		const reopened = [
+			phase("Muster", ["[captain] Orders", "completed"]),
+			phase("Auspex", ["[scout] Map", "completed"], ["[scout] Redraft refresh", "in_progress"]),
+			phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "abandoned"]),
+		];
+		expect(whereFrom(reopened)).toEqual({ station: "Auspex", back: true, task: "Redraft refresh" });
+		const { call, todo, start, shown } = setup();
+		await call({ action: "begin", key: "dark-mode" });
+		todo(reopened);
+		start();
+		expect(shown()).toContain("dark-mode · ↩ Auspex › Redraft refresh · ");
+	});
+
 	test("the footer shows station › task, also after a return arrow", async () => {
 		const { call, todo, start, shown } = setup();
 		await call({ action: "begin", key: "dark-mode" });
@@ -2142,6 +2156,9 @@ describe("the archmagos guard", () => {
 		`Strategium: the archmagos integrates the librarians' parts: at least 2 librarians of this run must have finished first; ${n} have.`;
 	const AGAIN = "Strategium: this run already spawned its archmagos. Only a redraft allows one more: call strategium action redraft first.";
 	const SPENT = "Strategium: this run already spawned its archmagos and spent its one redraft.";
+	const REFRESH =
+		"Strategium: this run was redrafted and Auspex has not refreshed the map yet: a scout spawned after the redraft must finish before any librarian or archmagos.";
+	const REDRAFT = "REDRAFT K-1: back to Auspex; no librarian or archmagos until a scout spawned now has finished";
 
 	// A run with no repo and no squads: the librarians are counted all the same.
 	async function run(opts: { on?: boolean; marked?: boolean } = {}) {
@@ -2202,14 +2219,60 @@ describe("the archmagos guard", () => {
 	test("a redraft allows exactly one more archmagos", async () => {
 		const none = setup("sess-0009");
 		expect(await none.call({ action: "redraft" })).toBe("ERROR no active run in this session");
-		const { s, spawn, two } = await run();
+		const { s, spawn, result, two } = await run();
 		two();
-		// Before the first archmagos there is nothing to redraft: the budget stays 1.
-		expect(await s.call({ action: "redraft" })).toBe("ERROR K-1 has no archmagos to redraft");
 		expect(spawn("archmagos")).toBeUndefined();
-		expect(await s.call({ action: "redraft" })).toBe("REDRAFT K-1: one more archmagos may be spawned");
+		expect(await s.call({ action: "redraft" })).toBe(`${REDRAFT}; then one more archmagos may be spawned`);
+		result([["scout", "S1", "completed"]]);
 		expect(spawn("archmagos")).toBeUndefined();
 		expect(spawn("archmagos")).toEqual({ block: true, reason: SPENT });
+		expect(await s.call({ action: "redraft" })).toBe("ERROR the redraft of K-1 is spent (1 per run)");
+	});
+
+	test("redraft works without the archmagos, once per run", async () => {
+		const { s, spawn } = await run({ on: false, marked: false });
+		expect(spawn("librarian")).toBeUndefined();
+		expect(await s.call({ action: "redraft" })).toBe(REDRAFT);
+		expect(await s.call({ action: "redraft" })).toBe("ERROR the redraft of K-1 is spent (1 per run)");
+		// The REFRESH guard comes before the setting check.
+		expect(spawn("archmagos")).toEqual({ block: true, reason: REFRESH });
+	});
+
+	test("after a redraft, librarians and archmagos wait for a scout spawned after it", async () => {
+		const { s, spawn, result, jobs, two } = await run();
+		two();
+		expect(spawn("archmagos")).toBeUndefined();
+		result([["scout", "S0", "running"]]);
+		expect(await s.call({ action: "redraft" })).toBe(`${REDRAFT}; then one more archmagos may be spawned`);
+		expect(spawn("librarian")).toEqual({ block: true, reason: REFRESH });
+		// The refresh itself must stay possible, or the redraft would deadlock.
+		expect(spawn("scout")).toBeUndefined();
+		expect(spawn("battle-brother")).toBeUndefined();
+		expect(spawn("archmagos")).toEqual({ block: true, reason: REFRESH });
+		// S0 was spawned before the redraft: its end is no refresh.
+		jobs("completed", "S0");
+		expect(spawn("librarian")).toEqual({ block: true, reason: REFRESH });
+		result([["scout", "S1", "running"]]);
+		jobs("failed", "S1");
+		expect(spawn("librarian")).toEqual({ block: true, reason: REFRESH });
+		result([["scout", "S2", "pending"]]);
+		jobs("completed", "S2");
+		expect(spawn("librarian")).toBeUndefined();
+		expect(spawn("archmagos")).toBeUndefined();
+		expect(spawn("archmagos")).toEqual({ block: true, reason: SPENT });
+	});
+
+	test("a scout completed in its own task result refreshes the librarian path", async () => {
+		const { s, spawn, result } = await run({ marked: false });
+		await s.call({ action: "redraft" });
+		expect(spawn("librarian")).toEqual({ block: true, reason: REFRESH });
+		result([["scout", "S0", "failed"]]);
+		expect(spawn("librarian")).toEqual({ block: true, reason: REFRESH });
+		result([["scout", "S1", "completed"]]);
+		expect(spawn("librarian")).toBeUndefined();
+		// done never downgrades.
+		result([["scout", "S1", "running"]]);
+		expect(spawn("librarian")).toBeUndefined();
 		expect(await s.call({ action: "redraft" })).toBe("ERROR the redraft of K-1 is spent (1 per run)");
 	});
 
