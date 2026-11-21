@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { keyOf, parseTiers, whereFrom } from "./index";
 import { cockpitView } from "./cockpit";
-import { claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
+import { append, claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
 
 // The extension registers itself on a host. A fake one is enough: it hands back the tool it
 // registered and does nothing else.
@@ -2141,7 +2141,7 @@ describe("tools, begin and end", () => {
 		await a.call({ action: "begin", key: "K-1" });
 		const c = setup("sess-0003", a.dir);
 		failAlarm();
-		expect(await c.call({ action: "end", key: "K-1", takeover: "sess-0001" })).toBe("ENDED K-1");
+		expect((await c.call({ action: "end", key: "K-1", takeover: "sess-0001" })).split("\n").slice(0, 2)).toEqual(["ENDED K-1", expect.stringMatching(/^DEBRIEF /)]);
 		expect(c.activeTools()).toEqual(FULL);
 		expect(c.notes).toEqual([]);
 	});
@@ -2157,7 +2157,7 @@ describe("tools, begin and end", () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1" });
 		failAlarm();
-		expect(await s.call({ action: "end" })).toBe("ENDED K-1");
+		expect((await s.call({ action: "end" })).split("\n").slice(0, 2)).toEqual(["ENDED K-1", expect.stringMatching(/^DEBRIEF /)]);
 		expect(s.notes).toEqual([expect.stringMatching(/^Strategium: the alarm failed: /)]);
 	});
 
@@ -5093,7 +5093,7 @@ describe("cockpit", () => {
 			const stuck = join(s.dir, "runs", "sess-0001.cockpit");
 			rmSync(stuck, { force: true });
 			mkdirSync(join(stuck, "inner"), { recursive: true });
-			expect(await s.call({ action: "end" })).toBe("ENDED K-1");
+			expect((await s.call({ action: "end" })).split("\n").slice(0, 2)).toEqual(["ENDED K-1", expect.stringMatching(/^DEBRIEF /)]);
 		});
 
 		test("a saved agent with a non-numeric at or stalled is read as having none", async () => {
@@ -5551,5 +5551,257 @@ describe("cost tiers", () => {
 			expect(parseTiers(" standard = a,b:high ").selectors.standard).toBe("a,b:high");
 			expect(parseTiers(undefined)).toEqual({ selectors: DEFAULT, ignored: [] });
 		});
+	});
+});
+
+// The run's debrief, written by `end` from what the hooks recorded in the day file, the run file and the cockpit file.
+describe("the debrief at end", () => {
+	type S = ReturnType<typeof setup>;
+	const at = (h: number, m: number) => setSystemTime(new Date(2026, 10, 16, h, m, 0));
+	const events = (dir: string) => load(join(dir, "2026-11-16.jsonl"));
+	const ph = (name: string, ...tasks: [string, string][]) => ({ name, tasks: tasks.map(([content, status]) => ({ content, status })) });
+	const STATIONS = ["Muster", "Auspex", "Scriptorium", "Deployment"];
+	// omp hands every todo result to all the tool_result handlers. The seal sits in Scriptorium: waiting, or granted once the run is past it.
+	const todo = (s: S, active: string, opts: { seal?: true; op?: string } = {}) => {
+		const i = STATIONS.indexOf(active);
+		const phases = STATIONS.map((name, j) =>
+			ph(
+				name,
+				[`[captain] ${name}`, j < i ? "completed" : j === i ? (opts.seal ? "completed" : "in_progress") : "pending"],
+				...(name === "Scriptorium" ? [["[seal] Plan", j < i ? "completed" : j === i && opts.seal ? "in_progress" : "pending"] as [string, string]] : []),
+			),
+		);
+		s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { ...(opts.op ? { op: opts.op } : {}), phases } }, s.ctx));
+	};
+	const spawn = (s: S, e: object) => s.handlers.before_subagent_spawn[0](e, s.ctx) as { block?: true; model?: string } | undefined;
+	const brother = { agent: "battle-brother", name: "S1", task: "build squad S1" };
+	const launched = (s: S, id: string) => s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother] }, details: { progress: [{ index: 0, id, status: "running" }] }, isError: false }, s.ctx));
+	const ended = (s: S, id: string, status: string) =>
+		s.handlers.context.forEach(h => h({ type: "context", messages: [{ role: "custom", customType: "async-result", details: { jobs: [{ jobId: `j-${id}`, type: "task", status, label: id }] } }] }, s.ctx));
+	const squads = [{ id: "S1", parallel: false, files: ["a.ts"], tier: "light" }];
+	const debriefFile = (dir: string) => {
+		const files = readdirSync(join(dir, "debriefs"));
+		expect(files).toHaveLength(1);
+		return join(dir, "debriefs", files[0]);
+	};
+	const begun = async (s: S) => {
+		at(9, 0);
+		await s.call({ action: "begin", key: "K-1", theatre: "github" });
+		await s.call({ action: "repo", repo: s.dir });
+	};
+
+	test("(a) a finished run: the file, the exact markdown, the rows that add up, the seal wait, the spawns and the reported sections", async () => {
+		const s = setup();
+		await begun(s);
+		todo(s, "Muster");
+		at(9, 10);
+		todo(s, "Auspex");
+		at(9, 12);
+		spawn(s, { agent: "scout", modelRole: "smol" });
+		at(9, 20);
+		todo(s, "Scriptorium");
+		at(9, 25);
+		spawn(s, { agent: "librarian", patterns: ["anthropic/claude-opus-4"] });
+		at(9, 35);
+		todo(s, "Scriptorium", { seal: true });
+		at(9, 40);
+		await s.call({ action: "stop" });
+		at(9, 50);
+		await s.call({ action: "start" });
+		at(9, 55);
+		todo(s, "Deployment");
+		at(10, 0);
+		await s.call({ action: "slices", slices: squads });
+		expect(spawn(s, { agent: "battle-brother", spawnKey: "S1" })?.model).toBe("@smol:medium");
+		launched(s, "bb1");
+		at(10, 10);
+		ended(s, "bb1", "completed");
+		at(10, 20);
+		const cockpit = join(s.dir, "runs", "sess-0001.cockpit");
+		expect(existsSync(cockpit)).toBe(true);
+		const out = await s.call({ action: "end", reported: { apothecary: { killed: 5, survived: 1, crashes: 0 }, review: { pass: 2 } } });
+		const lines = out.split("\n");
+		const file = debriefFile(s.dir);
+		expect(file).toMatch(/[\\/]debriefs[\\/]K-1-[0-9a-f]{8}-2026-11-16T10-20-00\.md$/);
+		expect(lines).toEqual([
+			"ENDED K-1",
+			`DEBRIEF ${file}`,
+			"TIME 70 min active, 10 min paused: Muster 10, Auspex 10, Scriptorium 25, Deployment 25",
+			"SEALS Plan 20m",
+			"SPAWNS 3: battle-brother 1, librarian 1, scout 1",
+		]);
+		const markdown = readFileSync(file, "utf8");
+		expect(markdown).toBe(
+			[
+				"# Debrief K-1",
+				"",
+				"Theatre github · 11-16 09:00 → 11-16 10:20 · plugin numbers are exact; (reported) sections come from the agents.",
+				"",
+				"## Time per station",
+				"",
+				"| Station | Active (min) | Paused (min) |",
+				"|---|---|---|",
+				"| Muster | 10 | 0 |",
+				"| Auspex | 10 | 0 |",
+				"| Scriptorium | 25 | 10 |",
+				"| Deployment | 25 | 0 |",
+				"| Total | 70 | 10 |",
+				"",
+				"## Seals",
+				"",
+				"| Seal | Asked | Granted | Wait (min) |",
+				"|---|---|---|---|",
+				"| Plan | 11-16 09:35 | 11-16 09:55 | 20 |",
+				"",
+				"## Squads",
+				"",
+				"| Squad | Tier | Builder runs | Penances | Veteran runs | Last result | State |",
+				"|---|---|---|---|---|---|---|",
+				"| S1 | light | 1 | 0 | 0 | ok | stopped |",
+				"",
+				"## Agents spawned",
+				"",
+				"| Role | Spawns |",
+				"|---|---|",
+				"| battle-brother | 1 |",
+				"| librarian | 1 |",
+				"| scout | 1 |",
+				"| Total | 3 |",
+				"",
+				"| Model | Spawns |",
+				"|---|---|",
+				"| @smol | 1 |",
+				"| @smol:medium | 1 |",
+				"| anthropic/claude-opus-4 | 1 |",
+				"| Total | 3 |",
+				"",
+				"## Apothecary (reported)",
+				"",
+				"| Mutants killed | Survivors | Fuzz crashes |",
+				"|---|---|---|",
+				"| 5 | 1 | 0 |",
+				"",
+				"## Review (reported)",
+				"",
+				"| Merge bar PASS | Merge bar FAIL | Findings opened | Fixed | NOT REPRODUCED |",
+				"|---|---|---|---|---|",
+				"| 2 | — | — | — | — |",
+				"",
+			].join("\n"),
+		);
+		// The rows add up to the Total row, and the agents' numbers stay out of the plugin's sections.
+		const rows = markdown.split("## Seals")[0].split("\n").filter(l => /^\| \S.* \| \d+ \| \d+ \|$/.test(l) && !l.startsWith("| Station"));
+		const cells = (l: string) => l.split("|").slice(2, 4).map(Number);
+		const total = rows.find(l => l.startsWith("| Total"))!;
+		const body = rows.filter(l => l !== total);
+		expect([0, 1].map(i => body.reduce((n, l) => n + cells(l)[i], 0))).toEqual(cells(total));
+		expect(markdown.split("## Apothecary (reported)")[0]).not.toMatch(/Survivors|NOT REPRODUCED/);
+		expect(existsSync(cockpit)).toBe(false);
+		expect(existsSync(join(s.dir, "runs", "sess-0001.json"))).toBe(false);
+		expect(events(s.dir).filter(e => e.event === "spawn").map(e => [e.role, e.model, e.tier, e.squad])).toEqual([
+			["scout", "@smol", undefined, undefined],
+			["librarian", "anthropic/claude-opus-4", undefined, undefined],
+			["battle-brother", "@smol:medium", "light", "S1"],
+		]);
+	});
+
+	// A restart: the session closes at 09:20 and the run comes back at 09:50, or the process dies after its heartbeat at 09:20.
+	const restarted = async (crash: boolean) => {
+		const s = setup();
+		await begun(s);
+		todo(s, "Muster");
+		at(9, 10);
+		todo(s, "Auspex");
+		at(9, 20);
+		if (crash) writeFileSync(join(s.dir, "runs", "sess-0001.beat"), nowIso());
+		else await s.handlers.session_shutdown[0]({}, s.ctx);
+		const again = setup("sess-0001", s.dir);
+		at(9, 50);
+		await again.start();
+		at(10, 0);
+		return again.call({ action: "end" });
+	};
+	for (const crash of [false, true])
+		test(`(${crash ? "c" : "b"}) a run ${crash ? "that crashed" : "closed with session_shutdown"} still reports the stations before the restart, the gap as paused`, async () => {
+			const out = await restarted(crash);
+			expect(out).toContain("TIME 30 min active, 30 min paused: Muster 10, Auspex 20");
+			const markdown = readFileSync(out.split("\n")[1].slice("DEBRIEF ".length), "utf8");
+			expect(markdown).toContain("| Muster | 10 | 0 |\n| Auspex | 20 | 30 |\n| Total | 30 | 30 |");
+		});
+
+	test("(d) a blocked spawn adds no spawn event: a battle-brother before the squads, an agent off the roster", async () => {
+		const s = setup();
+		await begun(s);
+		expect(spawn(s, { agent: "battle-brother", spawnKey: "S1" })?.block).toBe(true);
+		expect(spawn(s, { agent: "wizard" })?.block).toBe(true);
+		expect(events(s.dir).filter(e => e.event === "spawn")).toEqual([]);
+		expect(spawn(s, { agent: "scout" })?.block).toBeUndefined();
+		expect(events(s.dir).filter(e => e.event === "spawn")).toHaveLength(1);
+	});
+
+	test("(e) a debriefs path that cannot be written still ends the run and hands back the markdown", async () => {
+		const s = setup();
+		await begun(s);
+		writeFileSync(join(s.dir, "debriefs"), "in the way");
+		const lines = (await s.call({ action: "end" })).split("\n");
+		expect(lines[0]).toBe("ENDED K-1");
+		expect(lines[1]).toStartWith("DEBRIEF not written: ");
+		expect(lines.join("\n")).toContain("# Debrief K-1");
+		expect(await s.call({ action: "status" })).not.toContain("RUN K-1");
+		expect(s.activeTools()).toContain("edit");
+	});
+
+	test("(f) a takeover begin keeps since, and a takeover end writes the debrief of the run it took", async () => {
+		const a = setup("sess-0001");
+		await begun(a);
+		todo(a, "Muster");
+		at(9, 30);
+		const c = setup("sess-0003", a.dir);
+		await c.call({ action: "begin", key: "K-1", theatre: "github", takeover: "sess-0001" });
+		const since = () => JSON.parse(readFileSync(join(a.dir, "runs", "sess-0003.json"), "utf8")).since as string;
+		expect(since()).toStartWith("2026-11-16T09:00:00");
+		at(9, 40);
+		await c.call({ action: "begin", key: "K-1", theatre: "github" });
+		expect(since()).toStartWith("2026-11-16T09:00:00");
+
+		const b = setup("sess-0004");
+		await begun(b);
+		todo(b, "Muster");
+		at(9, 30);
+		const d = setup("sess-0005", b.dir);
+		const out = await d.call({ action: "end", key: "K-1", takeover: "sess-0004" });
+		expect(out.split("\n").slice(0, 2)).toEqual(["ENDED K-1", `DEBRIEF ${debriefFile(b.dir)}`]);
+		expect(readFileSync(debriefFile(b.dir), "utf8")).toContain("| Muster | 0 | 30 |");
+	});
+
+	test("(g) a rebuild init appends no station event", async () => {
+		const s = setup();
+		await begun(s);
+		todo(s, "Muster");
+		at(9, 10);
+		todo(s, "Auspex", { op: "init" });
+		expect(events(s.dir).filter(e => e.event === "station").map(e => e.station)).toEqual(["Muster"]);
+	});
+
+	test("(h) report lists no key that has only station events", async () => {
+		const s = setup();
+		at(9, 0);
+		append(join(s.dir, "2026-11-16.jsonl"), { ts: nowIso(), event: "station", key: "K-9", station: "Muster" });
+		append(join(s.dir, "2026-11-16.jsonl"), { ts: nowIso(), event: "spawn", key: "K-9", role: "scout" });
+		expect(await s.call({ action: "report" })).toBe("IDLE");
+		await s.call({ action: "begin", key: "K-1" });
+		expect(await s.call({ action: "report" })).not.toContain("K-9");
+	});
+
+	test("(i) a squad whose builder failed shows failed as its last result, read from the saved cockpit", async () => {
+		const s = setup();
+		await begun(s);
+		await s.call({ action: "slices", slices: squads });
+		spawn(s, { agent: "battle-brother", spawnKey: "S1" });
+		launched(s, "bb1");
+		at(9, 10);
+		ended(s, "bb1", "failed");
+		const out = await s.call({ action: "end" });
+		expect(readFileSync(out.split("\n")[1].slice("DEBRIEF ".length), "utf8")).toContain("| S1 | light | 1 | 0 | 0 | failed | stopped |");
 	});
 });
