@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
 	activePhase,
 	closes,
+	clean,
 	cockpitView,
 	colorDepth,
 	grantedSeals,
+	waitingSeal,
 	jobEnds,
 	palette,
 	pushEntry,
@@ -32,11 +34,11 @@ const text = (over: Partial<ViewInput> = {}, width = 100) => plain(renderCockpit
 const STATIONS: [string, string[], string[]][] = [
 	["Muster", ["captain"], ["CAPTAIN"]],
 	["Auspex", ["scout"], ["SCOUTS"]],
-	["Scriptorium", ["librarian", "archmagos", "seal"], ["LIBRARIANS", "SEAL"]],
+	["Scriptorium", ["librarian", "archmagos", "seal"], ["LIBRARIANS"]],
 	["Deployment", ["captain"], ["CAPTAIN"]],
-	["Skirmish", ["battle-brother", "veteran", "apothecary", "seal"], ["BATTLE-BROTHERS", "APOTHECARIES", "SEAL"]],
-	["Inquisition", ["inquisitor", "security-reviewer", "sonic", "task", "seal"], ["INQUISITOR", "SECURITY-REVIEWER", "SONIC", "ADEPTS", "SEAL"]],
-	["Extraction", ["captain", "seal"], ["CAPTAIN", "SEAL"]],
+	["Skirmish", ["battle-brother", "veteran", "apothecary", "seal"], ["BATTLE-BROTHERS", "APOTHECARIES"]],
+	["Inquisition", ["inquisitor", "security-reviewer", "sonic", "task", "seal"], ["INQUISITOR", "SECURITY-REVIEWER", "SONIC", "ADEPTS"]],
+	["Extraction", ["captain", "seal"], ["CAPTAIN"]],
 	["Debrief", ["captain"], ["CAPTAIN"]],
 ];
 /** The run at station `at`: earlier phases completed, its first task in_progress. */
@@ -50,16 +52,24 @@ describe("seals", () => {
 	test("sealsFrom reads bracket and glyph tags with their three states", () => {
 		const seals = sealsFrom(phases(["[seal] Plan", "completed"], ["\u{f047a} seal · UI", "in_progress"], ["[seal] Ship", "pending"], ["[builder] x", "pending"]));
 		expect(seals).toEqual([
-			{ id: "Plan", name: "Plan", state: "granted" },
-			{ id: "UI", name: "UI", state: "waiting" },
-			{ id: "Ship", name: "Ship", state: "pending" },
+			{ id: "Plan", state: "granted" },
+			{ id: "UI", state: "waiting" },
+			{ id: "Ship", state: "pending" },
 		]);
 	});
 
-	test("UI (2) stays distinct from UI and its name is the first word", () => {
-		const seals = sealsFrom(phases(["[seal] UI", "pending"], ["[seal] UI (2)", "pending"]));
-		expect(seals.map(s => s.id)).toEqual(["UI", "UI (2)"]);
-		expect(seals[1].name).toBe("UI");
+	test("a seal's name is the whole text after the tag: UI (2) stays distinct from UI", () => {
+		const seals = sealsFrom(phases(["[seal] UI", "pending"], ["[seal] UI (2)", "pending"], ["\u{f047a} seal · Plan the squads", "pending"]));
+		expect(seals.map(s => s.id)).toEqual(["UI", "UI (2)", "Plan the squads"]);
+	});
+
+	test("waitingSeal is the seal of the first in_progress task of the first phase that has one", () => {
+		expect(waitingSeal(phases(["[seal] Plan", "completed"], ["[seal] UI (2)", "in_progress"]))?.id).toBe("UI (2)");
+		expect(waitingSeal(phases(["[seal] Plan", "pending"]))).toBeUndefined();
+		expect(waitingSeal(phases(["[captain] x", "in_progress"], ["[seal] Plan", "in_progress"]))).toBeUndefined();
+		expect(waitingSeal([])).toBeUndefined();
+		const two: Phase[] = [{ name: "A", tasks: [{ content: "[seal] First", status: "in_progress" }] }, { name: "B", tasks: [{ content: "[seal] Second", status: "in_progress" }] }];
+		expect(waitingSeal(two)?.id).toBe("First");
 	});
 
 	test.each([
@@ -69,7 +79,7 @@ describe("seals", () => {
 		["completed to completed", phases(["[seal] Plan", "completed"]), phases(["[seal] Plan", "completed"]), []],
 		["first seen completed", phases(["[builder] x", "pending"]), phases(["[builder] x", "pending"], ["[seal] Plan", "completed"]), []],
 	])("grantedSeals: %s", (_n, before, after, names) => {
-		expect(grantedSeals(before, after).map(s => s.name)).toEqual(names);
+		expect(grantedSeals(before, after).map(s => s.id)).toEqual(names);
 	});
 
 	test("the Muster Orders captain task is no seal", () => {
@@ -249,12 +259,11 @@ describe("view", () => {
 		expect(t).not.toContain("b9");
 	});
 
-	test("box tones: red on a failed line, purple INQUISITOR, gold CAPTAIN and SEAL, iron when all pending", () => {
+	test("box tones: red on a failed line, purple INQUISITOR, gold CAPTAIN, iron when all pending", () => {
 		const top = (phs: Phase[], title: string) => renderCockpit(cockpitView(input({ phases: phs })), 100, 0, TRUE).find(l => l.includes(title))!;
 		expect(top(phases(["[apothecary] x", "failed"]), "APOTHECARIES")).toContain(RED);
 		expect(top(phases(["[inquisitor] x", "in_progress"]), "INQUISITOR")).toContain(PURPLE);
 		expect(top(phases(["[captain] x", "in_progress"]), "CAPTAIN")).toContain(GOLD);
-		expect(top(phases(["[seal] Plan", "in_progress"]), "SEAL")).toContain(GOLD);
 		expect(top(phases(["[scout] x", "pending"]), "SCOUTS")).toContain("\x1b[38;2;90;90;90m");
 		expect(top(phases(["[scout] x", "completed"]), "SCOUTS")).toContain("\x1b[38;2;76;255;122m");
 	});
@@ -389,7 +398,8 @@ describe("rendering", () => {
 		const view = cockpitView(busy());
 		const out = renderCockpit(view, 100, 0, TRUE);
 		const t = plain(out.join("\n"));
-		for (const w of ["BATTLE-BROTHERS", "APOTHECARIES", "SEAL", "SEALS", "CHRONICLE", "COGITATOR", "▶ Skirmish"]) expect(t).toContain(w);
+		for (const w of ["BATTLE-BROTHERS", "APOTHECARIES", "SEALS", "CHRONICLE", "COGITATOR", "▶ Skirmish"]) expect(t).toContain(w);
+		expect(t).not.toMatch(/SEAL ─/);
 		for (const w of ["STRATEGOS", "LIBRARIAN", "INQUISITOR", "VETERAN"]) expect(t).not.toContain(w);
 		expect(out.join("\n")).toContain(GOLD);
 		expect(out.find(l => l.includes("BATTLE-BROTHERS"))).toContain(RED);
@@ -488,8 +498,8 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 		expect(bar(80)).toContain(`${GOLD}▰`);
 	});
 
-	test("no seals shows a dash in the overlay", () => {
-		expect(text()).toMatch(/SEALS —/);
+	test("no seals: no SEALS row, framed or stacked", () => {
+		for (const w of [100, 50]) expect(text({}, w)).not.toContain("SEALS");
 	});
 
 	test("seal symbols and tones: granted gold ✠, waiting gold ○, pending iron ○", () => {
@@ -498,7 +508,7 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 		expect(out).toContain(`${GOLD}✠`);
 		expect(out).toContain(`${GOLD}○`);
 		expect(out).toContain(`${IRON}○`);
-		expect(text({ phases: p })).toContain("✠ A  ○ B  ○ C");
+		expect(text({ phases: p })).toContain("✠ A → ○ B → ○ C");
 	});
 
 	test("nerd seals: U+F047A granted, U+F051F waiting, pending stays iron ○, nothing touches or overflows", () => {
@@ -508,7 +518,7 @@ describe("jobEnds, squads, bar, seals, layout and chronicle edge cases", () => {
 		expect(out).toContain(`${GOLD}\u{f047a} \x1b[39m`);
 		expect(out).toContain(`${GOLD}\u{f051f} \x1b[39m`);
 		expect(out).toContain(`${IRON}○\x1b[39m`);
-		expect(text({ phases: p, glyphs: true })).toContain("\u{f047a}  A  \u{f051f}  B  ○ C");
+		expect(text({ phases: p, glyphs: true })).toContain("\u{f047a}  A → \u{f051f}  B → ○ C");
 		for (const w of [72, 100]) for (const l of renderCockpit(view, w, 0, TRUE)) expect(Bun.stringWidth(l)).toBe(w);
 		for (const w of [40, 60]) for (const l of renderCockpit(view, w, 0, TRUE)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(w);
 	});
@@ -697,8 +707,8 @@ describe("glyphs", () => {
 		const tags = STATIONS.flatMap(s => s[1]).filter((t, i, a) => a.indexOf(t) === i);
 		const all: Phase[] = [{ name: "All", tasks: tags.map((tag, i) => ({ content: `[${tag}] ${tag} job`, status: i ? "pending" : "in_progress" })) }];
 		const t = plain(renderCockpit(cockpitView(input({ glyphs: true, phases: all })), 120, 0, TRUE).join("\n"));
-		for (const g of ["\u{f18bc}", "\u{f0437}", "\u{f05da}", "\u{f18be}", "\u{f06ef}", "\u{f029b}", "\u{f0d9a}", "\u{f068c}", "\u{f0474}", "\u{f047a}"]) expect(t).toContain(`${g}  `);
-		expect(titles(t)).toHaveLength(10);
+		for (const g of ["\u{f18bc}", "\u{f0437}", "\u{f05da}", "\u{f18be}", "\u{f06ef}", "\u{f029b}", "\u{f0d9a}", "\u{f068c}", "\u{f0474}"]) expect(t).toContain(`${g}  `);
+		expect(titles(t)).toHaveLength(9);
 		expect(t).not.toMatch(/[☩†‡◷]/);
 	});
 });
@@ -752,6 +762,201 @@ describe("box line cap", () => {
 		const out = draw(p, width, 18, many(10));
 		expect(out).toHaveLength(18);
 		expect(eventLines(out)).toHaveLength(5);
-		expect(out.join("\n")).toContain("+15 more");
+		expect(out.join("\n")).toContain(width === 50 ? "+14 more" : "+15 more"); // stacked: no SEALS row without seals, so one more line fits
+	});
+});
+
+describe("seal chain and seal panel", () => {
+	const PARCHMENT = TRUE.parchment;
+	const DEFAULT = "the details are in the Captain's message";
+	const waiting = (id = "Plan") => phases(["[captain] Orders", "completed"], [`[seal] ${id}`, "in_progress"], ["[seal] UI", "pending"]);
+	const draw = (over: Partial<ViewInput>, width = 140) => renderCockpit(cockpitView(input(over)), width, 0, TRUE);
+	const lines = (n: number): string[] => Array.from({ length: n }, (_, i) => `line ${i + 1}`);
+	const edges = (l: string) => ({ left: l.indexOf("┌"), right: l.lastIndexOf("┐") });
+
+	test("no SEAL box at 140 with seal tasks in the active phase", () => {
+		const t = text({ phases: run(4).map((p, i) => (i === 4 ? { ...p, tasks: [...p.tasks, { content: "[seal] UI", status: "in_progress" }] } : p)) }, 140);
+		expect(t).not.toMatch(/SEAL ─/);
+		expect(t).not.toMatch(/┌─ \S* ?SEAL ─/);
+	});
+
+	test("the chain reads ✠ Plan → ○ UI with a gold ✠ and an iron ○, UI (2) whole", () => {
+		const p = phases(["[seal] Plan", "completed"], ["[seal] UI", "pending"]);
+		expect(text({ phases: p })).toContain("SEALS ✠ Plan → ○ UI");
+		const out = draw({ phases: p }).join("\n");
+		expect(out).toContain(`${GOLD}✠`);
+		expect(out).toContain(`${IRON}○`);
+		expect(text({ phases: phases(["[seal] UI (2)", "in_progress"]) })).toContain("○ UI (2)");
+		expect(text({ phases: phases(["[seal] UI (2)", "in_progress"]) }, 50)).toContain("○ UI (2)");
+	});
+
+	test("the title and the panel name a seal whole: UI (2)", () => {
+		const t = text({ phases: phases(["[seal] UI (2)", "in_progress"]) });
+		expect(t).toContain("seal UI (2) awaits you");
+		expect(t).toContain("SEAL UI (2) · awaits you");
+	});
+
+	test("the panel is one gold box as wide as the box grid, between the station row and the boxes", () => {
+		const raw = draw({ phases: waiting() });
+		const out = raw.map(plain);
+		const at = out.findIndex(l => l.includes("SEAL PLAN · awaits you"));
+		const station = out.findIndex(l => l.startsWith("╟─ ▶ Plan"));
+		const boxTop = out.findIndex(l => l.includes("CAPTAIN"));
+		expect(station).toBeGreaterThan(-1);
+		expect(at).toBe(station + 1);
+		expect(boxTop).toBeGreaterThan(at);
+		expect(edges(out[at])).toEqual({ left: 2, right: 140 - 3 });
+		expect(edges(out[boxTop]).left).toBe(2);
+		expect(raw[at]).toContain(`${GOLD}┌─ ○ SEAL PLAN · awaits you`);
+	});
+
+	test("without prepared lines the panel shows its one default line in iron", () => {
+		const raw = draw({ phases: waiting() });
+		const row = raw.find(l => l.includes(DEFAULT))!;
+		expect(row).toContain(`${IRON}${DEFAULT}`);
+		expect(cockpitView(input({ phases: waiting() })).panel).toEqual({ title: "○ SEAL PLAN · awaits you", lines: [DEFAULT], prepared: false });
+	});
+
+	test("prepared lines show in parchment when the id matches, the default line when it does not", () => {
+		const mine = draw({ phases: waiting(), seal: { id: "Plan", lines: ["Squads: a, b"] } });
+		expect(mine.find(l => l.includes("Squads: a, b"))).toContain(`${PARCHMENT}Squads: a, b`);
+		expect(plain(mine.join("\n"))).not.toContain(DEFAULT);
+		const other = text({ phases: waiting(), seal: { id: "UI", lines: ["Squads: a, b"] } });
+		expect(other).toContain(DEFAULT);
+		expect(other).not.toContain("Squads: a, b");
+		expect(text({ phases: waiting(), seal: { id: "Plan", lines: [] } })).toContain(DEFAULT);
+	});
+
+	test("a long prepared line ends in … inside the frame", () => {
+		const out = draw({ phases: waiting(), seal: { id: "Plan", lines: ["x".repeat(300)] } }).map(plain);
+		const row = out.find(l => l.includes("xxxx"))!;
+		expect(row).toMatch(/x…\s*│\s*║$/);
+		expect(Bun.stringWidth(row)).toBe(140);
+	});
+
+	test("12 lines all show; 14 lines show the first 11 and +3 more", () => {
+		const twelve = text({ phases: waiting(), seal: { id: "Plan", lines: lines(12) } });
+		expect(twelve).toContain("line 12");
+		expect(twelve).not.toContain("more");
+		const fourteen = text({ phases: waiting(), seal: { id: "Plan", lines: lines(14) } });
+		expect(fourteen).toContain("line 11");
+		expect(fourteen).not.toContain("line 12");
+		expect(fourteen).toContain("+3 more");
+		expect(draw({ phases: waiting(), seal: { id: "Plan", lines: lines(14) } }).find(l => l.includes("+3 more"))).toContain(`${IRON}+3 more`);
+	});
+
+	test("no panel when nothing waits, even with a seal stored", () => {
+		const p = phases(["[seal] Plan", "pending"]);
+		expect(cockpitView(input({ phases: p, seal: { id: "Plan", lines: ["x"] } })).panel).toBeUndefined();
+		expect(text({ phases: p, seal: { id: "Plan", lines: ["x"] } })).not.toContain("awaits you");
+	});
+
+	test("the stacked panel at 50: a gold title then each line indented two spaces, after the station line", () => {
+		const raw = draw({ phases: waiting(), seal: { id: "Plan", lines: ["Squads: a", "Bar: b"] } }, 50);
+		const out = raw.map(plain);
+		const station = out.findIndex(l => l.startsWith("▶ Plan"));
+		expect(out.slice(station + 1, station + 4)).toEqual(["○ SEAL PLAN · awaits you", "  Squads: a", "  Bar: b"]);
+		expect(raw[station + 1]).toContain(`${GOLD}○ SEAL PLAN`);
+	});
+
+	const bodies: [string, Phase[]][] = [
+		["nothing", []],
+		["a seal waits", waiting()],
+		["a seal is pending", phases(["[seal] Plan", "pending"])],
+		["a seal is granted", phases(["[seal] Plan", "completed"])],
+		["a non-seal runs", phases(["[captain] x", "in_progress"])],
+	];
+	describe.each(bodies.flatMap(([n, p]) => [50, 71, 72, 100, 140].flatMap(w => [0, 1, 14].map(k => [n, p, w, k] as const))))("%s at %i columns with %i lines", (_n, p, width, k) => {
+		const view = cockpitView(input({ phases: p, glyphs: false, seal: { id: "Plan", lines: lines(k) } }));
+		test("every line is exactly width cells when framed, at most width when stacked", () => {
+			for (const l of renderCockpit(view, width, 0, TRUE)) {
+				if (width >= 72) expect(Bun.stringWidth(l)).toBe(width);
+				else expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
+			}
+		});
+		test("the panel exists iff a seal waits", () => {
+			expect(view.panel !== undefined).toBe(waitingSeal(p) !== undefined);
+		});
+		test("a SEALS row exists iff there are seals", () => {
+			expect(plain(renderCockpit(view, width, 0, TRUE).join("\n")).includes("SEALS")).toBe(sealsFrom(p).length > 0);
+		});
+	});
+});
+
+describe("seal panel hardening", () => {
+	const waiting = (id = "Plan") => phases(["[captain] Orders", "completed"], [`[seal] ${id}`, "in_progress"], ["[seal] UI", "pending"]);
+	const out = (over: Partial<ViewInput>, width = 140, height?: number) => renderCockpit(cockpitView(input(over)), width, 0, TRUE, height);
+	const noControls = (s: string) => /[\x00-\x09\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\u2028\u2029]/.test(plain(s));
+	const wide = ["❤️".repeat(60), "👨‍👩‍👧".repeat(30), "字".repeat(80), "x".repeat(300), `a${"❤️".repeat(5)}${"字".repeat(40)}`];
+
+	test.each([140, 50])("prepared lines never carry an escape or bidi control to the terminal (width %i)", width => {
+		const raw = out({ phases: waiting(), seal: { id: "Plan", lines: ["a\x1b]0;PWN\x07tail", "b\u202eevil\u2066x\u2069\u2028y\u2029z"] } }, width).join("\n");
+		expect(noControls(raw)).toBe(false);
+		expect(plain(raw)).toContain("a ]0;PWN tail");
+		expect(plain(raw)).toContain("b evil x  y z");
+	});
+
+	test("clean turns LRM, RLM and ALM into spaces", () => {
+		expect(clean("a\u200eb\u200fc\u061cd")).toBe("a b c d");
+	});
+
+	test("a waiting seal's name is cleaned in the chain, the station note and the panel title", () => {
+		const id = "Plan\x1b]0;pwn\x07";
+		const view = cockpitView(input({ phases: waiting(id) }));
+		for (const width of [140, 50]) expect(noControls(renderCockpit(view, width, 0, TRUE).join("\n"))).toBe(false);
+		expect(view.panel!.title).toContain("PLAN ]0;PWN ");
+		expect(view.station.note).toContain("seal Plan ]0;pwn ");
+		expect(view.seals.map(s => s.id)).toContain("Plan ]0;pwn ");
+	});
+
+	test("prepared lines that are all blank after cleaning count as none: the default line shows", () => {
+		const t = plain(out({ phases: waiting(), seal: { id: "Plan", lines: ["", "  ", "\x1b\t\u202e"] } }).join("\n"));
+		expect(t).toContain("the details are in the Captain's message");
+		expect(cockpitView(input({ phases: waiting(), seal: { id: "Plan", lines: [" "] } })).panel!.prepared).toBe(false);
+	});
+
+	test("stacked at height 30 with seals, a 14-line panel and capped boxes: at most height lines and the right +k more", () => {
+		const p = phases(["[captain] Orders", "completed"], ["[seal] Plan", "in_progress"], ["[seal] UI", "pending"], ...Array.from({ length: 20 }, (_, i) => [`[scout] t${i}`, "pending"] as [string, string]));
+		const lines = Array.from({ length: 14 }, (_, i) => `line ${i + 1}`);
+		const t = out({ phases: p, seal: { id: "Plan", lines }, chronicle: many(20) }, 50, 30);
+		expect(t.length).toBeLessThanOrEqual(30);
+		const txt = t.map(plain);
+		expect(txt).toContain("  +3 more");
+		expect(txt.filter(l => /\+\d+ more/.test(l)).length).toBeGreaterThanOrEqual(2); // panel and the capped box
+		expect(eventLines(t).length).toBeGreaterThanOrEqual(5);
+	});
+
+	// At height 30 the floor() hides the seals row; at 29 it costs a chronicle row, so the term in boxCap is pinned here.
+	test("stacked at height 29 with seals: the seals row is budgeted, the chronicle gets exactly 6 rows", () => {
+		const p = phases(["[captain] Orders", "completed"], ["[seal] Plan", "in_progress"], ["[seal] UI", "pending"], ...Array.from({ length: 20 }, (_, i) => [`[scout] t${i}`, "pending"] as [string, string]));
+		const t = out({ phases: p, seal: { id: "Plan", lines: Array.from({ length: 14 }, (_, i) => `line ${i + 1}`) }, chronicle: many(20) }, 50, 29);
+		expect(t).toHaveLength(29);
+		expect(eventLines(t)).toHaveLength(6);
+	});
+
+	test("framed at 140x30 with a 12-line panel and a 20-task box: at most height lines, the chronicle keeps 5 rows", () => {
+		const p = phases(["[seal] Plan", "in_progress"], ...Array.from({ length: 20 }, (_, i) => [`[scout] t${i}`, "pending"] as [string, string]));
+		const t = out({ phases: p, seal: { id: "Plan", lines: Array.from({ length: 12 }, (_, i) => `line ${i + 1}`) }, chronicle: many(20) }, 140, 30);
+		expect(t).toHaveLength(30);
+		expect(eventLines(t).length).toBeGreaterThanOrEqual(5);
+		expect(plain(t.join("\n"))).toMatch(/\+\d+ more/);
+	});
+
+	test("the weak no-SEAL-box check also holds where a seal waits: the panel is there", () => {
+		const t = plain(out({ phases: waiting() }).join("\n"));
+		expect(t).toMatch(/┌─ \S* ?SEAL PLAN · awaits you/);
+		expect(plain(out({ phases: phases(["[seal] Plan", "pending"]) }).join("\n"))).not.toMatch(/SEAL PLAN · awaits/);
+	});
+
+	describe("widths count terminal cells per grapheme", () => {
+		test.each(wide)("%#: every line fits, framed lines are exactly width", glyphs => {
+			const ph = waiting(glyphs);
+			for (const width of [30, 50, 71, 72, 100, 140])
+				for (const over of [{ chronicle: [{ at: "10:00", who: glyphs, text: glyphs }] }, { seal: { id: glyphs, lines: [glyphs] } }])
+					for (const l of renderCockpit(cockpitView(input({ key: glyphs, phases: ph, ...over })), width, 0, TRUE)) {
+						if (width >= 72) expect(Bun.stringWidth(plain(l))).toBe(width);
+						else expect(Bun.stringWidth(plain(l))).toBeLessThanOrEqual(width);
+					}
+		});
 	});
 });

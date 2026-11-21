@@ -619,7 +619,8 @@ describe("the station in the footer", () => {
 		expect(whereFrom(backToScriptorium)).toEqual({ station: "Scriptorium", back: true, task: "Redraft squad 2" }));
 	test("an active seal task waits for the user, with or without glyph tags, and carries no task", () => {
 		expect(whereFrom(waitingForPlan)).toEqual({ station: "Scriptorium", seal: "Plan" });
-		expect(whereFrom([phase("Scriptorium", ["\u{f047a} seal · Plan the squads", "in_progress"])])).toEqual({ station: "Scriptorium", seal: "Plan" });
+		expect(whereFrom([phase("Scriptorium", ["\u{f047a} seal · Plan the squads", "in_progress"])])).toEqual({ station: "Scriptorium", seal: "Plan the squads" });
+		expect(whereFrom([phase("Scriptorium", ["[seal] UI (2)", "in_progress"])])).toEqual({ station: "Scriptorium", seal: "UI (2)" });
 	});
 	test("the task drops a bracket tag or a glyph tag", () => {
 		expect(whereFrom([phase("Muster", ["[captain] Begin run and theatre status", "in_progress"])])?.task).toBe("Begin run and theatre status");
@@ -802,6 +803,17 @@ describe("the station in the footer", () => {
 		expect(shown()).toContain("dark-mode · \u{f051f}  seal Plan · ");
 		todo(backToScriptorium);
 		expect(shown()).toContain("dark-mode · \u{f054c}  Scriptorium › Redraft squad 2 · ");
+	});
+
+	test("the footer shows a seal name cleaned and cut at 32, like a task", async () => {
+		const { call, todo, start, shown } = setup();
+		await call({ action: "begin", key: "dark-mode" });
+		start();
+		todo([phase("Scriptorium", [`[seal] ${"S".repeat(60)}`, "in_progress"])]);
+		expect(shown()).toContain(`seal ${"S".repeat(31)}… · `);
+		todo([phase("Scriptorium", ["[seal] Plan\x1b]0;pwn\x07", "in_progress"])]);
+		expect(shown()).not.toContain("\x1b]");
+		expect(shown()).toContain("seal Plan ]0;pwn  · ");
 	});
 
 	test("the station survives a restart of omp", async () => {
@@ -1451,6 +1463,29 @@ describe("the run follows an approved plan", () => {
 		const again = setup("sess-B", s.dir);
 		await again.start();
 		expect(JSON.parse(readFileSync(cockpitFile("sess-B"), "utf8")).chronicle).toEqual(before.chronicle);
+	});
+
+	test("the move carries the prepared seal lines and the panel still shows on the new session", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", [phase("Plan", ["[seal] Plan", "in_progress"])]);
+		await s.call({ action: "seal", lines: ["Squads: a, b"] });
+		const cockpitFile = (sid: string) => join(s.dir, "runs", `${sid}.cockpit`);
+		expect(JSON.parse(readFileSync(cockpitFile("sess-A"), "utf8")).seal).toEqual({ id: "Plan", lines: ["Squads: a, b"] });
+		await approve(s, sm, ctx);
+		expect(JSON.parse(readFileSync(cockpitFile("sess-B"), "utf8")).seal).toEqual({ id: "Plan", lines: ["Squads: a, b"] });
+		const again = setup("sess-B", s.dir);
+		let comp: { render(w: number): string[]; handleInput?(d: string): void } | undefined;
+		(again.ctx as unknown as { ui: Record<string, unknown> }).ui.custom = (factory: (...a: unknown[]) => typeof comp) => {
+			comp = factory({ requestRender() {}, terminal: { rows: 40 } }, {}, {}, () => {});
+			return new Promise(() => {});
+		};
+		(again.ctx as unknown as { hasUI: boolean }).hasUI = true;
+		await again.start();
+		await again.sub("cockpit");
+		const t = comp!.render(100).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+		comp!.handleInput!("q");
+		expect(t).toContain("SEAL PLAN · awaits you");
+		expect(t).toContain("Squads: a, b");
 	});
 
 	test("the fresh session never shows a plan-mode station or Muster", async () => {
@@ -3984,7 +4019,7 @@ describe("cockpit", () => {
 				const { s, ui } = await midRun();
 				const before = await view(s, ui);
 				expect(before).toMatch(/▶ † squad a/);
-				expect(before).toContain("✠ SEAL");
+				expect(before).toContain("✠ SEAL"); // the chronicle's who-column; the SEALS row shares the clock row, which view() drops
 				expect(before).toContain("✓");
 				expect(before).toContain("✗");
 				expect(before).toContain("‡");
@@ -4191,6 +4226,229 @@ describe("cockpit", () => {
 					const text = await peek(s, ui);
 					for (const old of ["granted", "returned", "failed", "escalated"]) expect(text).not.toContain(old);
 					expect(saved(s.dir).chronicle.map((e: { text: string }) => e.text).join()).not.toContain("granted");
+				});
+			});
+
+			describe("the seal panel", () => {
+				const waiting = (id = "Plan") => [{ name: "Scriptorium", tasks: [{ content: `[seal] ${id}`, status: "in_progress" }] }];
+				const granted = (id = "Plan") => [{ name: "Scriptorium", tasks: [{ content: `[seal] ${id}`, status: "completed" }] }];
+				async function sealed(id = "Plan") {
+					const r = await running();
+					r.s.todo(waiting(id));
+					return r;
+				}
+
+				test("no run in this session: ERROR", async () => {
+					expect(await setup().call({ action: "seal", lines: ["x"] })).toBe("ERROR no active run in this session");
+				});
+
+				test("no seal waits: ERROR, and nothing is stored", async () => {
+					const { s } = await running();
+					expect(await s.call({ action: "seal", lines: ["x"] })).toBe("ERROR no seal waits; start its [seal] task first");
+					s.todo([{ name: "Scriptorium", tasks: [{ content: "[seal] Plan", status: "pending" }] }]);
+					expect(await s.call({ action: "seal", lines: ["x"] })).toBe("ERROR no seal waits; start its [seal] task first");
+					expect(saved(s.dir).seal).toBeUndefined();
+				});
+
+				test("stores the lines for the waiting seal and the overlay shows them", async () => {
+					const { s, ui } = await sealed();
+					expect(await s.call({ action: "seal", lines: ["Squads: a, b", "Merge bar: tests"] })).toBe("SEAL Plan panel 2 lines");
+					const t = await peek(s, ui);
+					expect(t).toContain("SEAL PLAN · awaits you");
+					expect(t).toContain("Squads: a, b");
+					expect(t).toContain("Merge bar: tests");
+					expect(t).not.toContain("the details are in the Captain's message");
+					expect(saved(s.dir).seal).toEqual({ id: "Plan", lines: ["Squads: a, b", "Merge bar: tests"] });
+				});
+
+				test("without lines the panel shows its default line", async () => {
+					const { s, ui } = await sealed();
+					expect(await s.call({ action: "seal" })).toBe("SEAL Plan panel 0 lines");
+					expect(await peek(s, ui)).toContain("the details are in the Captain's message");
+				});
+
+				test("trailing blank lines are dropped before storing and counting; all blank stores none", async () => {
+					const { s } = await sealed();
+					expect(await s.call({ action: "seal", lines: ["a", "", "  ", "\x1b\t"] })).toBe("SEAL Plan panel 1 lines");
+					expect(saved(s.dir).seal.lines).toEqual(["a"]);
+					expect(await s.call({ action: "seal", lines: ["", " "] })).toBe("SEAL Plan panel 0 lines");
+					expect(saved(s.dir).seal.lines).toEqual([]);
+				});
+
+				test("an oversized seal file is capped on load like the action caps it", async () => {
+					const { s } = await sealed();
+					await s.call({ action: "seal", lines: ["x"] });
+					const lines = Array.from({ length: 300 }, (_, i) => `L${i}:${"y".repeat(900)}`);
+					writeFileSync(cockpitFile(s.dir), JSON.stringify({ ...saved(s.dir), seal: { id: "Plan", lines } }));
+					const again = await restart(s, true);
+					await again.s.sub("cockpit");
+					const comp = again.ui.opened.at(-1)!.component;
+					const raw = plain(comp.render(2000).join("\n"));
+					comp.handleInput!("q");
+					expect(raw).not.toContain("y".repeat(501));
+					expect(raw).not.toContain("L250:");
+				});
+
+				test("control characters become spaces: an escape sequence never reaches the overlay or the file", async () => {
+					const { s, ui } = await sealed();
+					await s.call({ action: "seal", lines: ["a\x1b[31mred\tb\x7f\x9bz\r\n", "\x1b]0;title\x07tail"] });
+					expect(saved(s.dir).seal.lines).toEqual(["a [31mred b  z", " ]0;title tail"]);
+					await s.sub("cockpit");
+					const comp = ui.opened.at(-1)!.component;
+					const raw = comp.render(100).join("\n");
+					comp.handleInput!("q");
+					expect(raw).toContain("a [31mred b  z");
+					expect(raw.replace(/\x1b\[[0-9;]*m/g, "")).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+					expect(plain(raw)).toContain("]0;title tail");
+				});
+
+				test("it survives a restart, orderly or crashed", async () => {
+					const { s, ui } = await sealed();
+					await s.call({ action: "seal", lines: ["Squads: a"] });
+					const before = await view(s, ui);
+					const again = await restart(s);
+					expect(await view(again.s, again.ui)).toBe(before);
+					expect(before).toContain("Squads: a");
+					const crashed = await restart(again.s, true);
+					expect(await view(crashed.s, crashed.ui)).toBe(before);
+				});
+
+				test("granting that seal clears it from memory and file", async () => {
+					const { s, ui } = await sealed();
+					await s.call({ action: "seal", lines: ["Squads: a"] });
+					s.todo(granted());
+					expect(saved(s.dir).seal).toBeUndefined();
+					expect(await peek(s, ui)).not.toContain("SEAL PLAN");
+					// The same seal waiting again does not bring the old lines back.
+					s.todo(waiting());
+					const t = await peek(s, ui);
+					expect(t).toContain("the details are in the Captain's message");
+					expect(t).not.toContain("Squads: a");
+				});
+
+				test("lines read from the file are cleaned at render: no escape reaches the terminal", async () => {
+					const { s } = await sealed();
+					await s.call({ action: "seal", lines: ["x"] });
+					writeFileSync(cockpitFile(s.dir), JSON.stringify({ ...saved(s.dir), seal: { id: "Plan", lines: ["a\x1b]0;PWN\x07tail", "b\u202ec"] } }));
+					const again = await restart(s, true);
+					await again.s.sub("cockpit");
+					const comp = again.ui.opened.at(-1)!.component;
+					const raw = comp.render(100).join("\n");
+					comp.handleInput!("q");
+					expect(raw).not.toContain("\x1b]");
+					expect(raw.replace(/\x1b\[[0-9;]*m/g, "")).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f\u202e]/);
+					expect(plain(raw)).toContain("a ]0;PWN tail");
+				});
+
+				test("a seal name from the todo text is cleaned wherever it is displayed", async () => {
+					const { s, ui } = await running();
+					s.todo(waiting("Plan\x1b]0;pwn\x07"));
+					await s.sub("cockpit");
+					const comp = ui.opened.at(-1)!.component;
+					const raw = comp.render(140).join("\n");
+					comp.handleInput!("q");
+					expect(raw.replace(/\x1b\[[0-9;]*m/g, "")).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+					expect(plain(raw)).toContain("SEAL PLAN ]0;PWN  · awaits you");
+				});
+
+				test("the lines die with the wait: Plan back to pending, or a rebuild init, then waiting again shows the default line", async () => {
+					const DEFAULT = "the details are in the Captain's message";
+					const { s, ui } = await sealed();
+					await s.call({ action: "seal", lines: ["Squads: a"] });
+					s.todo([{ name: "Scriptorium", tasks: [{ content: "[seal] Plan", status: "pending" }] }]);
+					expect(saved(s.dir).seal).toBeUndefined();
+					s.todo(waiting());
+					expect(await peek(s, ui)).toContain(DEFAULT);
+					await s.call({ action: "seal", lines: ["Squads: b"] });
+					s.handlers.tool_result.forEach(h =>
+						h({ toolName: "todo", isError: false, details: { op: "init", phases: [{ name: "Muster", tasks: [{ content: "[captain] Objective", status: "in_progress" }] }, ...granted()] } }, s.ctx),
+					);
+					expect(saved(s.dir).seal).toBeUndefined();
+					s.todo(waiting());
+					const t = await peek(s, ui);
+					expect(t).toContain(DEFAULT);
+					expect(t).not.toContain("Squads: b");
+				});
+
+				test("lines that are all blank count as none: the default line shows", async () => {
+					const { s, ui } = await sealed();
+					await s.call({ action: "seal", lines: ["", "  ", "\t"] });
+					expect(await peek(s, ui)).toContain("the details are in the Captain's message");
+				});
+
+				test("at most 200 lines of 500 characters are stored", async () => {
+					const { s } = await sealed();
+					expect(await s.call({ action: "seal", lines: Array.from({ length: 250 }, () => "y".repeat(600)) })).toBe("SEAL Plan panel 200 lines");
+					const lines = saved(s.dir).seal.lines as string[];
+					expect(lines).toHaveLength(200);
+					expect(lines.every(l => l === "y".repeat(500))).toBe(true);
+				});
+
+				test("a seal call after the run key changed starts from a clean cockpit", async () => {
+					const { s } = await sealed();
+					await s.call({ action: "seal", lines: ["old"] });
+					expect(saved(s.dir).chronicle.length).toBeGreaterThan(0);
+					const runFile = join(s.dir, "runs", "sess-0001.json");
+					writeFileSync(runFile, JSON.stringify({ ...JSON.parse(readFileSync(runFile, "utf8")), key: "K-2" }));
+					writeFileSync(lockPath(s.dir, "K-2"), "sess-0001");
+					await s.call({ action: "seal", lines: ["new"] });
+					expect(saved(s.dir)).toMatchObject({ key: "K-2", chronicle: [], notes: {}, seal: { id: "Plan", lines: ["new"] } });
+				});
+
+				test("lines stored under run A are not shown by run B's panel", async () => {
+					const { s, ui } = await sealed();
+					await s.call({ action: "seal", lines: ["from A"] });
+					await s.sub("end");
+					await s.call({ action: "begin", key: "K-2" });
+					s.todo(waiting());
+					const t = await peek(s, ui);
+					expect(t).toContain("the details are in the Captain's message");
+					expect(t).not.toContain("from A");
+				});
+
+				test("a granted seal is gone from the file even after a crashed restart with no later write", async () => {
+					const { s } = await sealed();
+					await s.call({ action: "seal", lines: ["Squads: a"] });
+					s.todo(granted());
+					const again = await restart(s, true);
+					expect(saved(again.s.dir).seal).toBeUndefined();
+				});
+
+				test("granting another seal keeps it", async () => {
+					const { s, ui } = await running();
+					const two = (other: string) => [{ name: "Scriptorium", tasks: [{ content: "[seal] Plan", status: "in_progress" }, { content: "[seal] Other", status: other }] }];
+					s.todo(two("pending"));
+					await s.call({ action: "seal", lines: ["Squads: a"] });
+					s.todo(two("completed"));
+					expect(saved(s.dir).seal).toEqual({ id: "Plan", lines: ["Squads: a"] });
+					expect(await peek(s, ui)).toContain("Squads: a");
+				});
+
+				test("a malformed seal key is a clean start; an old file without one still loads its chronicle", async () => {
+					const { s } = await sealed();
+					await s.call({ action: "seal", lines: ["Squads: a"] });
+					const file = saved(s.dir);
+					for (const bad of [{ id: 5, lines: ["x"] }, { id: "Plan", lines: "x" }, { id: "Plan", lines: [1] }, { id: "Plan" }, "Plan", null]) {
+						writeFileSync(cockpitFile(s.dir), JSON.stringify({ ...file, seal: bad }));
+						const again = await restart(s, true);
+						const t = await peek(again.s, again.ui);
+						expect(t).not.toContain("station Scriptorium");
+						expect(t).toContain("the details are in the Captain's message");
+					}
+					const { seal: _seal, ...old } = file;
+					writeFileSync(cockpitFile(s.dir), JSON.stringify(old));
+					const again = await restart(s, true);
+					const t = await peek(again.s, again.ui);
+					expect(t).toContain("station Scriptorium");
+					expect(t).toContain("the details are in the Captain's message");
+				});
+
+				test("UI (2) is whole in the footer, the chronicle and the grant line", async () => {
+					const { s, ui } = await sealed("UI (2)");
+					expect(s.shown()).toContain("seal UI (2)");
+					expect(await chron(s, ui)).toContain("seal UI (2) awaits the Chapter Master");
+					s.todo(granted("UI (2)"));
+					expect(await chron(s, ui)).toContain("UI (2) granted");
 				});
 			});
 		});

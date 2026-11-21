@@ -21,7 +21,7 @@ import {
 } from "./timer";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -96,7 +96,9 @@ export function whereFrom(phases: Phase[]): Where | undefined {
 	const i = phases.findIndex(p => p.tasks.some(t => t.status === "in_progress"));
 	if (i < 0) return undefined;
 	const task = phases[i].tasks.find(t => t.status === "in_progress")!;
-	const seal = task.content.match(/^\s*(?:\[seal\]|\u{f047a}\s*seal\s*·)\s*(\S+)/u)?.[1];
+	const sealId = waitingSeal(phases)?.id;
+	const sealChars = [...clean(sealId ?? "")];
+	const seal = sealId === undefined ? undefined : sealChars.length > 32 ? `${sealChars.slice(0, 31).join("")}…` : sealChars.join("");
 	const back = phases.slice(i + 1).some(p => p.tasks.some(t => t.status === "completed"));
 	// A seal keeps its own form. Other tasks show their text without the agent tag (`[agent] ` or `<glyph> agent · `), cut at 32.
 	const text = seal ? "" : task.content.replace(/^\s*(?:\[[\w-]+\]|[^\w\s[]+\s*[\w-]+\s*·)\s*/u, "").trim();
@@ -856,6 +858,7 @@ export default function (pi: ExtensionAPI) {
 		chronicle: [] as Entry[],
 		notes: {} as Record<string, Note>,
 		dirty: false,
+		seal: undefined as { id: string; lines: string[] } | undefined, // what the Captain prepared for the seal that waits (the `seal` action)
 		deployed: new Map<string, Deployed>(),
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
@@ -863,12 +866,15 @@ export default function (pi: ExtensionAPI) {
 		status: undefined as "working" | "awaiting" | undefined,
 		close: undefined as (() => void) | undefined,
 	};
+	const SEAL_LINES = 200;
+	const SEAL_LINE_CHARS = 500;
 	const resetCockpit = (key?: string) => {
 		cockpit.key = key;
 		cockpit.chronicle = [];
 		cockpit.notes = {};
 		cockpit.deployed.clear();
 		cockpit.clock = undefined;
+		cockpit.seal = undefined;
 		cockpit.dirty = key !== undefined;
 	};
 	/** Take the saved state of this session's run, replacing memory; a missing, corrupt or other-key file is a clean start. */
@@ -880,12 +886,14 @@ export default function (pi: ExtensionAPI) {
 				saved.key === key &&
 				Array.isArray(saved.chronicle) && saved.chronicle.every((e: unknown) => e && typeof e === "object" && typeof (e as Entry).text === "string") &&
 				saved.notes && typeof saved.notes === "object" && !Array.isArray(saved.notes) &&
-				Array.isArray(jobs) && jobs.every(d => Array.isArray(d) && typeof d[0] === "string" && d[1] && typeof d[1] === "object");
+				Array.isArray(jobs) && jobs.every(d => Array.isArray(d) && typeof d[0] === "string" && d[1] && typeof d[1] === "object") &&
+				(saved.seal === undefined || (!!saved.seal && typeof saved.seal.id === "string" && Array.isArray(saved.seal.lines) && saved.seal.lines.every((l: unknown) => typeof l === "string")));
 			if (!shaped) throw new Error("another run's or a malformed state");
 			resetCockpit(key);
 			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP);
 			cockpit.notes = saved.notes;
 			for (const [id, job] of saved.deployed as [string, Deployed][]) cockpit.deployed.set(id, job);
+			cockpit.seal = saved.seal && { id: saved.seal.id, lines: saved.seal.lines.slice(0, SEAL_LINES).map((l: string) => l.slice(0, SEAL_LINE_CHARS)) };
 			cockpit.dirty = false;
 		} catch {
 			resetCockpit(key);
@@ -930,10 +938,11 @@ export default function (pi: ExtensionAPI) {
 			status: cockpit.status,
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
+			seal: cockpit.seal,
 		});
 		if (cockpit.dirty) {
 			try {
-				writeAtomic(cockpitFile(run.sid), JSON.stringify({ key: cockpit.key, chronicle: cockpit.chronicle, notes: cockpit.notes, deployed: [...cockpit.deployed] }));
+				writeAtomic(cockpitFile(run.sid), JSON.stringify({ key: cockpit.key, chronicle: cockpit.chronicle, notes: cockpit.notes, deployed: [...cockpit.deployed], ...(cockpit.seal ? { seal: cockpit.seal } : {}) }));
 				cockpit.dirty = false;
 			} catch {
 				// Kept dirty: the next draw tries again.
@@ -1113,7 +1122,7 @@ export default function (pi: ExtensionAPI) {
 	pi.setLabel("Strategium");
 
 	const schema = z.object({
-		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft"]),
+		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft", "seal"]),
 		key: z.string().optional(),
 		booked: z.number().int().positive().optional(),
 		spent: z.number().int().nonnegative().optional(),
@@ -1126,13 +1135,14 @@ export default function (pi: ExtensionAPI) {
 		on: z.boolean().optional(),
 		archmagos: z.boolean().optional(),
 		slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()), tier: z.enum(["light", "standard", "heavy"]).optional() })).optional(),
+		lines: z.array(z.string()).optional(),
 	});
 
 	pi.registerTool({
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft, seal (lines). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
@@ -1208,6 +1218,20 @@ export default function (pi: ExtensionAPI) {
 						writeRun({ ...run, slices: live, launched: undefined });
 						lines.push(`SQUADS ${live.map(s => s.id + (s.parallel || s.tier ? ` (${[s.parallel && "parallel", s.tier].filter(Boolean).join(", ")})` : "")).join(", ") || "none"}`);
 						return text(lines.join("\n"));
+					}
+					case "seal": {
+						const run = ownRun(sid);
+						if (!run) return text("ERROR no active run in this session");
+						const waiting = waitingSeal(run.phases ?? []);
+						if (!waiting) return text("ERROR no seal waits; start its [seal] task first");
+						// Lines come from the model: capped so one call cannot bloat the state file, cleaned like at render.
+						const lines = (params.lines ?? []).slice(0, SEAL_LINES).map(l => clean(l.slice(0, SEAL_LINE_CHARS)).trimEnd());
+						while (lines.length && !lines.at(-1)) lines.pop();
+						if (cockpit.key !== run.key) resetCockpit(run.key);
+						cockpit.seal = { id: waiting.id, lines };
+						cockpit.dirty = true;
+						drawCockpit(run);
+						return text(`SEAL ${waiting.id} panel ${lines.length} lines`);
 					}
 					case "redraft": {
 						const run = ownRun(sid);
@@ -1817,9 +1841,14 @@ export default function (pi: ExtensionAPI) {
 		if (now && now.station !== was?.station) log(run.key, "STRATEGOS", `station ${now.station}`);
 		if (now?.seal && now.seal !== was?.seal) log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
 		for (const seal of grantedSeals(before, phases)) {
-			log(run.key, "✠ SEAL", `${seal.name} granted`, "seal");
-			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.name} granted`);
+			log(run.key, "✠ SEAL", `${seal.id} granted`, "seal");
+			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.id} granted`);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+		}
+		// Prepared lines live only while their seal waits: any other state of the todo drops them.
+		if (cockpit.seal && cockpit.seal.id !== waitingSeal(phases)?.id) {
+			cockpit.seal = undefined;
+			cockpit.dirty = true;
 		}
 		drawCockpit({ ...run, phases });
 	});
