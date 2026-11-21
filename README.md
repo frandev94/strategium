@@ -234,7 +234,7 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 /strategium-resume [booked]         continue (a timed run passes today's booked minutes on a new day)
 /strategium-add <min>               manual correction, negative to subtract
 /strategium-status                  every run and its time
-/strategium-config [notify on|off | sound on|off | toast on|off | volume <0-100> [preview] | idle <min> | archmagos on|off | cockpit-key <key> | cockpit-theme <name>|default]  show the effective settings; notify, sound or toast on|off, the alarm's volume (preview plays it at that volume), the idle minutes or archmagos on|off for this session; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit theme and applies it at once
+/strategium-config [notify on|off | sound on|off | toast on|off | volume <0-100> [preview] | idle <min> | archmagos on|off | commit on|off | cockpit-key <key> | cockpit-theme <name>|default]  show the effective settings; notify, sound or toast on|off, the alarm's volume (preview plays it at that volume), the idle minutes, archmagos or commit on|off for this session; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit theme and applies it at once
 /strategium-cockpit                 open the cockpit (also Alt+C, or the key set with cockpit-key)
 /strategium-end                     close the run
 ```
@@ -280,11 +280,12 @@ An **untimed** run still counts its time (`status`, `report`), with no alerts, n
 | `STRATEGIUM_TOAST` | the desktop notification (Windows toast, macOS notification, `notify-send`); on by default, `0` turns it off; `/strategium-config toast on` or `off` overrides it for the session |
 | `STRATEGIUM_IDLE_MIN` | whole minutes without work before the run's clock pauses; default `3`, `0` turns it off; `/strategium-config idle <min>` overrides it for the session |
 | `STRATEGIUM_ARCHMAGOS` | `1` lets a run mark the Archmagos Dominus in Muster; off by default; `/strategium-config archmagos on` or `off` overrides it for the session |
+| `STRATEGIUM_COMMIT` | `1` gives every run the Commit seal (the Captain asks before each commit); off by default; `/strategium-config commit on` or `off` overrides it for the session |
 | `STRATEGIUM_COCKPIT_KEY` | the key that opens the cockpit, e.g. `ctrl+shift+k` or `f8`; it needs `ctrl`, `alt` or `super`, or is `f1`-`f12`, so a bare letter never takes your typing; default `alt+c`; `/strategium-config cockpit-key <key>` saves another for the next omp start and wins over it, `cockpit-key default` drops it |
 | `STRATEGIUM_COCKPIT_THEME` | the cockpit theme: `blood-angels` (default), `ultramarines`, `dark-angels` or `cogitator`; it applies only when no theme is saved: `/strategium-config cockpit-theme <name>` saves one, applies it at once and wins over this, `cockpit-theme default` drops it; an unknown value is warned at session start and ignored |
 | `STRATEGIUM_TIERS` | the selector of each cost tier, `;`-separated `tier=selector` entries, e.g. `light=anthropic/claude-haiku-5-5:low;heavy=@task:high`; a tier you leave out keeps its default (`light=@smol:medium`, `standard=@task:medium`, `heavy=@slow:high`); an unknown tier or an empty selector is ignored and shown by `strategium status` |
 
-`/strategium-config` shows the effective values: the notify, sound, volume and toast settings, the idle minutes, the archmagos setting, the cockpit key and the cockpit theme (`cockpit-theme: <name> (<source>)`), each with its source, the theatre, the alarm, the glyphs and the state directory.
+`/strategium-config` shows the effective values: the notify, sound, volume and toast settings, the idle minutes, the archmagos setting, the commit setting, the cockpit key and the cockpit theme (`cockpit-theme: <name> (<source>)`), each with its source, the theatre, the alarm, the glyphs and the state directory.
 
 The state (one JSONL per day plus the run claims) stays outside the repository, so no session data is ever committed.
 
