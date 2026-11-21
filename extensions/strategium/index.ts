@@ -23,7 +23,7 @@ import {
 import { debrief, type AgentCost, type Reported } from "./debrief";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, isCost, jobEnds, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -215,7 +215,7 @@ function readLive(sid: string, id: string): (Live & { busy?: number }) | undefin
 		if (["busy", "done", "total", "eta_min"].some(k => v[k] !== undefined && !isCount(v[k]))) return undefined;
 		if (v.pct !== undefined && (!isCount(v.pct) || v.pct > 100)) return undefined;
 		if (["tokens_in", "tokens_out", "cache_read", "cache_write"].some(k => v[k] !== undefined && !isCount(v[k]))) return undefined;
-		if (v.cost !== undefined && (typeof v.cost !== "number" || !Number.isFinite(v.cost) || v.cost < 0)) return undefined;
+		if (v.cost !== undefined && !isCost(v.cost)) return undefined;
 		if (["tool", "intent", "current", "line"].some(k => v[k] !== undefined && typeof v[k] !== "string")) return undefined;
 		if (v.blocked !== undefined && typeof v.blocked !== "boolean") return undefined;
 		return v;
@@ -525,7 +525,7 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 		const roles = live?.key === run.key && live.deployed ? new Map([...live.deployed].map(([id, d]) => [id, { role: d.role, squad: d.squad }])) : savedRoles(run.sid);
 		const rows = liveRows(run);
 		// A live file with no deployed entry (a nested child, an eval spawn without spawnKey) still counts, as role `other`.
-		// shortcut: an eval spawn without spawnKey shows a `?` row and an `other` row for the same child; upgrade if hosts omit spawnKey.
+		// shortcut: an eval spawn without spawnKey shows a `?` row and an `other` row for the same child, and a sync task spawn counts as `other`; upgrade if hosts omit spawnKey.
 		const costs: AgentCost[] = [...roles, ...[...rows.keys()].filter(id => !roles.has(id)).map(id => [id, { role: "other", squad: undefined }] as const)].map(([id, r]) => {
 			const { cost, tokens_in, tokens_out, cache_read, cache_write } = rows.get(id) ?? {};
 			return { id, role: r.role, ...(r.squad ? { squad: r.squad } : {}), cost, tokens_in, tokens_out, cache_read, cache_write };
@@ -2299,9 +2299,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	pi.on("agent_end", (_e, ctx) => void recordLive(ctx, 0, {}, true));
 	// A parked child writes its last figure now (this clears the pending timer), whether or not one was pending.
 	pi.on("session_shutdown", (_e, ctx) => {
-		if (ctx?.agent?.kind !== "sub") return;
 		recordLive(ctx, 0, {}, true);
-		clearTimeout(mine.timer);
+		if (ctx?.agent?.kind === "sub") clearTimeout(mine.timer);
 	});
 
 	pi.on("session_shutdown", (_e, ctx) => {

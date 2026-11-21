@@ -203,7 +203,7 @@ describe("debrief markdown", () => {
 				"",
 				"## Cost",
 				"",
-				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents’; cost does not. Agents only: the Captain’s own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents'; cost does not. Agents only: the Captain's own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
 				"",
 				"None.",
 				"",
@@ -399,7 +399,7 @@ describe("cost", () => {
 
 	test("with an unknown agent the rate says known agents only", () => {
 		const r = cost([ag("A", "scout", { cost: 3 }), ag("B", "scout")], [start(0, { booked: 120 })]);
-		expect(r.markdown).toContain("Cost per booked hour: $1.50 (agents only; total $3.00 + ? over 120 booked min) (known agents only)");
+		expect(r.markdown).toContain("Cost per booked hour: $1.50 (agents only; total $3.00 + ? over 120 booked min; known agents only)");
 	});
 
 	test("an untimed run has no rate line; neither has one with nothing known", () => {
@@ -408,9 +408,47 @@ describe("cost", () => {
 		expect(cost([ag("A", "scout", { cost: 3 })]).summary.at(-1)).not.toContain("booked h");
 	});
 
+	test("huge finite costs are unknown, not a thrown report", () => {
+		const r = cost([ag("A", "scout", { cost: 1e308 }), ag("B", "scout", { cost: 1 }), ag("C", "veteran", { cost: 1e6 + 1 })]);
+		expect(r.markdown).toContain("| A | scout | — | ? | ? | ? | ? |");
+		expect(r.markdown).toContain("| scout | 2 | $1.00 + ? |");
+		expect(cost([ag("A", "scout", { cost: 1e6 }), ag("B", "scout", { cost: 1e6 })]).markdown).toContain("| scout | 2 | $2000000.00 |");
+	});
+
+	test("per-agent costs under a cent keep a third decimal so the rows add up", () => {
+		const md = cost([ag("A", "scout", { cost: 0.004 }), ag("B", "scout", { cost: 0.0001 }), ag("C", "scout", { cost: 0 })]).markdown;
+		expect(md).toContain("| A | scout | — | ? | ? | ? | $0.004 |");
+		expect(md).toContain("| B | scout | — | ? | ? | ? | <$0.001 |");
+		expect(md).toContain("| C | scout | — | ? | ? | ? | $0.00 |");
+	});
+
+	test("a role with a known cost above zero gets at least one bar block", () => {
+		const md = cost([ag("A", "big", { cost: 100 }), ag("B", "tiny", { cost: 0.5 }), ag("C", "zero", { cost: 0 })]).markdown;
+		expect(md).toContain("| tiny | 1 | $0.50 | █ |");
+		expect(md).toContain("| zero | 1 | $0.00 |  |");
+	});
+
+	test("the COST summary names the roles as the table does, capped at 60", () => {
+		const long = "r".repeat(80);
+		const s = cost([ag("A", "Total", { cost: 1 }), ag("B", long, { cost: 2 })]).summary.at(-1)!;
+		expect(s).toContain("Total (role) $1.00");
+		expect(s).toContain(`${"r".repeat(60)} $2.00`);
+		expect(s).not.toContain("r".repeat(61));
+	});
+
+	test("the rate line has one parenthesis", () => {
+		const r = cost([ag("A", "scout", { cost: 3 }), ag("B", "scout")], [start(0, { booked: 120 })]);
+		expect(r.markdown).toContain("Cost per booked hour: $1.50 (agents only; total $3.00 + ? over 120 booked min; known agents only)");
+	});
+
+	test("the note uses one apostrophe style", () => {
+		expect(section(cost([ag("A", "scout", { cost: 1 })]).markdown, "Cost")).not.toContain("’");
+	});
+
 	test("a role named Total is not the totals row", () => {
 		const rows = lines(cost([ag("A", "Total", { cost: 1 }), ag("B", "Total (agents)", { cost: 2 })]).markdown);
-		expect(rows).toContain("| Total (role) | 1 | $1.00 | ██████ |".replace("██████", "█████"));
+		expect(rows).toContain("| Total (role) | 1 | $1.00 | █████ |");
+		expect(rows).toContain("| Total (agents) (role) | 1 | $2.00 | ██████████ |");
 		expect(rows.filter(l => l.startsWith("| Total (agents) |"))).toEqual(["| Total (agents) | 2 | $3.00 | — |"]);
 	});
 

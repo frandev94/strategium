@@ -5432,6 +5432,26 @@ describe("cockpit", () => {
 				}
 			});
 
+			test("5b: a live file with a huge finite cost is ignored", async () => {
+				const { s, ui } = await squad();
+				at(10 * MIN);
+				mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+				writeFileSync(liveFile(s), `{"since":${T0},"at":${T0 + 10 * MIN},"busy":0,"line":"kept?","cost":1e308}`);
+				const t = await peek(s, ui);
+				expect(t).not.toContain("kept?");
+				expect(t).toContain("$?");
+			});
+
+			test("6b: when saving the cockpit fails, end still names the roles from memory", async () => {
+				const { s } = await fresh();
+				rmSync(join(s.dir, "runs", "sess-0001.cockpit"), { force: true });
+				mkdirSync(join(s.dir, "runs", "sess-0001.cockpit")); // writeAtomic cannot replace a directory
+				deploy(s, "A", "inquisitor");
+				kid(s, "A", stats(0.4)).message();
+				await s.call({ action: "end" });
+				expect(debriefText(s)).toContain(`| inquisitor | 1 | ${omp(stats(0.4))} |`);
+			});
+
 			test("6: end writes the Cost section: role totals equal omp's cost − subagentCost over the same stats, unknowns stay ?", async () => {
 				const { s } = await fresh();
 				const A = stats(0.4, 0.1), B = stats(0.25), C = stats(0.33), E = stats(0.07);
@@ -5897,7 +5917,7 @@ describe("the debrief at end", () => {
 				"",
 				"## Cost",
 				"",
-				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents’; cost does not. Agents only: the Captain’s own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents'; cost does not. Agents only: the Captain's own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
 				"",
 				"| Agent | Role | Squad | Tokens in | Tokens out | Cache | Cost |",
 				"|---|---|---|---|---|---|---|",

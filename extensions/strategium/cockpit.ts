@@ -40,13 +40,15 @@ const span = (min: number) => (min < 1 ? "<1m" : min < 60 ? `${min}m` : `${Math.
 const minutes = (ms: number) => Math.floor(Math.max(0, ms) / 60_000);
 /** The one money formatter: dollars and cents, rounded once. */
 export const usd = (n: number) => `$${n.toFixed(2)}`;
+/** A cost worth showing: finite, not negative and under a sane cap (a huge value would break the report's bars). */
+export const isCost = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1e6;
 
 /** The row under an active agent's line: `[blocked · ][stalled Nm · ]elapsed · cost[ · progress][ · eta][ · text]`. Cost is `$x.xx`, or `$?` while the agent's usage is unknown. Progress is the agent's `pct%` else `done/total`; eta its `~eta_min` else the one computed from the todo; text its `line`, else the todo's current task, else the intent (else tool). `stalled` is the live entry's `at` (the idle start) the reader marked stalled. A blocked row draws gold like a stalled one. */
 function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): Pick<Line, "detail" | "stalled"> {
 	const from = d.at ?? live?.since;
 	if (d.state !== "active" || from === undefined || now === undefined) return {};
 	const ms = Math.max(0, now - from);
-	const parts = [span(minutes(ms)), typeof live?.cost === "number" && Number.isFinite(live.cost) && live.cost >= 0 ? usd(live.cost) : "$?"];
+	const parts = [span(minutes(ms)), isCost(live?.cost) ? usd(live.cost) : "$?"];
 	const { done = 0, total = 0, pct, eta_min } = live ?? {};
 	const todo = Number.isInteger(done) && Number.isInteger(total) && total > 0 && done >= 0 && done <= total;
 	const has = (n: number | undefined, max: number): n is number => Number.isInteger(n) && n! >= 0 && n! <= max;

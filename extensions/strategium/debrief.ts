@@ -1,5 +1,5 @@
-// The run report: a pure builder from a key's events, squads and notes to markdown. No fs, no ctx, no index.ts.
-import { type Live, oneLine, usd } from "./cockpit";
+// The run report: a pure builder from a key's events, squads and notes to markdown. Does no fs itself, no ctx, no index.ts.
+import { isCost, type Live, oneLine, usd } from "./cockpit";
 import { bookedMin, type Ev } from "./timer";
 
 export type Reported = {
@@ -83,13 +83,22 @@ const num = (n: number | undefined) => (n === undefined ? "—" : String(n));
 
 const isCount = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
 const tokens = (n: unknown) => (isCount(n) ? String(n) : "?");
-const priced = (a: AgentCost) => typeof a.cost === "number" && Number.isFinite(a.cost) && a.cost >= 0;
+const priced = (a: AgentCost) => isCost(a.cost);
 /** An agent group's spend: the known costs added as raw floats and rounded once (`$x`), `$x + ?` when some agents are unknown, `?` when all are. */
 const group = (a: AgentCost[]) => {
 	const k = a.filter(priced);
 	const sum = k.reduce((n, x) => n + x.cost!, 0);
 	return { sum, some: k.length < a.length, text: !k.length ? "?" : k.length < a.length ? `${usd(sum)} + ?` : usd(sum), any: k.length > 0 };
 };
+
+/** One agent's cost: a third decimal under a cent so the rows can be added up. */
+const agentUsd = (n: number) => (n > 0 && n < 0.01 ? (n < 0.0005 ? "<$0.001" : `$${n.toFixed(3)}`) : usd(n));
+/** A role as shown: one line cut at 60, and the totals' own names told apart. */
+const roleName = (s: string) => {
+	const n = oneLine(s).slice(0, 60);
+	return /^Total( \(agents\))?$/.test(n) ? `${n} (role)` : n;
+};
+const bar = (sum: number, top: number) => (sum > 0 && top > 0 && Number.isFinite(sum / top) ? "█".repeat(Math.max(1, Math.round(10 * (sum / top)))) : "");
 
 const counts = (names: string[]) => {
 	const m = new Map<string, number>();
@@ -213,7 +222,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 		"",
 		"## Cost",
 		"",
-		"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents’; cost does not. Agents only: the Captain’s own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+		"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents'; cost does not. Agents only: the Captain's own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
 		"",
 		...(agents.length
 			? [
@@ -221,13 +230,13 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 						["Agent", "Role", "Squad", "Tokens in", "Tokens out", "Cache", "Cost"],
 						agents.map(a => {
 							const cache = [a.cache_read, a.cache_write].filter(isCount);
-							return [cell(a.id), cell(a.role), cell(a.squad), tokens(a.tokens_in), tokens(a.tokens_out), cache.length ? String(sum(cache)) : "?", priced(a) ? usd(a.cost!) : "?"];
+							return [cell(a.id), cell(a.role), cell(a.squad), tokens(a.tokens_in), tokens(a.tokens_out), cache.length ? String(sum(cache)) : "?", priced(a) ? agentUsd(a.cost!) : "?"];
 						}),
 					),
 					"",
-					...table(["Role", "Agents", "Cost", "Share"], [...byRole.map(r => [cell(r.role).replace(/^Total( \(agents\))?$/, "Total (role)"), String(r.n), r.text, "█".repeat(top > 0 ? Math.round((10 * r.sum) / top) : 0)]), ["Total (agents)", String(agents.length), spend.text, "—"]]),
+					...table(["Role", "Agents", "Cost", "Share"], [...byRole.map(r => [cell(roleName(r.role)), String(r.n), r.text, bar(r.sum, top)]), ["Total (agents)", String(agents.length), spend.text, "—"]]),
 					"",
-					...(rate ? [`Cost per booked hour: ${rate} (agents only; total ${spend.text} over ${booked} booked min)${spend.some ? " (known agents only)" : ""}`, ""] : []),
+					...(rate ? [`Cost per booked hour: ${rate} (agents only; total ${spend.text} over ${booked} booked min${spend.some ? "; known agents only" : ""})`, ""] : []),
 				]
 			: ["None.", ""]),
 		...reported("Apothecary (reported)", ap, ["Mutants killed", "Survivors", "Fuzz crashes"], [ap?.killed, ap?.survived, ap?.crashes]),
@@ -242,7 +251,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 			seals.length ? `SEALS ${seals.map(s => `${oneLine(s.id)} ${s.wait === undefined ? "—" : `${s.wait}m`}`).join(", ")}` : "SEALS none",
 			`SPAWNS ${total(roles)}${roles.length ? `: ${list(roles)}` : ""}`,
 			agents.length
-				? `COST (agents, list price) ${spend.text} · ${byRole.map(r => `${oneLine(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
+				? `COST (agents, list price) ${spend.text} · ${byRole.map(r => `${roleName(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
 				: "COST none",
 		],
 	};
