@@ -985,28 +985,28 @@ describe("live agent lines", () => {
 		const out = rows(squad(live({ done: 2, total: 5, current: "Write tests" })));
 		const at = out.findIndex(l => l.includes("squad a forging"));
 		expect(at).toBeGreaterThan(-1);
-		expect(out[at + 1]).toContain("10m · 2/5 · ~15m · Write tests");
+		expect(out[at + 1]).toContain("10m · $? · 2/5 · ~15m · Write tests");
 	});
 
 	test("no ETA while nothing is done, nor when everything is", () => {
-		expect(rows(squad(live({ done: 0, total: 5, current: "x" }))).join("\n")).toContain("10m · 0/5 · x");
+		expect(rows(squad(live({ done: 0, total: 5, current: "x" }))).join("\n")).toContain("10m · $? · 0/5 · x");
 		expect(rows(squad(live({ done: 0, total: 5 }))).join("\n")).not.toContain("~");
 		expect(rows(squad(live({ done: 5, total: 5 }))).join("\n")).not.toContain("~");
 	});
 
 	test("the ETA rounds up and reads hours past 60 minutes", () => {
-		expect(rows(scout(live({ done: 1, total: 2 }), {}, 61)).join("\n")).toContain("1h01m · 1/2 · ~1h01m");
-		expect(rows(scout(live({ done: 1, total: 3 }), {}, 1)).join("\n")).toContain("1m · 1/3 · ~2m");
+		expect(rows(scout(live({ done: 1, total: 2 }), {}, 61)).join("\n")).toContain("1h01m · $? · 1/2 · ~1h01m");
+		expect(rows(scout(live({ done: 1, total: 3 }), {}, 1)).join("\n")).toContain("1m · $? · 1/3 · ~2m");
 	});
 
 	test("without a todo: elapsed and the intent, else the tool name", () => {
-		expect(rows(scout(live({ intent: "Reading the cockpit", tool: "read" }))).join("\n")).toContain("10m · Reading the cockpit");
-		expect(rows(scout(live({ tool: "read" }))).join("\n")).toContain("10m · read");
-		expect(rows(scout(live())).join("\n")).toMatch(/\n.*│ {3}10m {1,}│/);
+		expect(rows(scout(live({ intent: "Reading the cockpit", tool: "read" }))).join("\n")).toContain("10m · $? · Reading the cockpit");
+		expect(rows(scout(live({ tool: "read" }))).join("\n")).toContain("10m · $? · read");
+		expect(rows(scout(live())).join("\n")).toMatch(/\n.*│ {3}10m · \$\? {1,}│/);
 	});
 
 	test("a todo with total 0 is no todo", () => {
-		expect(rows(scout(live({ done: 0, total: 0, intent: "Idle" }))).join("\n")).toContain("10m · Idle");
+		expect(rows(scout(live({ done: 0, total: 0, intent: "Idle" }))).join("\n")).toContain("10m · $? · Idle");
 	});
 
 	test("elapsed reads <1m under a minute and 1h05m past an hour", () => {
@@ -1015,24 +1015,70 @@ describe("live agent lines", () => {
 	});
 
 	test("with no live entry: elapsed only; with no deploy time and no live: no detail", () => {
-		expect(rows(scout(undefined)).join("\n")).toMatch(/\n.*│ {3}10m {1,}│/);
+		expect(rows(scout(undefined)).join("\n")).toMatch(/\n.*│ {3}10m · \$\? {1,}│/);
 		const bare = input({ phases: phases(["[scout] look", "in_progress"]), deployed: new Map([["A", dep({})]]), now: NOW });
 		expect(rows(bare).join("\n")).not.toMatch(/\dm\b|<1m/);
 		expect(rows(bare).join("\n")).toContain("▶ A");
 	});
 
 	test("with no deploy time the live file's since gives the elapsed", () => {
-		expect(rows(scout(live({ since: NOW - 3 * MIN, intent: "Go" }), { at: undefined })).join("\n")).toContain("3m · Go");
+		expect(rows(scout(live({ since: NOW - 3 * MIN, intent: "Go" }), { at: undefined })).join("\n")).toContain("3m · $? · Go");
 	});
 
 	test("done agents show no detail", () => {
 		expect(rows(scout(live({ intent: "Reading" }), { state: "done" })).join("\n")).not.toContain("Reading");
 	});
 
+	describe("agent cost", () => {
+		test("the cost follows the elapsed span on the row", () => {
+			const out = rows(squad(live({ done: 2, total: 5, current: "Write tests", cost: 0.42 })));
+			expect(out[out.findIndex(l => l.includes("squad a forging")) + 1]).toContain("10m · $0.42 · 2/5 · ~15m · Write tests");
+		});
+
+		test("$? with a live row that has no cost, and with no live row", () => {
+			expect(rows(scout(live({ intent: "Go" }))).join("\n")).toContain("10m · $? · Go");
+			expect(rows(scout(undefined)).join("\n")).toMatch(/\n.*│ {3}10m · \$\? {1,}│/);
+		});
+
+		test("a cost of 0 is a real cost: $0.00", () => {
+			expect(rows(scout(live({ cost: 0 }))).join("\n")).toContain("10m · $0.00");
+		});
+
+		test("a done agent gets no detail row, so no cost", () => {
+			expect(rows(scout(live({ cost: 0.42 }), { state: "done" })).join("\n")).not.toMatch(/\$/);
+		});
+
+		test("an unknown cost never prints $0.00", () => {
+			for (const l of [undefined, live(), live({ cost: undefined }), live({ cost: Number.NaN }), live({ cost: -1 }), live({ cost: Infinity })]) {
+				const out = rows(scout(l)).join("\n");
+				expect(out).not.toContain("$0.00");
+				expect(out).toContain("$?");
+			}
+		});
+
+		test("the cost survives truncation at 100 columns with a 300-character current", () => {
+			const out = rows(squad(live({ done: 1, total: 2, current: "w".repeat(300), cost: 1.07 })), 100);
+			const row = out.find(l => l.includes("$1.07")) ?? "";
+			expect(row).toContain("10m · $1.07 · 1/2");
+			expect(row).toContain("…");
+			for (const r of out) expect(Bun.stringWidth(r)).toBeLessThanOrEqual(100);
+		});
+
+		test("properties: the cost part is $? iff cost is not a finite number >= 0", () => {
+			const picks = [undefined, null, "0.4", NaN, Infinity, -Infinity, -0.01, -1, 0, 0.004, 0.005, 1.005, 42, 1e6];
+			for (const cost of picks) {
+				const row = rows(scout(live({ cost: cost as number })), 140).find(l => /\b10m · /.test(l)) ?? "";
+				const ok = typeof cost === "number" && Number.isFinite(cost) && cost >= 0;
+				expect(row).toContain(ok ? `10m · $${cost.toFixed(2)}` : "10m · $?");
+				if (!ok) expect(row).not.toMatch(/\$\d/);
+			}
+		});
+	});
+
 	test("a stalled agent draws mark, text and detail in gold, with the minutes", () => {
 		const l = live({ at: NOW - 6 * MIN, intent: "Reading" });
 		const raw = draw(scout(l, { stalled: l.at })).join("\n");
-		expect(rows(scout(l, { stalled: l.at })).join("\n")).toContain("stalled 6m · 10m · Reading");
+		expect(rows(scout(l, { stalled: l.at })).join("\n")).toContain("stalled 6m · 10m · $? · Reading");
 		expect(raw).toContain(`${GOLD}▶\x1b[39m ${GOLD}A\x1b[39m`);
 		expect(raw).toContain(`${GOLD}stalled 6m`);
 	});
@@ -1059,50 +1105,50 @@ describe("live agent lines", () => {
 
 	test("a signalled line, eta and todo render in the documented order", () => {
 		const out = rows(squad(live({ done: 2, total: 5, current: "x", line: "GREEN parser", eta_min: 4 })));
-		expect(out[out.findIndex(l => l.includes("squad a forging")) + 1]).toContain("10m · 2/5 · ~4m · GREEN parser");
+		expect(out[out.findIndex(l => l.includes("squad a forging")) + 1]).toContain("10m · $? · 2/5 · ~4m · GREEN parser");
 	});
 
 	test("pct replaces done/total", () => {
 		const out = rows(squad(live({ done: 2, total: 5, pct: 60, current: "x" }))).join("\n");
-		expect(out).toContain("10m · 60% · ~15m · x");
+		expect(out).toContain("10m · $? · 60% · ~15m · x");
 		expect(out).not.toContain("2/5");
-		expect(rows(scout(live({ pct: 0 }))).join("\n")).toContain("10m · 0%");
+		expect(rows(scout(live({ pct: 0 }))).join("\n")).toContain("10m · $? · 0%");
 	});
 
 	test("eta_min shows with no todo; 0 reads ~<1m", () => {
-		expect(rows(scout(live({ eta_min: 4 }))).join("\n")).toContain("10m · ~4m");
-		expect(rows(scout(live({ eta_min: 0 }))).join("\n")).toContain("10m · ~<1m");
+		expect(rows(scout(live({ eta_min: 4 }))).join("\n")).toContain("10m · $? · ~4m");
+		expect(rows(scout(live({ eta_min: 0 }))).join("\n")).toContain("10m · $? · ~<1m");
 	});
 
 	test("an empty line falls back to current, then intent", () => {
 		expect(rows(squad(live({ done: 1, total: 2, current: "Write tests", line: "  " }))).join("\n")).toContain("Write tests");
-		expect(rows(scout(live({ intent: "Reading", line: "" }))).join("\n")).toContain("10m · Reading");
+		expect(rows(scout(live({ intent: "Reading", line: "" }))).join("\n")).toContain("10m · $? · Reading");
 	});
 
 	test("a blocked row says so first and draws gold", () => {
 		const raw = draw(scout(live({ blocked: true, line: "need the API shape" }))).join("\n");
-		expect(plain(raw)).toContain("blocked · 10m · need the API shape");
+		expect(plain(raw)).toContain("blocked · 10m · $? · need the API shape");
 		expect(raw).toContain(`${GOLD}blocked · 10m`);
 		expect(raw).toContain(`${GOLD}▶\x1b[39m ${GOLD}A\x1b[39m`);
 	});
 
 	test("blocked and stalled together read blocked · stalled Nm · …", () => {
 		const l = live({ at: NOW - 6 * MIN, blocked: true, line: "why" });
-		expect(rows(scout(l, { stalled: l.at })).join("\n")).toContain("blocked · stalled 6m · 10m · why");
+		expect(rows(scout(l, { stalled: l.at })).join("\n")).toContain("blocked · stalled 6m · 10m · $? · why");
 	});
 
 	test("a hostile line renders as one clean row", () => {
 		const hostile = "\x1b[31mred\x1b[0m \x1b]8;;http://evil\x07link\x1b]8;;\x07\x00\x07\u202eevil\u2066\u2028next\r\nend";
 		const out = rows(scout(live({ line: hostile })));
 		const row = out.find(l => l.includes("10m · ")) ?? "";
-		expect(row).toContain("10m · red link evil next end");
+		expect(row).toContain("10m · $? · red link evil next end");
 		for (const r of out) expect(r).not.toMatch(/[\p{Cc}\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/u);
 	});
 
 	test("a 300-character line is cut with … inside the box at 100 and 140 columns", () => {
 		for (const w of [100, 140]) {
 			const out = rows(scout(live({ line: "w".repeat(300) })), w);
-			const row = out.find(l => l.includes("10m · w")) ?? "";
+			const row = out.find(l => l.includes("10m · $? · w")) ?? "";
 			expect(row).toContain("…");
 			for (const r of out) expect(Bun.stringWidth(r)).toBeLessThanOrEqual(w);
 		}
@@ -1127,7 +1173,7 @@ describe("live agent lines", () => {
 			// the detail is the second row under the agent line; ~ can only come from eta_min or the computed ETA
 			const text = (done !== undefined && total !== undefined && total > 0 && eta_min === undefined && done > 0 && done < total) || eta_min !== undefined;
 			const detail = out.map(plain).find(r => /\b10m\b/.test(r)) ?? "";
-			const head = detail.split("│")[1]?.trim().split(" · ").slice(0, l.blocked ? 4 : 3).join(" · ") ?? "";
+			const head = detail.split("│")[1]?.trim().split(" · ").slice(0, l.blocked ? 5 : 4).join(" · ") ?? "";
 			if (width >= 100 && !/…/.test(head)) expect(/(^| )~/.test(head)).toBe(text);
 		}
 	});
@@ -1195,12 +1241,12 @@ describe("live agent lines", () => {
 		const out = rows(i);
 		const at = out.findIndex(l => l.includes("squad a forging"));
 		expect(at).toBeGreaterThan(-1);
-		expect(out[at + 1]).toContain("10m · 1/2 · ~10m · Veteran work");
+		expect(out[at + 1]).toContain("10m · $? · 1/2 · ~10m · Veteran work");
 	});
 
 	test("a rendered row is 2 cells in for a detail, in iron when not stalled", () => {
 		const raw = draw(scout(live({ intent: "Reading" }))).find(l => l.includes("Reading"))!;
-		expect(raw).toContain(`  ${TRUE.iron}10m · Reading`);
+		expect(raw).toContain(`  ${TRUE.iron}10m · $? · Reading`);
 	});
 
 	// properties: no property-test library in the repo, so each invariant runs over a fixed adversarial corpus.

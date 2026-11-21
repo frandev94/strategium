@@ -26,8 +26,8 @@ const SID = "01a1eb00-0000-7000-8000-00000000d3a0", KEY = "demo-shot"; // the se
 type Task = { content: string; status: string };
 type Phase = { name: string; tasks: Task[] };
 type Seed = { where: Record<string, string>; extra: Record<string, unknown>; phases: Phase[]; timed?: number; cockpit?: Record<string, unknown>; live?: Record<string, LiveSeed> };
-// What a child writes in runs/<sid>.live/<agent id>.json (index.ts readLive, contract v2: pct, eta_min, line, blocked are what a child's signal writes); since/at are minutes before the seed is written, the rest goes as is.
-type LiveSeed = { since: number; at: number; busy: number; done?: number; total?: number; current?: string; intent?: string; tool?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean };
+// What a child writes in runs/<sid>.live/<agent id>.json (index.ts readLive, contract v3: pct, eta_min, line, blocked are what a child's signal writes; cost is its USD spend, absent = unknown); since/at are minutes before the seed is written, the rest goes as is.
+type LiveSeed = { since: number; at: number; busy: number; done?: number; total?: number; current?: string; intent?: string; tool?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean; cost?: number };
 const t = (content: string, status: string): Task => ({ content, status });
 const sl = (id: string) => ({ id, parallel: true, files: [] });
 const MUSTER = { name: "Muster", tasks: [t("[captain] Begin run", "completed"), t("[captain] Orders", "completed")] };
@@ -86,9 +86,9 @@ SEEDS.live = { // skirmish with three active agents and one task line, so every 
 		["AlphaBrother", { who: "AlphaBrother", role: "battle-brother", squad: "alpha", station: "Skirmish", state: "active" }],
 		["GammaVeteran", { who: "GammaVeteran", role: "veteran", squad: "gamma", station: "Skirmish", state: "active" }],
 		["DeltaBrother", { who: "DeltaBrother", role: "battle-brother", squad: "delta", station: "Skirmish", state: "active" }]] },
-	live: { // alpha: a todo (2 of 5, ETA); gamma: tool-free for 8 min (stalled); delta: no todo, only its last intent
-		AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, current: "Wire the live rows", tool: "edit", intent: "Editing cockpit.ts" },
-		GammaVeteran: { since: 20, at: 8, busy: 0, tool: "bash", intent: "Running the tests" },
+	live: { // alpha: a todo (2 of 5) and $0.42; gamma: tool-free for 8 min (stalled) and $1.07; delta: no todo, only its last intent, no usage yet ($?)
+		AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, current: "Wire the live rows", tool: "edit", intent: "Editing cockpit.ts", cost: 0.42 },
+		GammaVeteran: { since: 20, at: 8, busy: 0, tool: "bash", intent: "Running the tests", cost: 1.07 },
 		DeltaBrother: { since: 3, at: 0, busy: 1, tool: "read", intent: "Reading the writer" } } };
 
 SEEDS.signal = { // live with signals: alpha signals pct/eta/line over its todo, delta is blocked, gamma is a plain row
@@ -892,9 +892,9 @@ const liveRowOf = (s: Snap, squad: string) => {
 };
 function checksAgentLive(C: Ctx) {
 	const o = snapOf(C, "open"), a = snapOf(C, "after"), W = a.cols;
-	C.ck("open: alpha row is elapsed · done/total · ~ETA · current", /10m · 2\/5 · ~\d+m · Wire the live rows/.test(liveRowOf(o, "alpha")), liveRowOf(o, "alpha"), "10m · 2/5 · ~16m · Wire the live rows", o);
-	C.ck("open: delta row is elapsed · intent (no todo)", /3m · Reading the writer/.test(liveRowOf(o, "delta")) && !/\d\/\d/.test(liveRowOf(o, "delta")), liveRowOf(o, "delta"), "3m · Reading the writer", o);
-	C.ck("open: gamma row starts with stalled 8m", /stalled 8m · 20m · Running the tests/.test(liveRowOf(o, "gamma")), liveRowOf(o, "gamma"), "stalled 8m · 20m · Running the tests", o);
+	C.ck("open: alpha row is elapsed · cost · done/total · ~ETA · current", /10m · \$0\.42 · 2\/5 · ~\d+m · Wire the live rows/.test(liveRowOf(o, "alpha")), liveRowOf(o, "alpha"), "10m · $0.42 · 2/5 · ~16m · Wire the live rows", o);
+	C.ck("open: delta row is elapsed · $? · intent (no todo)", /3m · \$\? · Reading the writer/.test(liveRowOf(o, "delta")) && !/\d\/\d/.test(liveRowOf(o, "delta")), liveRowOf(o, "delta"), "3m · $? · Reading the writer", o);
+	C.ck("open: gamma row starts with stalled 8m", /stalled 8m · 20m · \$1\.07 · Running the tests/.test(liveRowOf(o, "gamma")), liveRowOf(o, "gamma"), "stalled 8m · 20m · $1.07 · Running the tests", o);
 	C.ck("after: alpha row moved to 3/5 without reopening", /3\/5 · ~\d+m · Cover it with tests/.test(liveRowOf(a, "alpha")), liveRowOf(a, "alpha"), "3/5 · ~… · Cover it with tests", a);
 	C.ck("after: delta row shows its new intent", /Searching the reader/.test(liveRowOf(a, "delta")), liveRowOf(a, "delta"), "Searching the reader", a);
 	const stalls = chronicleRows(a).filter(r => /stalled 8m/.test(r));
@@ -906,16 +906,36 @@ function checksAgentLive(C: Ctx) {
 function checksAgentSignal(C: Ctx) {
 	const o = snapOf(C, "open"), a = snapOf(C, "after"), W = a.cols;
 	const al = liveRowOf(o, "alpha");
-	C.ck("open: alpha row shows the signalled pct, ETA and line", /10m · 40% · ~12m · Writing the signal tests/.test(al), al, "10m · 40% · ~12m · Writing the signal tests", o);
+	C.ck("open: alpha row shows the signalled pct, ETA and line", /10m · \$\? · 40% · ~12m · Writing the signal tests/.test(al), al, "10m · $? · 40% · ~12m · Writing the signal tests", o);
 	C.ck("open: alpha row has no done/total nor the todo's current task", !/\d\/\d|Wire the live rows/.test(al), al, "no 2/5, no current task", o);
 	const de = liveRowOf(o, "delta");
-	C.ck("open: delta row starts with blocked ·", /blocked · 3m · .*Waiting for a decision/.test(de), de, "blocked · 3m · … Waiting for a decision", o);
+	C.ck("open: delta row starts with blocked ·", /blocked · 3m · \$\? · .*Waiting for a decision/.test(de), de, "blocked · 3m · $? · … Waiting for a decision", o);
 	C.ck("open: gamma row is plain (not blocked)", !/blocked/.test(liveRowOf(o, "gamma")), liveRowOf(o, "gamma"), "no blocked", o);
 	C.ck("after: alpha row moved to 70% · ~5m without reopening", /70% · ~5m · Writing the signal tests/.test(liveRowOf(a, "alpha")), liveRowOf(a, "alpha"), "70% · ~5m", a);
 	const bl = chronicleRows(a).filter(r => /blocked/.test(r));
 	C.ck("after: exactly one 'blocked' row in the CHRONICLE", bl.length === 1, bl, "1 row", a);
 	const bad = range(0, a.rows).filter(i => oneOf(a.at(i, 0), "╔║╟╚") && !oneOf(a.at(i, W - 1), "╗║╢╝"));
 	C.ck(`after: every framed row ends at col ${W - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, a);
+}
+
+async function stepsAgentCost(R: Run) {
+	await openSnap(R);
+	// Alpha's usage grows (its file is rewritten with the same fields and a higher cost); the parent redraws from its overlay timer, no reopen.
+	R.writeLive({ AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, current: "Wire the live rows", tool: "edit", intent: "Editing cockpit.ts", cost: 0.5 } });
+	await R.sleep(8);
+	await R.snap("after", true);
+}
+function checksAgentCost(C: Ctx) {
+	const o = snapOf(C, "open"), a = snapOf(C, "after"), W = a.cols;
+	C.ck("open: alpha row has its cost right after the elapsed time", /10m · \$0\.42 · 2\/5/.test(liveRowOf(o, "alpha")), liveRowOf(o, "alpha"), "10m · $0.42 · 2/5", o);
+	C.ck("open: delta (no usage) shows $?", /3m · \$\? · Reading the writer/.test(liveRowOf(o, "delta")), liveRowOf(o, "delta"), "3m · $? · Reading the writer", o);
+	C.ck("open: gamma (stalled) has its cost after the elapsed time", /stalled 8m · 20m · \$1\.07/.test(liveRowOf(o, "gamma")), liveRowOf(o, "gamma"), "stalled 8m · 20m · $1.07", o);
+	C.ck("after: alpha row shows $0.50 without reopening", /10m · \$0\.50 · 2\/5/.test(liveRowOf(a, "alpha")), liveRowOf(a, "alpha"), "10m · $0.50 · 2/5", a);
+	for (const s of [o, a]) C.ck(`${s.name}: no row shows $0.00`, !s.rowsText.some(r => r.includes("$0.00")), s.rowsText.filter(r => r.includes("$0.00")), "none", s);
+	for (const s of [o, a]) {
+		const bad = range(0, s.rows).filter(i => oneOf(s.at(i, 0), "╔║╟╚") && !oneOf(s.at(i, W - 1), "╗║╢╝"));
+		C.ck(`${s.name}: every framed row ends at col ${W - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, s);
+	}
 }
 
 // name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, settle (false: wait only for the first heartbeat), steps, checks
@@ -942,6 +962,7 @@ export const REPLAYS: Record<string, Replay> = {
 	"ponytail-notice": { r: "R16", kind: "OPEN", seed: "scriptorium", ponytail: true, settle: false, steps: stepsPonytail, checks: checksPonytail },
 	"agent-live": { r: "R20,#114", kind: "FIXED", seed: "live", steps: stepsAgentLive, checks: checksAgentLive },
 	"agent-signal": { r: "R21,#115", kind: "FIXED", seed: "signal", steps: stepsAgentSignal, checks: checksAgentSignal },
+	"agent-cost": { r: "R22,#25", kind: "FIXED", seed: "live", steps: stepsAgentCost, checks: checksAgentCost },
 	"cockpit-restart": { r: "#19", kind: "FIXED", seed: "restart", steps: stepsCockpitRestart, checks: checksCockpitRestart },
 };
 

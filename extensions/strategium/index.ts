@@ -20,10 +20,10 @@ import {
 	safeName,
 	type Ev,
 } from "./timer";
-import { debrief, type Reported } from "./debrief";
+import { debrief, type AgentCost, type Reported } from "./debrief";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, isCost, jobEnds, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -205,7 +205,7 @@ const LIVE_BYTES = 4096; // a live file is a few hundred bytes; a bigger one is 
 const LIVE_TEXT = 200;
 const STALL_MS = 5 * 60_000; // no tool call in flight and none ended for this long
 const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
-/** What an agent wrote about itself (contract v2: `since` and `at` in ms; `busy` the tool calls in flight; the rest as `Live`, which v1 files lack). The file is untrusted: anything of another shape is undefined. */
+/** What an agent wrote about itself (contract v3: `since` and `at` in ms; `busy` the tool calls in flight; the rest as `Live`, which v1 and v2 files lack). The file is untrusted: anything of another shape is undefined. */
 function readLive(sid: string, id: string): (Live & { busy?: number }) | undefined {
 	try {
 		const f = liveFile(sid, id);
@@ -214,12 +214,35 @@ function readLive(sid: string, id: string): (Live & { busy?: number }) | undefin
 		if (!v || typeof v !== "object" || !isCount(v.since) || !isCount(v.at)) return undefined;
 		if (["busy", "done", "total", "eta_min"].some(k => v[k] !== undefined && !isCount(v[k]))) return undefined;
 		if (v.pct !== undefined && (!isCount(v.pct) || v.pct > 100)) return undefined;
+		if (["tokens_in", "tokens_out", "cache_read", "cache_write"].some(k => v[k] !== undefined && !isCount(v[k]))) return undefined;
+		if (v.cost !== undefined && !isCost(v.cost)) return undefined;
 		if (["tool", "intent", "current", "line"].some(k => v[k] !== undefined && typeof v[k] !== "string")) return undefined;
 		if (v.blocked !== undefined && typeof v.blocked !== "boolean") return undefined;
 		return v;
 	} catch {
 		return undefined;
 	}
+}
+
+/** Every readable live row of a run, by agent id; rows older than the run are an earlier key's in the same session. A damaged name or file is skipped. */
+function liveRows(run: Run): Map<string, Live> {
+	const rows = new Map<string, Live>();
+	const since = Date.parse(run.since ?? "");
+	try {
+		for (const f of readdirSync(liveDir(run.sid))) {
+			if (!f.endsWith(".json")) continue;
+			try {
+				const id = decodeURIComponent(f.slice(0, -5));
+				const row = readLive(run.sid, id);
+				if (row && !(row.since < since)) rows.set(id, row);
+			} catch {
+				// A name that does not decode is not an agent id.
+			}
+		}
+	} catch {
+		// No live dir: no agent wrote one.
+	}
+	return rows;
 }
 
 /** Write through a temp file and rename, so a reader in another session never sees half a file. */
@@ -469,8 +492,23 @@ function savedNotes(sid: string): Record<string, { failed?: true; veteran?: true
 	}
 }
 
+/** The role and squad of each agent the cockpit saved beside the run; a missing or malformed file reads as none. */
+function savedRoles(sid: string): Map<string, { role: string; squad?: string }> {
+	const roles = new Map<string, { role: string; squad?: string }>();
+	try {
+		const jobs = asObj(JSON.parse(readFileSync(cockpitFile(sid), "utf8"))).deployed;
+		for (const d of Array.isArray(jobs) ? jobs : []) {
+			const job = asObj(Array.isArray(d) ? d[1] : undefined);
+			if (Array.isArray(d) && typeof d[0] === "string" && typeof job.role === "string") roles.set(d[0], { role: job.role, ...(typeof job.squad === "string" ? { squad: job.squad } : {}) });
+		}
+	} catch {
+		// No saved cockpit: the agents are told apart by their live files only.
+	}
+	return roles;
+}
+
 /** Build the run's debrief and save it under <state>/debriefs (kept after the run): the result lines for `end`. A failure never stops the end. */
-function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note> } | undefined, clamp: boolean): string[] {
+function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed> } | undefined, clamp: boolean): string[] {
 	try {
 		const evs = eventsSince(run.key, run.since);
 		// A run stopped before `end` has no pause tail: its last interval closes at the stop (or at a later station entry). A takeover keeps it: the crash gap is real.
@@ -484,7 +522,15 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 		const known = new Map<string, Slice>();
 		for (const s of [...(run.slices ?? []), ...(run.stopped ?? []), ...agents]) if (!known.has(s.id)) known.set(s.id, s);
 		const squads = [...known.values()].map(s => ({ id: s.id, ...(s.tier ? { tier: s.tier } : {}), state: running.has(s.id) ? ("running" as const) : stopped.has(s.id) ? ("stopped" as const) : ("not built" as const) }));
-		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported });
+		const roles = live?.key === run.key && live.deployed ? new Map([...live.deployed].map(([id, d]) => [id, { role: d.role, squad: d.squad }])) : savedRoles(run.sid);
+		const rows = liveRows(run);
+		// A live file with no deployed entry (a nested child, an eval spawn without spawnKey) still counts, as role `other`.
+		// shortcut: an eval spawn without spawnKey shows a `?` row and an `other` row for the same child, and a sync task spawn counts as `other`; upgrade if hosts omit spawnKey.
+		const costs: AgentCost[] = [...roles, ...[...rows.keys()].filter(id => !roles.has(id)).map(id => [id, { role: "other", squad: undefined }] as const)].map(([id, r]) => {
+			const { cost, tokens_in, tokens_out, cache_read, cache_write } = rows.get(id) ?? {};
+			return { id, role: r.role, ...(r.squad ? { squad: r.squad } : {}), cost, tokens_in, tokens_out, cache_read, cache_write };
+		});
+		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported, agents: costs });
 		const file = path.join(stateDir(), "debriefs", `${safeName(run.key)}-${nowIso(now).slice(0, 19).replace(/:/g, "-")}.md`);
 		try {
 			writeAtomic(file, markdown);
@@ -498,7 +544,7 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 }
 
 /** End this session's run, or another session's run of `key` by naming that crashed session's id in `takeover`. */
-function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note> }): string {
+function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed> }): string {
 	// ownRun() may drop the run file, so ask for it once.
 	const mine = ownRun(sid);
 	const run = key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine;
@@ -1704,6 +1750,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 						cockpit.dirty = true;
 						carried = true;
 					}
+					// The plan-mode agents' live rows (their costs) go with the run; a name the new dir already holds is the newer one.
+					try {
+						const from = readdirSync(liveDir(prevSid));
+						mkdirSync(liveDir(sid), { recursive: true, mode: 0o700 });
+						for (const f of from) if (!existsSync(path.join(liveDir(sid), f))) renameSync(path.join(liveDir(prevSid), f), path.join(liveDir(sid), f));
+					} catch {
+						// No live rows, or one that would not move: dropFiles leaves the rest inert.
+					}
 					dropFiles(prevSid);
 					beat(sid);
 					// The old id must not keep a setting its run took away.
@@ -2174,8 +2228,26 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	const LIVE_MS = 1000;
 	const mine = { since: 0, at: 0, busy: 0, wrote: 0, wroteBlocked: false, row: {} as Partial<Live>, timer: undefined as ReturnType<typeof setTimeout> | undefined };
 	const cap = (s: string) => s.slice(0, LIVE_TEXT);
+	/** The session's own usage as omp counts it, read when the file is written. Unknown stays absent: no tokens, no price (cost 0 with tokens) or a failing read give no field. */
+	// shortcut: tokens include nested sync spawns' tokens (omp has no per-nested token split; cost excludes them); upgrade if omp adds one.
+	const usageRow = (ctx: { sessionManager?: { getUsageStatistics?: () => unknown } } | undefined): Partial<Live> => {
+		try {
+			const u = asObj(ctx?.sessionManager?.getUsageStatistics?.());
+			if (!((u.totalTokens as number) > 0)) return {};
+			const cost = (u.cost as number) - (u.subagentCost as number);
+			return {
+				...(isCount(u.input) ? { tokens_in: u.input } : {}),
+				...(isCount(u.output) ? { tokens_out: u.output } : {}),
+				...(isCount(u.cacheRead) ? { cache_read: u.cacheRead } : {}),
+				...(isCount(u.cacheWrite) ? { cache_write: u.cacheWrite } : {}),
+				...(Number.isFinite(cost) && cost > 0 ? { cost } : {}),
+			};
+		} catch {
+			return {};
+		}
+	};
 	/** Records the row; true when a run pointer is valid (written or scheduled). `force` writes at once, past the 1 s throttle. */
-	const recordLive = (ctx: { agent?: { kind?: string; id?: string } } | undefined, busy: number, row: Partial<Live>, force = false) => {
+	const recordLive = (ctx: { agent?: { kind?: string; id?: string }; sessionManager?: { getUsageStatistics?: () => unknown } } | undefined, busy: number, row: Partial<Live>, force = false) => {
 		const id = ctx?.agent?.id;
 		if (ctx?.agent?.kind !== "sub" || !id) return false;
 		try {
@@ -2190,6 +2262,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			// A pointer to a run that is gone is inert.
 			if (!/^[\w.-]+$/.test(sid) || !existsSync(runFile(sid))) return false;
 			const write = () => {
+				Object.assign(mine.row, usageRow(ctx));
 				clearTimeout(mine.timer);
 				mine.timer = undefined;
 				mine.wrote = Date.now();
@@ -2221,7 +2294,12 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const current = tasks.find(t => t?.status === "in_progress")?.content;
 		recordLive(ctx, 0, { done: tasks.filter(t => t?.status === "completed").length, total: tasks.length, current: typeof current === "string" ? cap(current) : undefined });
 	});
+	// An assistant message ended: the throttled write carries the usage and moves `at`. The turn's end writes at once so the final figure lands.
+	pi.on("message_end", (e, ctx) => void (asObj(asObj(e).message).role === "assistant" && recordLive(ctx, 0, {})));
+	pi.on("agent_end", (_e, ctx) => void recordLive(ctx, 0, {}, true));
+	// A parked child writes its last figure now (this clears the pending timer), whether or not one was pending.
 	pi.on("session_shutdown", (_e, ctx) => {
+		recordLive(ctx, 0, {}, true);
 		if (ctx?.agent?.kind === "sub") clearTimeout(mine.timer);
 	});
 

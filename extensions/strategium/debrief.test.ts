@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type DebriefInput, debrief, splitMinutes, stationTimes } from "./debrief";
+import { usd } from "./cockpit";
+import { type AgentCost, type DebriefInput, debrief, splitMinutes, stationTimes } from "./debrief";
 import { type Ev, lockPath, nowIso, safeName } from "./timer";
 
 const base = new Date(2026, 10, 16, 9, 0, 0);
@@ -200,6 +201,12 @@ describe("debrief markdown", () => {
 				"",
 				"Model requested: the selector Strategium asked of the host; the host may run another.",
 				"",
+				"## Cost",
+				"",
+				"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents'; cost does not. Agents only: the Captain's own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+				"",
+				"None.",
+				"",
 				"## Apothecary (reported)",
 				"",
 				"Not reported.",
@@ -217,6 +224,7 @@ describe("debrief markdown", () => {
 			"TIME 40 min active, 10 min paused: Muster 10, Scriptorium 30",
 			"SEALS plan 6m",
 			"SPAWNS 4: battle-brother 2, scout 1, veteran 1",
+			"COST none",
 		]);
 	});
 
@@ -313,5 +321,177 @@ describe("debrief markdown", () => {
 		const r = debrief(input([start(0), station(0, "x".repeat(200))]));
 		expect(r.markdown).toContain(`| ${"x".repeat(60)} |`);
 		expect(r.markdown).not.toContain("x".repeat(61));
+	});
+});
+
+describe("cost", () => {
+	const ag = (id: string, role: string, extra: Partial<AgentCost> = {}): AgentCost => ({ id, role, ...extra });
+	const cost = (agents: AgentCost[], evs: Ev[] = [start(0)]) => debrief(input(evs, { agents }));
+	const lines = (md: string) => section(md, "Cost").split("\n");
+	const rolesTable = (md: string) => lines(md).slice(lines(md).findIndex(l => l.startsWith("| Role | Agents")) + 2);
+
+	test("the note says list-price estimates, subscription and ?", () => {
+		const md = cost([ag("A", "scout", { cost: 1 })]).markdown;
+		expect(section(md, "Cost")).toContain("Costs are omp's list-price estimates");
+		expect(section(md, "Cost")).toContain("A subscription plan pays differently.");
+		expect(section(md, "Cost")).toContain("?: no usage recorded, or a model without a price in omp.");
+		expect(md.indexOf("## Cost")).toBeGreaterThan(md.indexOf("## Agents spawned"));
+		expect(md.indexOf("## Cost")).toBeLessThan(md.indexOf("## Apothecary (reported)"));
+	});
+
+	test("per-agent rows carry tokens and cache, and an unknown agent shows ? cells", () => {
+		const md = cost([
+			ag("Alpha", "battle-brother", { squad: "a", cost: 0.42, tokens_in: 120000, tokens_out: 9000, cache_read: 800000, cache_write: 5 }),
+			ag("Scout1", "scout", { cost: 0.07, tokens_in: 30000, tokens_out: 2000, cache_write: 7 }),
+			ag("Insp", "inquisitor"),
+		]).markdown;
+		expect(md).toContain("| Agent | Role | Squad | Tokens in | Tokens out | Cache | Cost |");
+		expect(md).toContain("| Alpha | battle-brother | a | 120000 | 9000 | 800005 | $0.42 |");
+		expect(md).toContain("| Scout1 | scout | — | 30000 | 2000 | 7 | $0.07 |");
+		expect(md).toContain("| Insp | inquisitor | — | ? | ? | ? | ? |");
+	});
+
+	test("per-role totals add the raw floats and round once: three at 0.004 is $0.01", () => {
+		const md = cost([ag("A", "scout", { cost: 0.004 }), ag("B", "scout", { cost: 0.004 }), ag("C", "scout", { cost: 0.004 })]).markdown;
+		expect(md).toContain("| scout | 3 | $0.01 | ██████████ |");
+		expect(md).toContain("| Total (agents) | 3 | $0.01 | — |");
+	});
+
+	test("a role of unknown agents prints ?, a mixed role prints $x + ?", () => {
+		const md = cost([ag("A", "scout"), ag("B", "scout", { cost: Number.NaN }), ag("C", "inquisitor", { cost: 1 }), ag("D", "inquisitor"), ag("E", "veteran", { cost: 2 })]).markdown;
+		expect(md).toContain("| scout | 2 | ? |  |");
+		expect(md).toContain("| inquisitor | 2 | $1.00 + ? | █████ |");
+		expect(md).toContain("| veteran | 1 | $2.00 | ██████████ |");
+		expect(md).toContain("| Total (agents) | 5 | $3.00 + ? | — |");
+		expect(md).not.toContain("$0.00");
+	});
+
+	test("every agent unknown: the total is ?", () => {
+		const md = cost([ag("A", "scout")]).markdown;
+		expect(md).toContain("| Total (agents) | 1 | ? | — |");
+		expect(md).not.toContain("$");
+	});
+
+	test("bars: 10 cells for the top role, rounded for the rest, sorted by cost then name", () => {
+		const md = cost([ag("A", "b", { cost: 4 }), ag("B", "a", { cost: 1 }), ag("C", "c", { cost: 4 }), ag("D", "d", { cost: 0.2 })]).markdown;
+		const rows = rolesTable(md);
+		expect(rows.slice(0, 4)).toEqual(["| b | 1 | $4.00 | ██████████ |", "| c | 1 | $4.00 | ██████████ |", "| a | 1 | $1.00 | ███ |", "| d | 1 | $0.20 | █ |"]);
+	});
+
+	test("no agents: None. and COST none", () => {
+		const r = cost([]);
+		expect(section(r.markdown, "Cost")).toContain("None.");
+		expect(r.summary.at(-1)).toBe("COST none");
+		expect(debrief(input([start(0)])).summary.at(-1)).toBe("COST none");
+	});
+
+	test("the COST summary line: total, then each role", () => {
+		const r = cost([ag("A", "scout", { cost: 0.5 }), ag("B", "inquisitor", { cost: 1.25 }), ag("C", "scout")]);
+		expect(r.summary.at(-1)).toBe("COST (agents, list price) $1.75 + ? · inquisitor $1.25, scout $0.50 + ?");
+	});
+
+	test("cost per booked hour sums each day's booking: 60 + 60 min is B = 120", () => {
+		const evs = [start(0, { booked: 60 }), stop(30), start(1440, { booked: 60 }), stop(1470)];
+		const r = debrief({ ...input(evs, { agents: [ag("A", "scout", { cost: 3 })] }), end: at(1500) });
+		expect(r.markdown).toContain("Cost per booked hour: $1.50 (agents only; total $3.00 over 120 booked min)");
+		expect(r.summary.at(-1)).toBe("COST (agents, list price) $3.00 · scout $3.00 · $1.50/booked h");
+	});
+
+	test("with an unknown agent the rate says known agents only", () => {
+		const r = cost([ag("A", "scout", { cost: 3 }), ag("B", "scout")], [start(0, { booked: 120 })]);
+		expect(r.markdown).toContain("Cost per booked hour: $1.50 (agents only; total $3.00 + ? over 120 booked min; known agents only)");
+	});
+
+	test("an untimed run has no rate line; neither has one with nothing known", () => {
+		expect(cost([ag("A", "scout", { cost: 3 })]).markdown).not.toContain("Cost per booked hour");
+		expect(cost([ag("A", "scout")], [start(0, { booked: 60 })]).markdown).not.toContain("Cost per booked hour");
+		expect(cost([ag("A", "scout", { cost: 3 })]).summary.at(-1)).not.toContain("booked h");
+	});
+
+	test("huge finite costs are unknown, not a thrown report", () => {
+		const r = cost([ag("A", "scout", { cost: 1e308 }), ag("B", "scout", { cost: 1 }), ag("C", "veteran", { cost: 1e6 + 1 })]);
+		expect(r.markdown).toContain("| A | scout | — | ? | ? | ? | ? |");
+		expect(r.markdown).toContain("| scout | 2 | $1.00 + ? |");
+		expect(cost([ag("A", "scout", { cost: 1e6 }), ag("B", "scout", { cost: 1e6 })]).markdown).toContain("| scout | 2 | $2000000.00 |");
+	});
+
+	test("per-agent costs under a cent keep a third decimal so the rows add up", () => {
+		const md = cost([ag("A", "scout", { cost: 0.004 }), ag("B", "scout", { cost: 0.0001 }), ag("C", "scout", { cost: 0 })]).markdown;
+		expect(md).toContain("| A | scout | — | ? | ? | ? | $0.004 |");
+		expect(md).toContain("| B | scout | — | ? | ? | ? | <$0.001 |");
+		expect(md).toContain("| C | scout | — | ? | ? | ? | $0.00 |");
+	});
+
+	test("a role with a known cost above zero gets at least one bar block", () => {
+		const md = cost([ag("A", "big", { cost: 100 }), ag("B", "tiny", { cost: 0.5 }), ag("C", "zero", { cost: 0 })]).markdown;
+		expect(md).toContain("| tiny | 1 | $0.50 | █ |");
+		expect(md).toContain("| zero | 1 | $0.00 |  |");
+	});
+
+	test("the COST summary names the roles as the table does, capped at 60", () => {
+		const long = "r".repeat(80);
+		const s = cost([ag("A", "Total", { cost: 1 }), ag("B", long, { cost: 2 })]).summary.at(-1)!;
+		expect(s).toContain("Total (role) $1.00");
+		expect(s).toContain(`${"r".repeat(60)} $2.00`);
+		expect(s).not.toContain("r".repeat(61));
+	});
+
+	test("the rate line has one parenthesis", () => {
+		const r = cost([ag("A", "scout", { cost: 3 }), ag("B", "scout")], [start(0, { booked: 120 })]);
+		expect(r.markdown).toContain("Cost per booked hour: $1.50 (agents only; total $3.00 + ? over 120 booked min; known agents only)");
+	});
+
+	test("the note uses one apostrophe style", () => {
+		expect(section(cost([ag("A", "scout", { cost: 1 })]).markdown, "Cost")).not.toContain("’");
+	});
+
+	test("a role named Total is not the totals row", () => {
+		const rows = lines(cost([ag("A", "Total", { cost: 1 }), ag("B", "Total (agents)", { cost: 2 })]).markdown);
+		expect(rows).toContain("| Total (role) | 1 | $1.00 | █████ |");
+		expect(rows).toContain("| Total (agents) (role) | 1 | $2.00 | ██████████ |");
+		expect(rows.filter(l => l.startsWith("| Total (agents) |"))).toEqual(["| Total (agents) | 2 | $3.00 | — |"]);
+	});
+
+	test("an id or role with |, ANSI or a newline is one escaped cell", () => {
+		const md = cost([ag("a|b\nc\x1b[31mred", "r|x\\", { squad: "s\x00q", cost: 1 })]).markdown;
+		const row = lines(md).find(l => l.includes("a\\|b"))!;
+		expect(row).toBe("| a\\|b cred | r\\|x\\\\ | s q | ? | ? | ? | $1.00 |");
+		expect(md).not.toContain("\x1b");
+	});
+
+	test("properties (seeded): totals add raw then round once, ? iff unknown, rows keep the column count, cells stay clean", () => {
+		let seed = 25;
+		const rnd = (n: number) => ((seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff), seed % n);
+		const pieces = ["a", "b", "界", "|", "\\", "\x1b[31m", "\x1b]8;;u\x07", "\x00", "\n", " ", "x".repeat(70), "\ud83d\ude00"];
+		const txt = () => Array.from({ length: 1 + rnd(5) }, () => pieces[rnd(pieces.length)]).join("");
+		const costs = [undefined, undefined, 0.004, 0.005, 0.1, 0.2, 0.3, 1.005, 2.675, 10, 0, Number.NaN, -1, Infinity];
+		const split = (l: string) => l.split(/(?<!\\)\|/).slice(1, -1);
+		for (let i = 0; i < 300; i++) {
+			const roles = ["r1", "r2", txt()];
+			const agents = Array.from({ length: rnd(8) }, (_, n) => ag(`${n}${txt()}`, roles[rnd(3)], { cost: costs[rnd(costs.length)], tokens_in: rnd(2) ? rnd(1000) : undefined }));
+			const md = cost(agents).markdown;
+			const sec = lines(md);
+			for (const l of sec) expect(l).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+			const tables = sec.filter(l => l.startsWith("|"));
+			const known = (a: AgentCost[]) => a.filter(x => typeof x.cost === "number" && Number.isFinite(x.cost) && x.cost >= 0);
+			const text = (a: AgentCost[]) => {
+				const k = known(a);
+				const s = k.reduce((n, x) => n + x.cost!, 0);
+				return !k.length ? "?" : k.length < a.length ? `${usd(s)} + ?` : usd(s);
+			};
+			if (!agents.length) continue;
+			const head = tables.findIndex(l => l.startsWith("| Agent |"));
+			const rhead = tables.findIndex(l => l.startsWith("| Role |"));
+			expect(rhead - head).toBe(agents.length + 2);
+			tables.forEach((l, n) => expect(split(l).length).toBe(n < rhead ? 7 : 4));
+			const total = split(tables.find(l => l.startsWith("| Total (agents) |"))!)[2].trim();
+			expect(total).toBe(text(agents));
+			for (const r of new Set(agents.map(a => a.role))) {
+				const mine = agents.filter(a => a.role === r);
+				const cells = tables.slice(rhead + 2).map(split).filter(c => c[0] !== " Total (agents) " && c[1].trim() === String(mine.length));
+				expect(cells.map(c => c[2].trim())).toContain(text(mine));
+			}
+			expect(total.includes("$0.00") && !known(agents).some(x => x.cost! > 0 || x.cost === 0)).toBe(false);
+		}
 	});
 });

@@ -1,6 +1,6 @@
-// The run report: a pure builder from a key's events, squads and notes to markdown. No fs, no ctx, no index.ts.
-import { oneLine } from "./cockpit";
-import type { Ev } from "./timer";
+// The run report: a pure builder from a key's events, squads and notes to markdown. Does no fs itself, no ctx, no index.ts.
+import { isCost, type Live, oneLine, usd } from "./cockpit";
+import { bookedMin, type Ev } from "./timer";
 
 export type Reported = {
 	apothecary?: { killed?: number; survived?: number; crashes?: number };
@@ -15,7 +15,10 @@ export type DebriefInput = {
 	squads: { id: string; tier?: string; state: "running" | "stopped" | "not built" }[];
 	notes: Record<string, { failed?: true; veteran?: true }>;
 	reported?: Reported;
+	agents?: AgentCost[]; // every agent of the run with the usage its live file carried; ids and roles are untrusted
 };
+/** One agent's usage as its live file carried it: a missing or invalid field is unknown, never 0. */
+export type AgentCost = { id: string; role: string; squad?: string } & Pick<Live, "cost" | "tokens_in" | "tokens_out" | "cache_read" | "cache_write">;
 
 const MIN = 60_000;
 const BEFORE = "(before the todo)";
@@ -77,6 +80,25 @@ const cell = (s: unknown) => oneLine(s).slice(0, 60).replace(/[\\|]/g, "\\$&") |
 const row = (...c: (string | number)[]) => `| ${c.join(" | ")} |`;
 const table = (head: string[], body: string[][]) => [row(...head), `|${head.map(() => "---").join("|")}|`, ...body.map(r => row(...r))];
 const num = (n: number | undefined) => (n === undefined ? "—" : String(n));
+
+const isCount = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+const tokens = (n: unknown) => (isCount(n) ? String(n) : "?");
+const priced = (a: AgentCost) => isCost(a.cost);
+/** An agent group's spend: the known costs added as raw floats and rounded once (`$x`), `$x + ?` when some agents are unknown, `?` when all are. */
+const group = (a: AgentCost[]) => {
+	const k = a.filter(priced);
+	const sum = k.reduce((n, x) => n + x.cost!, 0);
+	return { sum, some: k.length < a.length, text: !k.length ? "?" : k.length < a.length ? `${usd(sum)} + ?` : usd(sum), any: k.length > 0 };
+};
+
+/** One agent's cost: a third decimal under a cent so the rows can be added up. */
+const agentUsd = (n: number) => (n > 0 && n < 0.01 ? (n < 0.0005 ? "<$0.001" : `$${n.toFixed(3)}`) : usd(n));
+/** A role as shown: one line cut at 60, and the totals' own names told apart. */
+const roleName = (s: string) => {
+	const n = oneLine(s).slice(0, 60);
+	return /^Total( \(agents\))?$/.test(n) ? `${n} (role)` : n;
+};
+const bar = (sum: number, top: number) => (sum > 0 && top > 0 && Number.isFinite(sum / top) ? "█".repeat(Math.max(1, Math.round(10 * (sum / top)))) : "");
 
 const counts = (names: string[]) => {
 	const m = new Map<string, number>();
@@ -142,6 +164,19 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 	}
 	const models = counts(sp.map(e => e.model ?? "default"));
 	const total = (c: [string, number][]) => String(sum(c.map(x => x[1])));
+	const agents = input.agents ?? [];
+	const spend = group(agents);
+	const byRole = [...Map.groupBy(agents, a => a.role)]
+		.map(([role, a]) => ({ role, n: a.length, ...group(a) }))
+		.sort((a, b) => b.sum - a.sum || (a.role < b.role ? -1 : a.role > b.role ? 1 : 0));
+	const top = Math.max(0, ...byRole.map(r => r.sum));
+	// B: each local day's booking, so a run over several days books each of them.
+	const days = Map.groupBy(
+		evs.filter(e => Number.isFinite(time(e.ts))),
+		e => new Date(time(e.ts)).toDateString(),
+	);
+	const booked = sum([...days.values()].map(d => bookedMin(d, key) ?? 0));
+	const rate = booked > 0 && spend.any ? usd(spend.sum / (booked / 60)) : undefined;
 
 	const { apothecary: ap, review: rv } = input.reported ?? {};
 	const filled = (o: object | undefined) => o !== undefined && Object.values(o).some(v => v !== undefined);
@@ -185,6 +220,25 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 		"",
 		"Model requested: the selector Strategium asked of the host; the host may run another.",
 		"",
+		"## Cost",
+		"",
+		"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents'; cost does not. Agents only: the Captain's own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+		"",
+		...(agents.length
+			? [
+					...table(
+						["Agent", "Role", "Squad", "Tokens in", "Tokens out", "Cache", "Cost"],
+						agents.map(a => {
+							const cache = [a.cache_read, a.cache_write].filter(isCount);
+							return [cell(a.id), cell(a.role), cell(a.squad), tokens(a.tokens_in), tokens(a.tokens_out), cache.length ? String(sum(cache)) : "?", priced(a) ? agentUsd(a.cost!) : "?"];
+						}),
+					),
+					"",
+					...table(["Role", "Agents", "Cost", "Share"], [...byRole.map(r => [cell(roleName(r.role)), String(r.n), r.text, bar(r.sum, top)]), ["Total (agents)", String(agents.length), spend.text, "—"]]),
+					"",
+					...(rate ? [`Cost per booked hour: ${rate} (agents only; total ${spend.text} over ${booked} booked min${spend.some ? "; known agents only" : ""})`, ""] : []),
+				]
+			: ["None.", ""]),
 		...reported("Apothecary (reported)", ap, ["Mutants killed", "Survivors", "Fuzz crashes"], [ap?.killed, ap?.survived, ap?.crashes]),
 		...reported("Review (reported)", rv, ["Merge bar PASS", "Merge bar FAIL", "Findings opened", "Fixed", "NOT REPRODUCED"], [rv?.pass, rv?.fail, rv?.opened, rv?.fixed, rv?.not_reproduced]),
 	].join("\n");
@@ -196,6 +250,9 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 			`TIME ${sum(active)} min active, ${sum(paused)} min paused${rows.length ? `: ${rows.map((r, i) => `${oneLine(r.station)} ${active[i]}`).join(", ")}` : ""}`,
 			seals.length ? `SEALS ${seals.map(s => `${oneLine(s.id)} ${s.wait === undefined ? "—" : `${s.wait}m`}`).join(", ")}` : "SEALS none",
 			`SPAWNS ${total(roles)}${roles.length ? `: ${list(roles)}` : ""}`,
+			agents.length
+				? `COST (agents, list price) ${spend.text} · ${byRole.map(r => `${roleName(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
+				: "COST none",
 		],
 	};
 }
