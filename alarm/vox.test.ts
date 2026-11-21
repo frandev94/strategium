@@ -86,3 +86,15 @@ test("running vox with STRATEGIUM_SOUND=0 and no message synthesizes and plays n
 		rmSync(tmp, { recursive: true, force: true });
 	}
 });
+
+test("running vox with sound on and no audio player exits non-zero", () => {
+	const tmp = mkdtempSync(join(realpathSync(tmpdir()), "vox-test-"));
+	try {
+		// An empty PATH leaves no player to run; volume 0 keeps a regression silent.
+		const env = { SystemRoot: process.env.SystemRoot, STRATEGIUM_SOUND: "1", STRATEGIUM_VOLUME: "0", TMPDIR: tmp, TEMP: tmp, TMP: tmp, PATH: tmp };
+		const r = spawnSync(process.execPath, [join(import.meta.dir, "vox.ts"), "done"], { env: env as Record<string, string>, stdio: "ignore" });
+		expect(r.status).not.toBe(0);
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
+});
