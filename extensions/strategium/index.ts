@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -21,7 +21,7 @@ import {
 } from "./timer";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -79,7 +79,7 @@ type SessionCtx = {
 		custom?(factory: (tui: Tui, theme: unknown, keybindings: unknown, done: (result?: unknown) => void) => Component, options?: { overlay?: boolean; overlayOptions?: object }): unknown;
 	};
 	setInterval(fn: () => void, ms: number): unknown;
-	agent?: { kind?: string };
+	agent?: { kind?: string; id?: string };
 	isIdle(): boolean;
 	hasPendingMessages(): boolean;
 	getAsyncJobSnapshot(): { running: unknown[] } | null | undefined;
@@ -152,10 +152,61 @@ const runFile = (sid: string) => path.join(runsDir(), `${sid}.json`);
 const beatFile = (sid: string) => path.join(runsDir(), `${sid}.beat`);
 // The cockpit's chronicle, agent registry and squad marks, saved beside the run (not in it: see drawCockpit).
 const cockpitFile = (sid: string) => path.join(runsDir(), `${sid}.cockpit`);
+// What each subagent writes about itself, one file per agent id, and the pointer that tells a child (same pid) which session to write for.
+const liveDir = (sid: string) => path.join(runsDir(), `${sid}.live`);
+const pidFile = () => path.join(runsDir(), `${process.pid}.pid`);
 /** Remove everything a session left for its run. */
 const dropFiles = (sid: string) => {
-	for (const f of [runFile(sid), beatFile(sid), cockpitFile(sid)]) rmSync(f, { force: true });
+	// A file that cannot go (Windows holds one while a scanner reads it) must not keep the others, nor throw: leftovers without a run file are inert.
+	const drop = (f: string, opts?: { recursive: true; maxRetries: number }) => {
+		try {
+			rmSync(f, { force: true, ...opts });
+		} catch {
+			// Left behind.
+		}
+	};
+	for (const f of [runFile(sid), beatFile(sid), cockpitFile(sid)]) drop(f);
+	drop(liveDir(sid), { recursive: true, maxRetries: 3 });
 };
+/** Remove this process's pointer: always, or only when it names `only`. */
+const dropPointer = (only?: string) => {
+	try {
+		if (only === undefined || readFileSync(pidFile(), "utf8").trim() === only) rmSync(pidFile(), { force: true });
+	} catch {
+		// No pointer.
+	}
+};
+/** Remove the pointers (of any process) that name a session with no run file: a crash left them. */
+const sweepPointers = () => {
+	try {
+		for (const f of readdirSync(runsDir()).filter(f => f.endsWith(".pid"))) {
+			const sid = readFileSync(path.join(runsDir(), f), "utf8").trim();
+			if (!existsSync(runFile(sid))) rmSync(path.join(runsDir(), f), { force: true });
+		}
+	} catch {
+		// Stale pointers are inert anyway.
+	}
+};
+/** A live row's file in a session's `.live` dir; the agent id is encoded, it is not a path. */
+const liveFile = (sid: string, id: string) => path.join(liveDir(sid), `${encodeURIComponent(id).replaceAll("*", "%2A")}.json`); // encodeURIComponent already encodes <>:"|? but leaves `*`, which Windows refuses in a file name
+const LIVE_BYTES = 4096; // a live file is a few hundred bytes; a bigger one is not ours
+const LIVE_TEXT = 200;
+const STALL_MS = 5 * 60_000; // no tool call in flight and none ended for this long
+const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+/** What an agent wrote about itself (contract v1: `since` and `at` in ms; `busy` the tool calls in flight; the rest as `Live`). The file is untrusted: anything of another shape is undefined. */
+function readLive(sid: string, id: string): (Live & { busy?: number }) | undefined {
+	try {
+		const f = liveFile(sid, id);
+		if (statSync(f).size > LIVE_BYTES) return undefined;
+		const v = JSON.parse(readFileSync(f, "utf8"));
+		if (!v || typeof v !== "object" || !isCount(v.since) || !isCount(v.at)) return undefined;
+		if (["busy", "done", "total"].some(k => v[k] !== undefined && !isCount(v[k]))) return undefined;
+		if (["tool", "intent", "current"].some(k => v[k] !== undefined && typeof v[k] !== "string")) return undefined;
+		return v;
+	} catch {
+		return undefined;
+	}
+}
 
 /** Write through a temp file and rename, so a reader in another session never sees half a file. */
 function writeAtomic(file: string, data: string): void {
@@ -348,6 +399,7 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	// A run begun under another key still hands its hidden tools on, or end could never restore them.
 	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: keep ? keep.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
+	sweepPointers();
 	startKey(key, booked, spent, untimed);
 }
 
@@ -391,6 +443,7 @@ function endRun(sid: string, key?: string, takeover?: string): string {
 	stopKey(run.key);
 	release(stateDir(), run.key, sid);
 	dropFiles(run.sid);
+	dropPointer(sid);
 	return `ENDED ${run.key}`;
 }
 
@@ -915,7 +968,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			resetCockpit(key);
 			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP);
 			cockpit.notes = saved.notes;
-			for (const [id, job] of saved.deployed as [string, Deployed][]) cockpit.deployed.set(id, job);
+			for (const [id, job] of saved.deployed as [string, Deployed][]) {
+				// Hand-edited or damaged numbers are read as absent.
+				for (const k of ["at", "stalled"] as const) if (typeof job[k] !== "number") delete job[k];
+				cockpit.deployed.set(id, job);
+			}
 			cockpit.seal = saved.seal && { id: saved.seal.id, lines: saved.seal.lines.slice(0, SEAL_LINES).map((l: string) => l.slice(0, SEAL_LINE_CHARS)) };
 			cockpit.dirty = false;
 		} catch {
@@ -948,7 +1005,24 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	/** Rebuild the view from the run and the in-memory state, then repaint an open overlay. Never ticks the timer. */
 	const drawCockpit = (run: Run) => {
 		if (cockpit.key !== run.key) resetCockpit(run.key);
+		// What each active agent wrote about itself. A stalled one (no tool call in flight, none ended for 5 min) is logged once per `at`.
+		const now = Date.now();
+		const rows = new Map<string, Live>();
+		for (const [id, job] of cockpit.deployed) {
+			if (job.state !== "active") continue;
+			const raw = readLive(run.sid, id);
+			// A file older than this deploy is a previous agent's with the same id.
+			const row = raw && raw.since >= (job.at ?? 0) ? raw : undefined;
+			if (row) rows.set(id, row);
+			// The idle period starts at the last tool call; an agent with no live row has nothing to count from (it may be an eval spawn or another process), so it is never stalled.
+			const start = row?.at ?? 0;
+			if (!start || row?.busy || now - start < STALL_MS || job.stalled === start) continue;
+			job.stalled = start;
+			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
+		}
 		cockpit.view = cockpitView({
+			live: rows,
+			now,
 			key: run.key,
 			untimed: cockpit.clock?.bk ? undefined : run.untimed,
 			glyphs: process.env.STRATEGIUM_GLYPHS === "1",
@@ -991,9 +1065,17 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				(tui, _theme, _keys, done) => {
 					let frame = 0;
 					const timer = setInterval(() => {
-						frame++;
-						if (live) setAgentStatus(live); // the host's idle flag lags agent_end, and the last job ending sends no event
-						tui.requestRender();
+						try {
+							frame++;
+							if (live) setAgentStatus(live); // the host's idle flag lags agent_end, and the last job ending sends no event
+							// Every second frame the children's files are read again: at most once a second.
+							// readRun, not ownRun: a transient lock read failure must not drop the run.
+							const own = frame % 2 === 0 ? readRun(sidOf(ctx)) : undefined;
+							if (own) drawCockpit(own);
+							tui.requestRender();
+						} catch {
+							// A timer never throws; the next frame tries again.
+						}
 					}, 500);
 					const close = () => {
 						clearInterval(timer);
@@ -1896,14 +1978,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				// log first: it resets the cockpit when the run key changed, which would wipe a registry entry set before it.
 				if (!squad) {
 					log(run.key, agent.toUpperCase(), "deployed");
-					cockpit.deployed.set(p.id, { who: agent.toUpperCase(), role: agent, station, state: "active" });
+					cockpit.deployed.set(p.id, { who: agent.toUpperCase(), role: agent, station, state: "active", at: Date.now() });
 					continue;
 				}
 				const veteran = agent === "veteran";
 				const ic = icons(process.env.STRATEGIUM_GLYPHS === "1");
 				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} escalated to VETERAN` : `${ic.brother} battle-brother deployed`, veteran ? "fail" : undefined);
 				if (veteran) cockpit.notes[squad] = { ...cockpit.notes[squad], veteran: true };
-				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active" });
+				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active", at: Date.now() });
 			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
 		}
 		drawCockpit(run);
@@ -1929,13 +2011,79 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const id = typeof spawnKey === "string" && spawnKey ? spawnKey : `eval-${agent}-${cockpit.deployed.size + 1}`;
 		// The spawnKey is the agent's id: its job label and its eval status events, so the context hook above ends it.
 		// shortcut: an eval spawn without spawnKey has nothing to match its end, so it stays ▶ until the run key changes; upgrade if a host omits spawnKey.
-		cockpit.deployed.set(id, { who: agent.toUpperCase(), role: agent, station: activeStation(run.phases ?? []), state: "active" });
+		cockpit.deployed.set(id, { who: agent.toUpperCase(), role: agent, station: activeStation(run.phases ?? []), state: "active", at: Date.now() });
 		drawCockpit(run);
+	});
+
+	// The session that spawns children leaves a pointer for them (they share its pid); it goes with the session.
+	pi.on("before_subagent_spawn", (_e, ctx) => {
+		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager) return;
+		const sid = sidOf(ctx);
+		if (!ownRun(sid)) return dropPointer(); // a pointer left for another session must not send our agents' rows there
+		try {
+			writeAtomic(pidFile(), sid);
+		} catch {
+			// No pointer: the rows of its agents show elapsed time only.
+		}
+	});
+
+	// The subagent side of the live rows: this instance, in a child session, records what its agent does in runs/<sid>.live/<id>.json for the
+	// parent's cockpit to read. It never throws into the agent loop and writes at most once a second (one trailing write carries the latest state).
+	// shortcut: a child in another OS process reads no pointer (its pid differs) and writes nothing; upgrade if omp moves subagents out of process.
+	// shortcut: a lost tool_execution_end leaves `busy` up, so that agent never counts as stalled; upgrade if the host drops those events.
+	const LIVE_MS = 1000;
+	const mine = { since: 0, at: 0, busy: 0, wrote: 0, row: {} as Partial<Live>, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+	const cap = (s: string) => s.slice(0, LIVE_TEXT);
+	const recordLive = (ctx: { agent?: { kind?: string; id?: string } } | undefined, busy: number, row: Partial<Live>) => {
+		const id = ctx?.agent?.id;
+		if (ctx?.agent?.kind !== "sub" || !id) return;
+		try {
+			const now = Date.now();
+			mine.since ||= now;
+			mine.at = now;
+			mine.busy = Math.max(0, mine.busy + busy);
+			Object.assign(mine.row, row);
+			// A write is pending and carries the latest state: no pointer read, no stat.
+			if (mine.timer) return;
+			const sid = readFileSync(pidFile(), "utf8").trim();
+			// A pointer to a run that is gone is inert.
+			if (!/^[\w.-]+$/.test(sid) || !existsSync(runFile(sid))) return;
+			const write = () => {
+				clearTimeout(mine.timer);
+				mine.timer = undefined;
+				mine.wrote = Date.now();
+				try {
+					if (existsSync(runFile(sid))) writeAtomic(liveFile(sid, id), JSON.stringify({ since: mine.since, at: mine.at, busy: mine.busy, ...mine.row }));
+				} catch {
+					// The next update writes again.
+				}
+			};
+			if (now - mine.wrote >= LIVE_MS) write();
+			else {
+				mine.timer = setTimeout(write, LIVE_MS - (now - mine.wrote));
+				mine.timer.unref();
+			}
+		} catch {
+			// No pointer or no file: nothing to show.
+		}
+	};
+	pi.on("tool_execution_start", (e, ctx) => recordLive(ctx, 1, { tool: cap(bareName(e.toolName)), intent: typeof e.intent === "string" ? cap(e.intent) : undefined }));
+	pi.on("tool_execution_end", (_e, ctx) => recordLive(ctx, -1, {}));
+	pi.on("tool_result", (e, ctx) => {
+		const phases = (e.details as { phases?: unknown } | undefined)?.phases;
+		if (ctx?.agent?.kind !== "sub" || e.toolName.replace(/^_+/, "") !== "todo" || e.isError || !Array.isArray(phases)) return;
+		const tasks = phases.flatMap(p => (Array.isArray(p?.tasks) ? p.tasks : []) as { content?: unknown; status?: unknown }[]).filter(t => t?.status !== "abandoned");
+		const current = tasks.find(t => t?.status === "in_progress")?.content;
+		recordLive(ctx, 0, { done: tasks.filter(t => t?.status === "completed").length, total: tasks.length, current: typeof current === "string" ? cap(current) : undefined });
+	});
+	pi.on("session_shutdown", (_e, ctx) => {
+		if (ctx?.agent?.kind === "sub") clearTimeout(mine.timer);
 	});
 
 	pi.on("session_shutdown", (_e, ctx) => {
 		if (ctx?.agent?.kind === "sub") return;
 		cockpit.close?.();
 		resetCockpit();
+		if (ctx?.sessionManager) dropPointer(sidOf(ctx));
 	});
 }
