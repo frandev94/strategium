@@ -26,8 +26,9 @@ Read the PNG with `read` (it decodes images inline) and describe what you see: f
 | `scriptorium` (default) | station Scriptorium, seal `Plan` in progress | planning station, a seal waiting for the Chapter Master, later phases all pending |
 | `skirmish` | station Skirmish, task `Build squad alpha` | two live agents (AlphaBrother, GammaVeteran), one stopped slice (beta), a mix of completed/in_progress/pending tasks |
 | `timed` | scriptorium, a booked run (not `untimed`) | today's day file in the state dir has a `start` event with `booked: 240`, 10 minutes ago, as `startKey` writes it; used by `first-tick-clock` |
+| `restart` | skirmish station and agents, plus a saved cockpit (`runs/<sid>.cockpit`) | chronicle of 6 entries (seal, `SQUAD beta ✓ returned`, `SQUAD delta ✗ failed`...), deployed registry (active AlphaBrother and veteran GammaVeteran, done BetaBrother, failed DeltaBrother), notes `gamma` veteran and `delta` failed; used by `cockpit-restart` |
 
-Add a seed: add an entry to `SEEDS` with `phases` (list of `{name, tasks:[{content:"[role] Title", status}]}`), `where` (`station`, plus `seal` or `task`), `extra` (run-file fields such as `agents`, `stopped`) and optionally `timed: <booked min>`; the `choices` of `--seed` follow the dict. The run file shape is whatever `extensions/strategium/index.ts` reads from `STRATEGIUM_STATE_DIR/runs/<sid>.json`; if it changes, update the seeds. Seeds are data only, no layout logic.
+Add a seed: add an entry to `SEEDS` with `phases` (list of `{name, tasks:[{content:"[role] Title", status}]}`), `where` (`station`, plus `seal` or `task`), `extra` (run-file fields such as `agents`, `stopped`) and optionally `timed: <booked min>` or `cockpit: {chronicle, notes, deployed}` (written to `runs/<sid>.cockpit` with `key: KEY`, the file `extensions/strategium/index.ts` persists; `chronicle` oldest first, `deployed` as `[id, Deployed]` pairs); the `choices` of `--seed` follow the dict. The run file shape is whatever `extensions/strategium/index.ts` reads from `STRATEGIUM_STATE_DIR/runs/<sid>.json`; if it changes, update the seeds. Seeds are data only, no layout logic.
 
 ## Replays: regressions as scenarios
 
@@ -41,11 +42,11 @@ Each scenario starts its own omp in the ConPTY (work dir `work<suffix>-<name>`),
 Run against an **export** of a commit, never against a worktree that is changing. Put the short sha next to it as `<dir>.sha`; the table header prints it:
 
 ```
-git -C <repo> archive <rev> extensions skills package.json | tar -x -C %TEMP%\strategium-tui-shot\plugin-head
+git -C <repo> archive <rev> extensions skills alarm agents .omp-plugin package.json | tar -x -C %TEMP%\strategium-tui-shot\plugin-head
 git -C <repo> rev-parse --short <rev> > %TEMP%\strategium-tui-shot\plugin-head.sha
 ```
 
-`skills/` is needed: `index.ts` imports `skills/strategium/todo`.
+`skills/` is needed: `index.ts` imports `skills/strategium/todo`; `alarm/` too (`../../alarm/vox`): without it the extension never ticks.
 
 Kinds: `FIXED` (PASS = the fix holds), `KNOWN` (PASS = an omp limit shows up exactly as documented), `OPEN` (no fix yet: shown, never changes the exit code). The "before" proof of a fix is the same scenario against an export from before it (`plugin-a184d43` for R9/R10: `fullscreen-height` and `ask-behind-cockpit` must FAIL there).
 
@@ -69,12 +70,14 @@ Kinds: `FIXED` (PASS = the fix holds), `KNOWN` (PASS = an omp limit shows up exa
 | `capslock-altc` | R1 | KNOWN | Caps Lock + Alt+C opens no cockpit; omp shows `Nothing to copy` (its `app.clipboard.copyPrompt` matches first); the footer still shows the hint `ALT + C to enter cockpit`; `/strategium-cockpit`, the alternative, opens it |
 | `select-behind-cockpit` | R10 (rest) | KNOWN | a dialog opened with no `tool_call` (`/replay-select`) while the cockpit is open stays stuck: no value after `q` either; F9 cannot reach it |
 | `ponytail-notice` | R16 | OPEN | `Strategium loaded:` is in the stream when ponytail is loaded too |
+| `cockpit-restart` | #19 | FIXED | `restart` seed, cockpit open, omp killed and started again on the same state (`Run.restart()`): after the restart the CHRONICLE rows, the squad marks (▶ alpha, ✓ beta, veteran icon and ▶ gamma, ✗ delta) equal the ones before, and `runs/<sid>.cockpit` keeps the same number of chronicle entries. Against an export of `main` it must FAIL at `before: CHRONICLE rows contain the seeded entries` (main never reads the file). Run it alone, with `env -u __COMPAT_LAYER` when started from omp |
 
 Not replayable on screen: R11 (the code path is gone; `no-widget` covers its replacement), R15 (xterm.js DOM renderer artifact in the PNG; the text checks read the border cell itself), R17 (no expected value until the same screen is captured in Windows Terminal; `footer-hint` prints the last rows for that), R18 (subagent isolation, nothing on screen). Also not replayed: F9 on `tool_approval_requested`/`plan_review_requested` (needs approval or plan-mode settings; the index tests cover it) and F11 `AGENT AT WORK`/`PLAN REVIEW PENDING` (only the idle state).
 
 ### Add a scenario
 
 1. A `steps_<name>(R)` function drives the run: `R.open()` (Alt+C, then quiet), `R.key("esc"|"q"|"down"|"enter"|…)` (add a record to `KEYS`), `R.type_text(s)`, `R.send(raw)`, `R.resize(c, r)`, `R.wait_quiet(quiet, timeout)`, `R.wait_for(b"word", timeout)` (a word without spaces: ConPTY may paint a gap as a cursor move), `R.alt_open()` (last `?1049h`/`?1049l` in the stream), `R.sleep(s)`, `R.snap("checkpoint", png=True)`. The run is settled first (heartbeat and 2 s of quiet); `"settle": False` waits for the heartbeat only.
+   `R.restart()` kills omp (a crash, no shutdown hook), deletes the heartbeat, starts omp again with the same command, env and work dir (no reseed) and settles on the new process's first heartbeat. The stream stays one: the old bytes, a reset (`?1049l` + RIS), the new bytes; snapshots before and after the restart reach the checks as usual. Replays that restart must run alone.
 2. A `checks_<name>(C)` function: `C.s["checkpoint"]` is a `Snap` (`row(y)`, `at(y, x)`, `has(text)`, `where(text)`, `col_of(y, text)`, `last_col(y)`, `wide_cells()`, `framed()`, `type`, `cols`, `rows`); record with `C.ck(name, ok, got, want, snap)` (the snap is printed on failure); `C.log_has("tool_call", name="ask")` reads `replay.log`; `C.say(line)` prints a note.
 3. An entry in `REPLAYS`: `r`, `kind`, `seed`, optionally `ext: True` (fake provider), `ponytail: True`, `settle: False`. Never weaken a check to make a scenario pass: a FAIL on a fixed scenario is a finding.
 
