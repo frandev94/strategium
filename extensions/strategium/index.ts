@@ -470,17 +470,25 @@ function savedNotes(sid: string): Record<string, { failed?: true; veteran?: true
 }
 
 /** Build the run's debrief and save it under <state>/debriefs (kept after the run): the result lines for `end`. A failure never stops the end. */
-function writeDebrief(run: Run, reported?: Reported): string[] {
+function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note> } | undefined, clamp: boolean): string[] {
 	try {
-		const end = new Date();
+		const raw = eventsSince(run.key, run.since);
+		// After the last redraft only: an earlier build of a reused squad id is not this plan's, but still a spawn.
+		const mark = raw.map(e => e.event).lastIndexOf("redraft");
+		const evs = raw.map((e, i) => (i < mark && e.event === "spawn" && e.squad ? { ...e, squad: undefined } : e));
+		// A run stopped before `end` has no pause tail: its last interval closes at the stop (or at a later station entry). A takeover keeps it: the crash gap is real.
+		const lastSpan = !clamp ? undefined : raw.filter(e => e.event === "start" || e.event === "stop").at(-1);
+		const clampTo = lastSpan?.event === "stop" ? Math.max(...raw.filter(e => e === lastSpan || e.event === "station").map(e => new Date(e.ts).getTime())) : Number.NaN;
+		const now = new Date();
+		const end = Number.isFinite(clampTo) && clampTo < now.getTime() ? new Date(clampTo) : now;
 		const agents = Object.values(run.agents ?? {});
 		const stopped = new Set((run.stopped ?? []).map(s => s.id));
 		const running = new Set(agents.map(s => s.id));
 		const known = new Map<string, Slice>();
 		for (const s of [...(run.slices ?? []), ...(run.stopped ?? []), ...agents]) if (!known.has(s.id)) known.set(s.id, s);
 		const squads = [...known.values()].map(s => ({ id: s.id, ...(s.tier ? { tier: s.tier } : {}), state: running.has(s.id) ? ("running" as const) : stopped.has(s.id) ? ("stopped" as const) : ("not built" as const) }));
-		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs: eventsSince(run.key, run.since), squads, notes: savedNotes(run.sid), reported });
-		const file = path.join(stateDir(), "debriefs", `${safeName(run.key)}-${nowIso(end).slice(0, 19).replace(/:/g, "-")}.md`);
+		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported });
+		const file = path.join(stateDir(), "debriefs", `${safeName(run.key)}-${nowIso(now).slice(0, 19).replace(/:/g, "-")}.md`);
 		try {
 			writeAtomic(file, markdown);
 		} catch (err) {
@@ -493,7 +501,7 @@ function writeDebrief(run: Run, reported?: Reported): string[] {
 }
 
 /** End this session's run, or another session's run of `key` by naming that crashed session's id in `takeover`. */
-function endRun(sid: string, key?: string, takeover?: string, reported?: Reported): string {
+function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note> }): string {
 	// ownRun() may drop the run file, so ask for it once.
 	const mine = ownRun(sid);
 	const run = key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine;
@@ -506,7 +514,7 @@ function endRun(sid: string, key?: string, takeover?: string, reported?: Reporte
 	stopKey(run.key);
 	release(stateDir(), run.key, sid);
 	// After the last span is closed and before the run's files go: the debrief reads them.
-	const lines = writeDebrief(run, reported);
+	const lines = writeDebrief(run, reported, live, run.sid === sid);
 	dropFiles(run.sid);
 	dropPointer(sid);
 	return [`ENDED ${run.key}`, ...lines].join("\n");
@@ -1220,7 +1228,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	/** End the session's run. When it was its own, the tools come back and the Strategium theme plays; a takeover end does neither. */
 	async function finish(sid: string, ctx: SessionCtx, key?: string, takeover?: string, reported?: Reported): Promise<string> {
 		const mine = ownRun(sid);
-		const result = endRun(sid, key, takeover, reported);
+		const result = endRun(sid, key, takeover, reported, cockpit);
 		if (mine && result.split("\n", 1)[0] === `ENDED ${mine.key}`) {
 			await restoreTools(mine.hidden);
 			const err = alert(sid, "theme", `${mine.key}: run ended`, ctx);
@@ -1445,6 +1453,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 						if (!run) return text("ERROR no active run in this session");
 						if (run.redraft) return text(`ERROR the redraft of ${run.key} is spent (1 per run)`);
 						writeRun({ ...run, redraft: true, builds: undefined });
+						record({ event: "redraft", key: run.key });
 						return text(
 							`REDRAFT ${run.key}: back to Auspex; no librarian or archmagos until a scout spawned now has finished${run.archmagosSpawned ? "; then one more archmagos may be spawned" : ""}`,
 						);
@@ -1898,7 +1907,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		if (agent === "veteran") tier = "heavy";
 		else if (agent === "battle-brother") tier = tierFor(run, key, briefNames) ?? "standard";
 		const model = tier ? parseTiers(process.env.STRATEGIUM_TIERS).selectors[tier] : undefined;
-		record({ event: "spawn", key: run.key, role: agent, model: model ?? hostModel(), ...(tier ? { tier } : {}), ...(squad ? { squad: oneLine(squad).slice(0, 60) } : {}) });
+		record({ event: "spawn", key: run.key, role: agent, model: model ?? hostModel(), ...(tier ? { tier } : {}), ...(squad ? { squad } : {}) });
 		if (tier) return { model, note: `Strategium tier ${tier}` };
 	});
 

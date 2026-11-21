@@ -100,7 +100,7 @@ export function release(dir: string, key: string, sid: string): void {
  */
 export type Ev = {
 	ts: string;
-	event: "start" | "stop" | "alert" | "adjust" | "station" | "seal" | "spawn";
+	event: "start" | "stop" | "alert" | "adjust" | "station" | "seal" | "spawn" | "redraft";
 	key: string;
 	booked?: number;
 	prior?: number;

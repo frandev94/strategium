@@ -5635,7 +5635,7 @@ describe("the debrief at end", () => {
 			[
 				"# Debrief K-1",
 				"",
-				"Theatre github · 11-16 09:00 → 11-16 10:20 · plugin numbers are exact; (reported) sections come from the agents.",
+				"Theatre github · 11-16 09:00 → 11-16 10:20 · plugin numbers are exact except the Model requested column; (reported) sections come from the agents.",
 				"",
 				"## Time per station",
 				"",
@@ -5668,12 +5668,14 @@ describe("the debrief at end", () => {
 				"| scout | 1 |",
 				"| Total | 3 |",
 				"",
-				"| Model | Spawns |",
+				"| Model requested | Spawns |",
 				"|---|---|",
 				"| @smol | 1 |",
 				"| @smol:medium | 1 |",
 				"| anthropic/claude-opus-4 | 1 |",
 				"| Total | 3 |",
+				"",
+				"Model requested: the selector Strategium asked of the host; the host may run another.",
 				"",
 				"## Apothecary (reported)",
 				"",
@@ -5803,5 +5805,115 @@ describe("the debrief at end", () => {
 		ended(s, "bb1", "failed");
 		const out = await s.call({ action: "end" });
 		expect(readFileSync(out.split("\n")[1].slice("DEBRIEF ".length), "utf8")).toContain("| S1 | light | 1 | 0 | 0 | failed | stopped |");
+	});
+
+	const summary = (out: string) => out.split("\n").slice(2);
+	const mdOf = (out: string) => readFileSync(out.split("\n")[1].slice("DEBRIEF ".length), "utf8");
+
+	test("(j) the squad table counts two builders, the veteran, the running builder and an archmagos spawn that passed its guards", async () => {
+		process.env.STRATEGIUM_ARCHMAGOS = "1";
+		const s = setup();
+		at(9, 0);
+		await s.call({ action: "begin", key: "K-1", theatre: "github", archmagos: true });
+		await s.call({ action: "repo", repo: s.dir });
+		const libs = [{ agent: "librarian" }, { agent: "librarian" }];
+		s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: libs }, details: { progress: [{ index: 0, id: "L1", status: "completed" }, { index: 1, id: "L2", status: "completed" }] }, isError: false }, s.ctx));
+		expect(spawn(s, { agent: "archmagos" })?.block).toBeUndefined();
+		await s.call({ action: "slices", slices: squads });
+		spawn(s, { agent: "battle-brother", spawnKey: "S1" });
+		spawn(s, { agent: "battle-brother", spawnKey: "S1" });
+		spawn(s, { agent: "veteran", spawnKey: "S1" });
+		launched(s, "bb1");
+		ended(s, "bb1", "completed");
+		launched(s, "bb2");
+		// Both lists name S1 (a stale stop mark next to a live builder): the running builder wins.
+		const runFile = join(s.dir, "runs", "sess-0001.json");
+		writeFileSync(runFile, JSON.stringify({ ...JSON.parse(readFileSync(runFile, "utf8")), stopped: squads }));
+		at(9, 30);
+		const out = await s.call({ action: "end" });
+		expect(mdOf(out)).toContain("| S1 | light→standard→heavy | 2 | 1 | 1 | ok | running |");
+		expect(summary(out).at(-1)).toBe("SPAWNS 4: battle-brother 2, archmagos 1, veteran 1");
+	});
+
+	test("(k) a run across midnight counts the events of both days", async () => {
+		const s = setup();
+		setSystemTime(new Date(2026, 10, 16, 23, 50, 0));
+		await s.call({ action: "begin", key: "K-1", theatre: "github" });
+		spawn(s, { agent: "scout" });
+		setSystemTime(new Date(2026, 10, 17, 0, 10, 0));
+		spawn(s, { agent: "scout" });
+		setSystemTime(new Date(2026, 10, 17, 0, 20, 0));
+		const out = await s.call({ action: "end" });
+		expect(summary(out)).toEqual(["TIME 30 min active, 0 min paused: (before the todo) 30", "SEALS none", "SPAWNS 2: scout 2"]);
+		expect(mdOf(out)).toContain("11-16 23:50 → 11-17 00:20");
+	});
+
+	test("(l) a previous run of the same key, ended earlier the same day, is not counted", async () => {
+		const s = setup();
+		at(9, 0);
+		await s.call({ action: "begin", key: "K-1", theatre: "github" });
+		spawn(s, { agent: "scout" });
+		at(9, 30);
+		await s.call({ action: "end" });
+		at(10, 0);
+		await s.call({ action: "begin", key: "K-1", theatre: "github" });
+		spawn(s, { agent: "librarian" });
+		at(10, 30);
+		const out = await s.call({ action: "end" });
+		expect(summary(out)).toEqual(["TIME 30 min active, 0 min paused: (before the todo) 30", "SEALS none", "SPAWNS 1: librarian 1"]);
+	});
+
+	test("(m) a squad id longer than a table cell still counts its builder, and a spawnKey of no squad stores none", async () => {
+		const s = setup();
+		await begun(s);
+		const id = `S${"x".repeat(80)}`;
+		await s.call({ action: "slices", slices: [{ id, parallel: false, files: ["a.ts"], tier: "light" }] });
+		spawn(s, { agent: "battle-brother", spawnKey: id });
+		spawn(s, { agent: "battle-brother", spawnKey: "nothing-like-it" });
+		expect(events(s.dir).filter(e => e.event === "spawn").map(e => e.squad)).toEqual([id, undefined]);
+		at(9, 10);
+		expect(mdOf(await s.call({ action: "end" }))).toContain(`| ${id.slice(0, 60)} | light | 1 | 0 | 0 | ok | not built |`);
+	});
+
+	test("(n) a run stopped before end has no pause tail", async () => {
+		const s = setup();
+		await begun(s);
+		at(9, 10);
+		await s.call({ action: "stop" });
+		at(9, 40);
+		const out = await s.call({ action: "end" });
+		expect(summary(out)[0]).toBe("TIME 10 min active, 0 min paused: (before the todo) 10");
+		expect(mdOf(out)).toContain("→ 11-16 09:10");
+	});
+
+	test("(o) after a redraft a reused squad id counts only its new builds, the spawn totals keep all", async () => {
+		const s = setup();
+		await begun(s);
+		await s.call({ action: "slices", slices: squads });
+		spawn(s, { agent: "battle-brother", spawnKey: "S1" });
+		at(9, 10);
+		await s.call({ action: "redraft" });
+		expect(events(s.dir).filter(e => e.event === "redraft")).toHaveLength(1);
+		at(9, 20);
+		spawn(s, { agent: "battle-brother", spawnKey: "S1" });
+		at(9, 30);
+		const out = await s.call({ action: "end" });
+		expect(mdOf(out)).toContain("| S1 | light | 1 | 0 | 0 | ok | not built |");
+		expect(summary(out).at(-1)).toBe("SPAWNS 2: battle-brother 2");
+	});
+
+	test("(p) the last result comes from the cockpit in memory when the saved file is behind", async () => {
+		const s = setup();
+		await begun(s);
+		await s.call({ action: "slices", slices: squads });
+		spawn(s, { agent: "battle-brother", spawnKey: "S1" });
+		// The file cannot be rewritten: only memory knows the builder failed.
+		const file = join(s.dir, "runs", "sess-0001.cockpit");
+		rmSync(file, { force: true });
+		mkdirSync(file);
+		launched(s, "bb1");
+		at(9, 10);
+		ended(s, "bb1", "failed");
+		expect(mdOf(await s.call({ action: "end" }))).toContain("| S1 | light | 1 | 0 | 0 | failed | stopped |");
 	});
 });

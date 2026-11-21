@@ -39,6 +39,7 @@ describe("splitMinutes", () => {
 		expect(splitMinutes([20_000, 20_000, 20_000])).toEqual([1, 0, 0]);
 		expect(splitMinutes([])).toEqual([]);
 		expect(splitMinutes([0, 0])).toEqual([0, 0]);
+		expect(splitMinutes([10_000, 50_000])).toEqual([0, 1]);
 	});
 });
 
@@ -156,7 +157,7 @@ describe("debrief markdown", () => {
 			[
 				"# Debrief K",
 				"",
-				"Theatre github · 11-16 09:00 → 11-16 09:50 · plugin numbers are exact; (reported) sections come from the agents.",
+				"Theatre github · 11-16 09:00 → 11-16 09:50 · plugin numbers are exact except the Model requested column; (reported) sections come from the agents.",
 				"",
 				"## Time per station",
 				"",
@@ -190,12 +191,14 @@ describe("debrief markdown", () => {
 				"| veteran | 1 |",
 				"| Total | 4 |",
 				"",
-				"| Model | Spawns |",
+				"| Model requested | Spawns |",
 				"|---|---|",
 				"| @smol:medium | 2 |",
 				"| @slow:high | 1 |",
 				"| default | 1 |",
 				"| Total | 4 |",
+				"",
+				"Model requested: the selector Strategium asked of the host; the host may run another.",
 				"",
 				"## Apothecary (reported)",
 				"",
@@ -259,6 +262,51 @@ describe("debrief markdown", () => {
 			for (let j = i; lines[j]?.startsWith("|"); j++) expect(cells(lines[j])).toBe(width);
 		}
 		expect(r.summary.every(l => !l.includes("\n"))).toBe(true);
+	});
+
+	test("a backslash before a pipe cannot unescape it", () => {
+		const r = debrief(input([start(0), station(0, "a\\|b")]));
+		expect(r.markdown).toContain("| a\\\\\\|b |");
+	});
+
+	test("a station row with 0 active and 0 paused minutes is skipped, in the table and the summary", () => {
+		const r = debrief(input([start(0), station(0, "Empty"), station(0, "Work"), stop(10)], { end: at(10) }));
+		expect(r.markdown).not.toContain("Empty");
+		expect(r.markdown).toContain("| Work | 10 | 0 |");
+		expect(r.markdown).toContain("| Total | 10 | 0 |");
+		expect(r.summary[0]).toBe("TIME 10 min active, 0 min paused: Work 10");
+	});
+
+	test("asked, granted, asked again pairs the grant with the ask before it", () => {
+		const r = debrief(input([start(0), seal(5, "mr", "asked"), seal(8, "mr", "granted"), seal(20, "mr", "asked")]));
+		expect(section(r.markdown, "Seals")).toContain("| mr | 11-16 09:05 | 11-16 09:08 | 3 |");
+	});
+
+	test("Squads shows the tiers actually used, in order, and the planned tier when none was recorded", () => {
+		const r = debrief(
+			input(
+				[
+					start(0),
+					spawn(1, "battle-brother", { tier: "light", squad: "A" }),
+					spawn(2, "battle-brother", { tier: "standard", squad: "A" }),
+					spawn(3, "veteran", { tier: "heavy", squad: "A" }),
+				],
+				{ squads: [{ id: "A", tier: "light", state: "stopped" }, { id: "B", tier: "standard", state: "not built" }] },
+			),
+		);
+		expect(r.markdown).toContain("| A | light→standard→heavy | 2 | 1 | 1 |");
+		expect(r.markdown).toContain("| B | standard | 0 | 0 | 0 |");
+	});
+
+	test("builder spawns with no squad render as an (unmatched) row", () => {
+		const r = debrief(
+			input([start(0), spawn(1, "battle-brother"), spawn(2, "battle-brother"), spawn(3, "veteran"), spawn(4, "scout")], {
+				squads: [{ id: "A", state: "running" }],
+			}),
+		);
+		expect(r.markdown).toContain("| (unmatched) | — | 2 | 1 | 1 | — | — |");
+		const none = debrief(input([start(0), spawn(1, "scout")]));
+		expect(none.markdown).not.toContain("(unmatched)");
 	});
 
 	test("long names are cut at 60 characters", () => {

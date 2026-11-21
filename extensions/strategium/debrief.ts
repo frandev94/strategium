@@ -73,7 +73,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
 const stamp = (d: Date) => `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 const when = (ms: number | undefined) => (ms === undefined ? "—" : stamp(new Date(ms)));
 /** One table cell from untrusted text: one printable line, cut at 60, pipes escaped. */
-const cell = (s: unknown) => oneLine(s).slice(0, 60).replace(/\|/g, "\\|") || "—";
+const cell = (s: unknown) => oneLine(s).slice(0, 60).replace(/[\\|]/g, "\\$&") || "—";
 const row = (...c: (string | number)[]) => `| ${c.join(" | ")} |`;
 const table = (head: string[], body: string[][]) => [row(...head), `|${head.map(() => "---").join("|")}|`, ...body.map(r => row(...r))];
 const num = (n: number | undefined) => (n === undefined ? "—" : String(n));
@@ -87,9 +87,14 @@ const counts = (names: string[]) => {
 export function debrief(input: DebriefInput): { markdown: string; summary: string[] } {
 	const { key, end } = input;
 	const evs = input.evs.filter(e => e.key === key);
-	const rows = stationTimes(evs, key, end);
-	const active = splitMinutes(rows.map(r => r.activeMs));
-	const paused = splitMinutes(rows.map(r => r.pausedMs));
+	const all = stationTimes(evs, key, end);
+	const allActive = splitMinutes(all.map(r => r.activeMs));
+	const allPaused = splitMinutes(all.map(r => r.pausedMs));
+	// A row that rounds to 0 active and 0 paused is noise; its splits are 0, so the totals stay as they were.
+	const shown = all.map((_, i) => i).filter(i => allActive[i] || allPaused[i]);
+	const rows = shown.map(i => all[i]);
+	const active = shown.map(i => allActive[i]);
+	const paused = shown.map(i => allPaused[i]);
 	const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
 	const worked = (ev: Ev["event"]) => evs.filter(e => e.event === ev).reduce((n, e) => n + (e.prior ?? 0), 0);
 	const prior = worked("start");
@@ -109,6 +114,23 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 	const spawns = evs.filter(e => e.event === "spawn");
 	const runs = (role: string, squad: string) => spawns.filter(e => e.role === role && e.squad === squad).length;
 	const roles = counts(spawns.map(e => e.role ?? "unknown"));
+	const tiersOf = (squad: string, planned?: string) => {
+		const used = spawns.filter(e => e.squad === squad && e.tier).map(e => e.tier as string).filter((t, i, a) => t !== a[i - 1]);
+		return used.length ? used.join("→") : planned;
+	};
+	const known = new Set(input.squads.map(s => s.id));
+	const unmatched = spawns.filter(e => (e.role === "battle-brother" || e.role === "veteran") && !known.has(e.squad ?? ""));
+	const unmatchedBuilt = unmatched.filter(e => e.role === "battle-brother").length;
+	const squadRows = input.squads.map(s => {
+		const built = runs("battle-brother", s.id);
+		const last = input.notes[s.id]?.failed ? "failed" : built ? "ok" : "—";
+		const tier = tiersOf(s.id, s.tier);
+		return [cell(s.id), tier ? cell(tier) : "—", String(built), String(Math.max(0, built - 1)), String(runs("veteran", s.id)), last, s.state];
+	});
+	if (unmatched.length) {
+		const tiers = unmatched.map(e => e.tier).filter((t, i, a): t is string => !!t && t !== a[i - 1]);
+		squadRows.push(["(unmatched)", tiers.length ? cell(tiers.join("→")) : "—", String(unmatchedBuilt), String(Math.max(0, unmatchedBuilt - 1)), String(unmatched.length - unmatchedBuilt), "—", "—"]);
+	}
 	const models = counts(spawns.map(e => e.model ?? "default"));
 	const total = (c: [string, number][]) => String(sum(c.map(x => x[1])));
 
@@ -124,7 +146,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 	const md = [
 		`# Debrief ${cell(key)}`,
 		"",
-		`Theatre ${cell(input.theatre)} · ${input.since && Number.isFinite(time(input.since)) ? stamp(new Date(input.since)) : "today (start not recorded)"} → ${stamp(end)} · plugin numbers are exact; (reported) sections come from the agents.`,
+		`Theatre ${cell(input.theatre)} · ${input.since && Number.isFinite(time(input.since)) ? stamp(new Date(input.since)) : "today (start not recorded)"} → ${stamp(end)} · plugin numbers are exact except the Model requested column; (reported) sections come from the agents.`,
 		"",
 		"## Time per station",
 		"",
@@ -142,22 +164,17 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 		"",
 		"## Squads",
 		"",
-		...(input.squads.length
-			? table(
-					["Squad", "Tier", "Builder runs", "Penances", "Veteran runs", "Last result", "State"],
-					input.squads.map(s => {
-						const built = runs("battle-brother", s.id);
-						const last = input.notes[s.id]?.failed ? "failed" : built ? "ok" : "—";
-						return [cell(s.id), s.tier ? cell(s.tier) : "—", String(built), String(Math.max(0, built - 1)), String(runs("veteran", s.id)), last, s.state];
-					}),
-				)
+		...(squadRows.length
+			? table(["Squad", "Tier", "Builder runs", "Penances", "Veteran runs", "Last result", "State"], squadRows)
 			: ["None."]),
 		"",
 		"## Agents spawned",
 		"",
 		...table(["Role", "Spawns"], [...roles.map(([n, c]) => [cell(n), String(c)]), ["Total", total(roles)]]),
 		"",
-		...table(["Model", "Spawns"], [...models.map(([n, c]) => [cell(n), String(c)]), ["Total", total(models)]]),
+		...table(["Model requested", "Spawns"], [...models.map(([n, c]) => [cell(n), String(c)]), ["Total", total(models)]]),
+		"",
+		"Model requested: the selector Strategium asked of the host; the host may run another.",
 		"",
 		...reported("Apothecary (reported)", ap, ["Mutants killed", "Survivors", "Fuzz crashes"], [ap?.killed, ap?.survived, ap?.crashes]),
 		...reported("Review (reported)", rv, ["Merge bar PASS", "Merge bar FAIL", "Findings opened", "Fixed", "NOT REPRODUCED"], [rv?.pass, rv?.fail, rv?.opened, rv?.fixed, rv?.not_reproduced]),
