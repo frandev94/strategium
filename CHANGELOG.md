@@ -1,3 +1,22 @@
+## [0.2.31] - 2026-11-21
+
+### 🚀 Features
+
+- *(cockpit)* A keyboard cursor over lines and stations
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* A clean reopen and one even inverse block for the selection
+- *(cockpit)* Box windows remember their place; tighter CSI-u keys
+
+### 📚 Documentation
+
+- *(cockpit)* Describe the cockpit keys
+
+### 🧪 Testing
+
+- *(tooling)* Tui-shot replay of the cockpit cursor
+- *(cockpit)* The cursor is not saved to the cockpit file
 ## [0.2.30] - 2026-11-21
 
 ### 🚀 Features
