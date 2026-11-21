@@ -1,3 +1,12 @@
+## [0.2.20] - 2026-11-21
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* A rebuilt todo logs no station in the chronicle
+
+### 🧪 Testing
+
+- *(cockpit)* A rebuilt todo still logs a seal grant once
 ## [0.2.19] - 2026-11-21
 
 ### 🐛 Bug Fixes
