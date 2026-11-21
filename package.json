@@ -9,6 +9,7 @@
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": "18.22.0",
     "@types/bun": "^1.4.4",
+    "opentype.js": "2.0.0",
     "typescript": "^5"
   },
   "omp": { "extensions": ["./extensions/strategium/index.ts"] }
