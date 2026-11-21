@@ -1,6 +1,6 @@
 const USAGE = `Run the real omp + this plugin in a Windows ConPTY, seed a run, and screenshot what the user sees, or replay past regressions. Windows only.
 
-  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
+  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
                              [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png]
   bun tools/tui-shot/shot.ts --replay=NAME | --all  [--plugin=DIR] [--suffix=-x] [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png] [--all-png] [--keep-work]
 
@@ -25,7 +25,9 @@ const SID = "01a1eb00-0000-7000-8000-00000000d3a0", KEY = "demo-shot"; // the se
 // --- seeds: data only. Task text is "[role] Title"; status completed|in_progress|pending. To add one, add an entry here. ---
 type Task = { content: string; status: string };
 type Phase = { name: string; tasks: Task[] };
-type Seed = { where: Record<string, string>; extra: Record<string, unknown>; phases: Phase[]; timed?: number; cockpit?: Record<string, unknown> };
+type Seed = { where: Record<string, string>; extra: Record<string, unknown>; phases: Phase[]; timed?: number; cockpit?: Record<string, unknown>; live?: Record<string, LiveSeed> };
+// What a child writes in runs/<sid>.live/<agent id>.json (index.ts readLive, contract v1); since/at are minutes before the seed is written, the rest goes as is.
+type LiveSeed = { since: number; at: number; busy: number; done?: number; total?: number; current?: string; intent?: string; tool?: string };
 const t = (content: string, status: string): Task => ({ content, status });
 const sl = (id: string) => ({ id, parallel: true, files: [] });
 const MUSTER = { name: "Muster", tasks: [t("[captain] Begin run", "completed"), t("[captain] Orders", "completed")] };
@@ -76,6 +78,18 @@ SEEDS["seal-panel"] = { ...SEEDS.scriptorium, cockpit: { chronicle: [], notes: {
 	"Merge bar: AC3 seal panel", "Merge bar: AC4 tests follow the contract", "Merge bar: bun run check clean", "Merge bar: bun test 0 fail",
 	"Merge bar: regression replays PASS", "Merge bar: docs in step", "LONG-" + "x".repeat(195), "Merge bar: apothecary fuzz pass",
 	"Merge bar: PR closes #82", "line 13", "line 14"] } } };
+
+SEEDS.live = { // skirmish with three active agents and one task line, so every live row fits the box cap (8 lines)
+	...SEEDS.skirmish, extra: { agents: { AlphaBrother: sl("alpha"), GammaVeteran: sl("gamma"), DeltaBrother: sl("delta") }, stopped: [sl("beta")] },
+	phases: SEEDS.skirmish.phases.map(p => p.name === "Skirmish" ? { name: p.name, tasks: [t("[battle-brother] Build squad alpha", "in_progress")] } : p),
+	cockpit: { chronicle: [{ at: "10:01", who: "STRATEGOS", text: "station Skirmish" }], notes: {}, deployed: [
+		["AlphaBrother", { who: "AlphaBrother", role: "battle-brother", squad: "alpha", station: "Skirmish", state: "active" }],
+		["GammaVeteran", { who: "GammaVeteran", role: "veteran", squad: "gamma", station: "Skirmish", state: "active" }],
+		["DeltaBrother", { who: "DeltaBrother", role: "battle-brother", squad: "delta", station: "Skirmish", state: "active" }]] },
+	live: { // alpha: a todo (2 of 5, ETA); gamma: tool-free for 8 min (stalled); delta: no todo, only its last intent
+		AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, current: "Wire the live rows", tool: "edit", intent: "Editing cockpit.ts" },
+		GammaVeteran: { since: 20, at: 8, busy: 0, tool: "bash", intent: "Running the tests" },
+		DeltaBrother: { since: 3, at: 0, busy: 1, tool: "read", intent: "Reading the writer" } } };
 
 // --- args: argparse semantics (--x=v and --x v; --ponytail with an optional value), no prefix abbreviations ---
 export interface Args {
@@ -193,6 +207,7 @@ export class Run {
 			slices: ["alpha", "beta", "gamma", "delta"].map(sl), ...S.extra }));
 		if (S.cockpit) // the file index.ts writes (cockpit file contract: key, chronicle oldest first, notes, deployed [id, Deployed][])
 			writeFileSync(join(this.state, "runs", SID + ".cockpit"), JSON.stringify({ key: KEY, ...S.cockpit }));
+		if (S.live) this.writeLive(S.live);
 		if (S.timed) { // the day file startKey would have written: local date, local time with offset
 			const n = new Date(); n.setMilliseconds(0);
 			const midnight = new Date(n); midnight.setHours(0, 0, 0, 0);
@@ -214,6 +229,15 @@ export class Run {
 			this.env.STRATEGIUM_REPLAY_DIR = this.work;
 		}
 		this.launch();
+	}
+
+	/** Write (or rewrite) the child live files of the run, as a child's writeAtomic does. */
+	writeLive(rows: Record<string, LiveSeed>) {
+		const dir = join(this.state, "runs", SID + ".live");
+		mkdirSync(dir, { recursive: true });
+		const now = Date.now();
+		for (const [id, { since, at, ...rest }] of Object.entries(rows))
+			writeFileSync(join(dir, encodeURIComponent(id) + ".json"), JSON.stringify({ since: now - since * 60_000, at: now - at * 60_000, ...rest }));
 	}
 
 	/** The whole stream so far (bytes). */
@@ -840,6 +864,27 @@ function checksCockpitRestart(C: Ctx) {
 		C.R.notes.before != null && C.R.notes.after === C.R.notes.before, C.R.notes, null);
 }
 
+async function stepsAgentLive(R: Run) {
+	await openSnap(R);
+	// The children go on: alpha finishes another todo item, delta starts another tool (gamma's file stays, so its stall is logged once); the parent redraws from its overlay timer.
+	R.writeLive({ AlphaBrother: { since: 10, at: 0, busy: 1, done: 3, total: 5, current: "Cover it with tests" }, DeltaBrother: { since: 3, at: 0, busy: 1, tool: "grep", intent: "Searching the reader" } });
+	await R.sleep(8);
+	await R.snap("after", true);
+}
+/** The row that follows the squad line of `squad` (live rows sit under the agent's line). */
+const liveRowOf = (s: Snap, squad: string) => {
+	const y = s.rowsText.findIndex(r => new RegExp(`squad ${squad} forging`).test(r));
+	return y < 0 ? "" : s.row(y + 1);
+};
+function checksAgentLive(C: Ctx) {
+	const o = snapOf(C, "open"), a = snapOf(C, "after");
+	C.ck("open: alpha row is elapsed · done/total · ~ETA · current", /10m · 2\/5 · ~\d+m · Wire the live rows/.test(liveRowOf(o, "alpha")), liveRowOf(o, "alpha"), "10m · 2/5 · ~16m · Wire the live rows", o);
+	C.ck("open: delta row is elapsed · intent (no todo)", /3m · Reading the writer/.test(liveRowOf(o, "delta")) && !/\d\/\d/.test(liveRowOf(o, "delta")), liveRowOf(o, "delta"), "3m · Reading the writer", o);
+	C.ck("open: gamma row starts with stalled 8m", /stalled 8m · 20m · Running the tests/.test(liveRowOf(o, "gamma")), liveRowOf(o, "gamma"), "stalled 8m · 20m · Running the tests", o);
+	C.ck("after: alpha row moved to 3/5 without reopening", /3\/5 · ~\d+m · Cover it with tests/.test(liveRowOf(a, "alpha")), liveRowOf(a, "alpha"), "3/5 · ~… · Cover it with tests", a);
+	C.ck("after: delta row shows its new intent", /Searching the reader/.test(liveRowOf(a, "delta")), liveRowOf(a, "delta"), "Searching the reader", a);
+}
+
 // name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, settle (false: wait only for the first heartbeat), steps, checks
 type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
 export const REPLAYS: Record<string, Replay> = {
@@ -862,6 +907,7 @@ export const REPLAYS: Record<string, Replay> = {
 	"capslock-altc": { r: "R1", kind: "KNOWN", seed: "scriptorium", steps: stepsCapslock, checks: checksCapslock },
 	"select-behind-cockpit": { r: "R10", kind: "KNOWN", seed: "scriptorium", ext: true, steps: stepsSelect, checks: checksSelect },
 	"ponytail-notice": { r: "R16", kind: "OPEN", seed: "scriptorium", ponytail: true, settle: false, steps: stepsPonytail, checks: checksPonytail },
+	"agent-live": { r: "R20,#114", kind: "FIXED", seed: "live", steps: stepsAgentLive, checks: checksAgentLive },
 	"cockpit-restart": { r: "#19", kind: "FIXED", seed: "restart", steps: stepsCockpitRestart, checks: checksCockpitRestart },
 };
 
