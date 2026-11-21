@@ -4775,12 +4775,103 @@ describe("cockpit", () => {
 				const c = child(s);
 				c.todo(2, 5, "Write tests");
 				at(10 * MIN);
+				const base = readLive(s); // each bad value is tried alone on a good row, not carried to the next
 				for (const bad of [{ eta_min: -1 }, { pct: 101 }, { blocked: "yes" }, { line: 5 }]) {
-					writeFileSync(liveFile(s), JSON.stringify({ ...readLive(s), line: "kept?", ...bad }));
+					writeFileSync(liveFile(s), JSON.stringify({ ...base, line: "kept?", ...bad }));
 					const t = await peek(s, ui);
 					expect(t).not.toContain("kept?");
 					expect(t).not.toContain("2/5");
 				}
+			});
+
+			test("signal sanitises the line and caps it at 200 characters", async () => {
+				const { s } = await squad();
+				const c = child(s);
+				expect(await c.call({ action: "signal", line: `\x1b[31m${"w".repeat(300)}` })).toBe("SIGNAL ok");
+				const line = readLive(s).line as string;
+				expect(line).not.toContain("\x1b");
+				expect(line).toHaveLength(200);
+			});
+
+			test("blocked: true without a line, or with one that cleans to nothing, returns ERROR and writes nothing", async () => {
+				const { s } = await squad();
+				const c = child(s);
+				for (const line of [undefined, "", "\x1b[0m"]) {
+					expect(await c.call({ action: "signal", blocked: true, ...(line === undefined ? {} : { line }) })).toMatch(/^ERROR signal blocked: true needs a non-empty line/);
+				}
+				expect(existsSync(liveFile(s, "A"))).toBe(false);
+			});
+
+			test("a sub with no agent id is refused", async () => {
+				const { s } = await squad();
+				expect(await child(s).call({ action: "signal", line: "x" }, { ...s.ctx, agent: { kind: "sub" } })).toBe("ERROR signal needs the caller's agent id");
+				expect(existsSync(liveFile(s, "A"))).toBe(false);
+			});
+
+			test("a tool starting clears the block on its own, and the stall rule applies again", async () => {
+				const { s, ui, c } = await blockedChild();
+				await c.call({ action: "signal", blocked: true, line: "need the API shape" });
+				expect(top(await peek(s, ui))).toContain("blocked · ");
+				c.start("read");
+				at(2000); // past the 1 s throttle, so the end is written
+				c.end("read");
+				expect(readLive(s).blocked).toBeUndefined();
+				at(2000 + 6 * MIN);
+				expect(top(await peek(s, ui))).not.toContain("blocked · ");
+				expect(await chron(s, ui)).toContain("stalled 6m");
+			});
+
+			test("a signal in the same call as the tool start can block again", async () => {
+				const { s, c } = await blockedChild();
+				await c.call({ action: "signal", blocked: true, line: "one" });
+				c.start("strategium");
+				await c.call({ action: "signal", blocked: true, line: "two" });
+				expect(readLive(s)).toMatchObject({ blocked: true, line: "two" });
+			});
+
+			test("block, unblock, block within 60 s rings once and logs twice; after 60 s it rings again", async () => {
+				const { s, ui, c } = await blockedChild();
+				const block = async (line: string) => {
+					await c.call({ action: "signal", blocked: true, line });
+					await peek(s, ui);
+				};
+				const unblock = async () => {
+					await c.call({ action: "signal", line: "go on" });
+					await peek(s, ui);
+				};
+				await block("first");
+				await unblock();
+				at(10_000);
+				await block("second");
+				expect(alarmLines()).toEqual(["attention|K-1: SQUAD a is blocked: first"]);
+				expect((await chron(s, ui)).match(/blocked: /g)).toHaveLength(2);
+				await unblock();
+				at(61_000);
+				await block("third");
+				expect(alarmLines()).toEqual(["attention|K-1: SQUAD a is blocked: first", "attention|K-1: SQUAD a is blocked: third"]);
+			});
+
+			test("a failing alarm for a block is told to the user", async () => {
+				const { s, ui, c } = await blockedChild();
+				failAlarm();
+				await c.call({ action: "signal", blocked: true, line: "need the API shape" });
+				await peek(s, ui);
+				expect(s.notes.some(n => n.includes("spawn failed: missing alarm"))).toBe(true);
+			});
+
+			test("a saved blocked that is not true is dropped on load, so the live block rings again", async () => {
+				const { s, ui, c } = await blockedChild();
+				await c.call({ action: "signal", blocked: true, line: "need the API shape" });
+				await peek(s, ui);
+				const doc = saved(s);
+				doc.deployed.find((d: [string, unknown]) => d[0] === "A")[1].blocked = "yes";
+				writeFileSync(join(s.dir, "runs", "sess-0001.cockpit"), JSON.stringify(doc));
+				const again = setup("sess-0001", s.dir); // setup resets the alarm spy
+				const ui2 = uiCtx(again);
+				await again.start();
+				again.todo([{ name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
+				await peek(again, ui2);
+				expect(alarmLines()).toHaveLength(1);
 			});
 
 			test("a child with no pointer gets ignored", async () => {
@@ -4831,6 +4922,7 @@ describe("cockpit", () => {
 				await peek(s, ui);
 				await c.call({ action: "signal", line: "go on" });
 				expect(top(await peek(s, ui))).not.toContain("blocked · ");
+				at(61_000); // past the 60 s alarm cooldown
 				await c.call({ action: "signal", blocked: true, line: "need a decision" });
 				await peek(s, ui);
 				expect(alarmLines()).toEqual(["attention|K-1: SQUAD a is blocked: need the API shape", "attention|K-1: SQUAD a is blocked: need a decision"]);
@@ -4865,6 +4957,7 @@ describe("cockpit", () => {
 				at(1000);
 				await c.call({ action: "signal", line: "one" });
 				at(1200);
+				c.start("strategium"); // a tool start inside the throttle window must not hold the block back
 				await c.call({ action: "signal", blocked: true, line: "need the API shape" });
 				expect(readLive(s)).toMatchObject({ blocked: true, line: "need the API shape" });
 				at(1300);

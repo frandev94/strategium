@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { LEVELS, RATE, type Level, channels, synth, volume } from "./vox";
+import { LEVELS, RATE, type Level, channels, escapeMarkup, synth, volume } from "./vox";
 
 const samples = (level: Level, vol?: number) => {
 	const w = synth(level, vol);
@@ -53,6 +53,10 @@ test.each([
 	[undefined, 20], ["", 20], ["loud", 20], ["30", 30], [" 80 ", 80], ["150", 100], ["-5", 0], ["33.6", 34],
 ])("volume(STRATEGIUM_VOLUME=%p) is %p", (v, want) => {
 	expect(volume({ STRATEGIUM_VOLUME: v })).toBe(want);
+});
+
+test("escapeMarkup escapes &, < and > for libnotify, & first", () => {
+	expect(escapeMarkup("a & b <i>x</i> &lt;")).toBe("a &amp; b &lt;i&gt;x&lt;/i&gt; &amp;lt;");
 });
 
 test("channels: no toast without a message", () => {

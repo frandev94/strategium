@@ -1005,6 +1005,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.view = { ...cockpit.view!, status: cockpit.status };
 		cockpit.overlay.requestRender();
 	};
+	const BLOCK_COOLDOWN_MS = 60_000;
+	const blockRang = new Map<string, number>();
 	/** Rebuild the view from the run and the in-memory state, then repaint an open overlay. Never ticks the timer. */
 	const drawCockpit = (run: Run, ctx?: SessionCtx) => {
 		if (cockpit.key !== run.key) resetCockpit(run.key);
@@ -1022,14 +1024,20 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				delete job.blocked;
 				cockpit.dirty = true;
 			}
+			// shortcut: a block undone before the parent's next read (≤1 s with the cockpit open, ≤60 s closed) is never seen; upgrade if agents unblock themselves that fast.
 			if (row?.blocked === true) {
 				// Once per transition, and only when a ctx can sound it, so the transition is never used up without its alarm. A blocked row said why it waits: never stalled.
 				if (ctx && !job.blocked) {
 					job.blocked = true;
 					const line = cap(oneLine(row.line));
 					log(run.key, job.who, line ? `blocked: ${line}` : "blocked", "warn");
-					const err = alert(run.sid, "attention", `${run.key}: ${job.who} is blocked${line ? `: ${line}` : ""}`, ctx);
-					if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+					// At most one alarm per agent a minute: a block, unblock, block loop is logged each time but rings once.
+					const rang = blockRang.get(`${run.sid}/${id}`) ?? -BLOCK_COOLDOWN_MS;
+					if (now - rang >= BLOCK_COOLDOWN_MS) {
+						blockRang.set(`${run.sid}/${id}`, now);
+						const err = alert(run.sid, "attention", `${run.key}: ${job.who} is blocked${line ? `: ${line}` : ""}`, ctx);
+						if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+					}
 				}
 				continue;
 			}
@@ -1382,6 +1390,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 						if (pct === undefined && eta_min === undefined && line === undefined && blocked === undefined) return text("ERROR signal needs pct, eta_min, line or blocked");
 						if ((pct !== undefined && (!isCount(pct) || pct > 100)) || (eta_min !== undefined && (!isCount(eta_min) || eta_min > 10080)) || (line !== undefined && typeof line !== "string") || (blocked !== undefined && typeof blocked !== "boolean"))
 							return text("ERROR signal takes pct 0-100, eta_min 0-10080, line text, blocked true or false");
+						if (blocked && !cap(oneLine(line))) return text("ERROR signal blocked: true needs a non-empty line saying what you wait for: the Captain reads it in the alarm");
 						// A change of blocked is written at once: the Captain must not wait for the 1 s throttle to hear it.
 						const ok = recordLive(ctx, 0, { pct, eta_min, line: cap(oneLine(line)) || undefined, blocked: blocked || undefined }, !!blocked !== mine.wroteBlocked);
 						return text(ok ? "SIGNAL ok" : "SIGNAL ignored (no Strategium run)");
@@ -2109,7 +2118,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			return false;
 		}
 	};
-	pi.on("tool_execution_start", (e, ctx) => void recordLive(ctx, 1, { tool: cap(bareName(e.toolName)), intent: typeof e.intent === "string" ? cap(e.intent) : undefined }));
+	// A tool starting means the agent is working again: a block clears on its own (a later signal in the same call may set it again), and is written at once like any change of blocked.
+	pi.on("tool_execution_start", (e, ctx) => void recordLive(ctx, 1, { tool: cap(bareName(e.toolName)), intent: typeof e.intent === "string" ? cap(e.intent) : undefined, blocked: undefined }, !!mine.row.blocked));
 	pi.on("tool_execution_end", (_e, ctx) => void recordLive(ctx, -1, {}));
 	pi.on("tool_result", (e, ctx) => {
 		const phases = (e.details as { phases?: unknown } | undefined)?.phases;
