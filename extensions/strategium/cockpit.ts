@@ -3,7 +3,7 @@ import { AGENTS } from "../../skills/strategium/todo";
 import { DEFAULT_THEME, THEMES, type Theme, type Tone } from "./themes";
 
 export type Phase = { name: string; tasks: { content: string; status: string }[] };
-export type Seal = { id: string; name: string; state: "granted" | "waiting" | "pending" };
+export type Seal = { id: string; state: "granted" | "waiting" | "pending" };
 export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" };
 export type Note = { veteran?: true; failed?: true };
 export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed" }; // station: its name at spawn; undefined with no phases
@@ -21,6 +21,7 @@ export type ViewInput = {
 	notes: Record<string, Note>;
 	clock?: { running: boolean; el: number; bk?: number }; // bk undefined: untimed, or no booking today
 	chronicle: Entry[];
+	seal?: { id: string; lines: string[] }; // what the Captain prepared for the seal that waits (the `seal` action); shown only while that seal waits
 	glyphs?: boolean; // Nerd Font glyphs (STRATEGIUM_GLYPHS=1) instead of plain symbols; never emoji
 	status?: "working" | "awaiting"; // what the main agent is doing: a turn runs, or the prompt is free for the user's orders
 };
@@ -49,14 +50,23 @@ export function palette(depth: Depth, theme: Theme = THEMES[DEFAULT_THEME]): Pal
 	return bg ? { ...pal, bg: Bun.color(bg, fmt)!.replace("[38;", "[48;") as Ansi } : pal;
 }
 
+/** Text from the model or a file, made safe to print: control characters (ESC, TAB, CR, LF, DEL, C1), bidi overrides and line/paragraph separators become spaces. */
+export const clean = (s: string) => s.replace(/[\p{Cc}\u202a-\u202e\u2066-\u2069\u2028\u2029]/gu, " ");
+
 export function sealsFrom(phases: Phase[]): Seal[] {
 	const out: Seal[] = [];
 	for (const t of phases.flatMap(p => p.tasks)) {
 		const id = t.content.match(SEAL_TAG)?.[1];
-		if (id) out.push({ id, name: id.split(/\s+/)[0], state: t.status === "completed" ? "granted" : t.status === "in_progress" ? "waiting" : "pending" });
+		if (id) out.push({ id, state: t.status === "completed" ? "granted" : t.status === "in_progress" ? "waiting" : "pending" });
 	}
 	return out;
 }
+
+/** The seal that waits for the user: the first in_progress task of the first phase that has one, if it is a seal. */
+export const waitingSeal = (phases: Phase[]): Seal | undefined => {
+	const task = phases.find(p => p.tasks.some(t => t.status === "in_progress"))?.tasks.find(t => t.status === "in_progress");
+	return task && sealsFrom([{ name: "", tasks: [task] }])[0];
+};
 
 /** Seals that were in `before` and not completed, and are completed in `after`. */
 export function grantedSeals(before: Phase[] | undefined, after: Phase[]): Seal[] {
@@ -119,7 +129,6 @@ const BOXES: BoxDef[] = [
 	{ title: "SECURITY-REVIEWER", tags: ["security-reviewer"], icon: "securityReviewer" },
 	{ title: "SONIC", tags: ["sonic"], icon: "sonic" },
 	{ title: "ADEPTS", tags: ["task"], icon: "task" },
-	{ title: "SEAL", tags: ["seal"], icon: "sealOn", tone: "gold" },
 ];
 
 /** Agent icons. A Nerd glyph carries one trailing space; `label` adds the gap, so fonts that draw it two cells wide overflow into it. */
@@ -158,11 +167,14 @@ export function cockpitView(input: ViewInput) {
 	const phase = phases.at(at); // at is -1 with no phases: undefined
 
 	const doing = phase?.tasks.find(t => t.status === "in_progress");
-	const sealName = doing && sealsFrom([{ name: phase!.name, tasks: [doing] }])[0]?.name;
+	const waiting = waitingSeal(phases);
 	const back = !!doing && phases.slice(at + 1).some(p => p.tasks.some(t => t.status === "completed"));
 	const station: { kind: Kind; mark: string; name: string; note?: string } = !phase
 		? { kind: "idle", mark: "○", name: "no station yet" }
-		: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: phase.name, ...(sealName ? { note: label(ic.seal, `seal ${sealName} awaits you`) } : {}) };
+		: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: phase.name, ...(waiting ? { note: label(ic.seal, `seal ${clean(waiting.id)} awaits you`) } : {}) };
+	const lines = waiting && input.seal?.id === waiting.id ? input.seal.lines.map(l => clean(l).trimEnd()) : [];
+	const prepared = lines.some(l => l.trim()) ? lines : undefined;
+	const panel = waiting && { title: label(ic.sealWait, `SEAL ${clean(waiting.id).toUpperCase()} · awaits you`), lines: prepared ?? ["the details are in the Captain's message"], prepared: !!prepared };
 
 	const ids = [...new Set([...(input.slices ?? []), ...(input.stopped ?? [])].map(s => s.id))];
 	const building = new Set(Object.values(input.agents ?? {}).map(s => s.id));
@@ -219,24 +231,30 @@ export function cockpitView(input: ViewInput) {
 		}
 	}
 
-	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases), station, boxes, chronicle: [...input.chronicle].reverse() };
+	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, boxes, chronicle: [...input.chronicle].reverse() };
 }
 
 const paint = (c: string, s: string) => c + s + RESET;
 const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - Bun.stringWidth(s)));
+
+const GRAPHEMES = new Intl.Segmenter();
 
 /** Cut to `width` cells, keeping ANSI sequences whole and ending in `…` when something was dropped. */
 function fit(line: string, width: number): string {
 	if (Bun.stringWidth(line) <= width) return line;
 	let out = "";
 	let w = 0;
-	for (const [tok] of line.matchAll(/\x1b\[[0-9;]*m|[^]/gu)) {
-		const tw = tok.startsWith("\x1b") ? 0 : Bun.stringWidth(tok);
-		if (w + tw > width - 1) break;
-		out += tok;
-		w += tw;
+	// Per grapheme: a VS16 emoji or a ZWJ sequence is one glyph, wider than the sum of its code points.
+	for (const [tok] of line.matchAll(/\x1b\[[0-9;]*m|[^\x1b]+|\x1b/gu)) {
+		const parts = tok.startsWith("\x1b") ? [tok] : [...GRAPHEMES.segment(tok)].map(g => g.segment);
+		for (const part of parts) {
+			const tw = part.startsWith("\x1b") ? 0 : Bun.stringWidth(part);
+			if (w + tw > width - 1) return `${out}…${RESET}`;
+			out += part;
+			w += tw;
+		}
 	}
-	return `${out}…${RESET}`;
+	return line;
 }
 
 const kindTone: Record<Kind, Tone> = { active: "green", done: "green", failed: "red", idle: "iron" };
@@ -245,14 +263,24 @@ const mark = (k: Kind, m: string, frame: number) => (k === "active" && m === "�
 const markText = (k: Kind, m: string, text: string, pal: Palette, frame = 0) =>
 	`${paint(pal[kindTone[k]], mark(k, m, frame))} ${paint(pal[k === "active" || k === "done" ? "parchment" : kindTone[k]], text)}`;
 
+/** The run's seals in todo order as a chain; no seals, no row (the callers skip it). */
 function sealsText(seals: Seal[], pal: Palette, ic: View["ic"]): string {
-	if (!seals.length) return paint(pal.iron, "—");
 	return seals
 		.map(s => {
 			const sym = s.state === "pending" ? paint(pal.iron, "○") : paint(pal.gold, s.state === "granted" ? ic.sealOn : ic.sealWait);
-			return `${sym} ${paint(pal.parchment, s.name)}`;
+			return `${sym} ${paint(pal.parchment, s.id)}`;
 		})
-		.join("  ");
+		.join(paint(pal.iron, " → "));
+}
+
+const SEAL_CAP = 12;
+// shortcut: a panel taller than the window is cut from the bottom by withHeight; upgrade with the navigable cockpit (#13).
+/** The seal panel as a box: its lines parchment when prepared, else the default line in iron; past SEAL_CAP the first SEAL_CAP - 1 and an iron "+k more". */
+function sealBox(panel: NonNullable<View["panel"]>, pal: Palette): Box {
+	const over = panel.lines.length > SEAL_CAP;
+	const shown = (over ? panel.lines.slice(0, SEAL_CAP - 1) : panel.lines).map(l => paint(panel.prepared ? pal.parchment : pal.iron, l));
+	if (over) shown.push(paint(pal.iron, `+${panel.lines.length - SEAL_CAP + 1} more`));
+	return { title: panel.title, lines: shown, tone: "gold" };
 }
 
 function clockText(clock: View["clock"], pal: Palette, bar: boolean): string {
@@ -271,7 +299,7 @@ const statusText = (status: View["status"], pal: Palette, frame: number): string
 
 const entryLine = (e: Entry, pal: Palette) => {
 	const tone: Tone = e.tone === "ok" ? "green" : e.tone === "fail" ? "red" : e.tone === "seal" ? "gold" : "parchment";
-	return `${paint(pal.iron, e.at)}  ${paint(pal.parchment, pad(e.who, 11))} ${paint(pal[tone], e.text)}`;
+	return `${paint(pal.iron, e.at)}  ${paint(pal.parchment, pad(clean(e.who), 11))} ${paint(pal[tone], clean(e.text))}`;
 };
 
 type Box = { title: string; lines: string[]; tone: Tone };
@@ -333,15 +361,17 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	const s = view.station;
 	const station = markText(s.kind, s.mark, s.name, pal, frame) + (s.note ? ` · ${paint(pal.gold, s.note)}` : "");
 	const boxes = (cap: number): Box[] => view.boxes.map(b => ({ title: b.title, lines: boxLines(b.lines, cap, pal, frame), tone: b.tone }));
+	const box = view.panel && sealBox(view.panel, pal);
 
 	if (width < 72) {
 		const body = [
 			`${paint(pal.gold, "✠ STRATEGIUM")} · ${paint(pal.parchment, view.key)}`,
 			clockText(view.clock, pal, false),
 			...statusText(view.status, pal, frame),
-			`${paint(pal.gold, "SEALS")} ${sealsText(view.seals, pal, view.ic)}`,
+			...(view.seals.length ? [`${paint(pal.gold, "SEALS")} ${sealsText(view.seals, pal, view.ic)}`] : []),
 			station,
-			...boxes(boxCap(height, 6 + statusText(view.status, pal, frame).length, view.boxes.length, 1)).flatMap(b => [paint(pal.gold, b.title), ...b.lines.map(l => `  ${l}`)]),
+			...(box ? [paint(pal.gold, box.title), ...box.lines.map(l => `  ${l}`)] : []),
+			...boxes(boxCap(height, 5 + (view.seals.length ? 1 : 0) + (box ? box.lines.length + 1 : 0) + statusText(view.status, pal, frame).length, view.boxes.length, 1)).flatMap(b => [paint(pal.gold, b.title), ...b.lines.map(l => `  ${l}`)]),
 			paint(pal.gold, "CHRONICLE"),
 		];
 		return withHeight(body, view.chronicle.map(e => entryLine(e, pal)), "", paint(pal.iron, "esc/q close"), height).map(l => fit(l, width));
@@ -352,7 +382,8 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	const row = (content: string) => `${g("║")}${pad(fit(content, inner), inner)}${g("║")}`;
 	const left = " " + clockText(view.clock, pal, true);
 	const right = `${g("SEALS")} ${sealsText(view.seals, pal, view.ic)} `;
-	const head = [...(Bun.stringWidth(left) + Bun.stringWidth(right) < inner ? [row(left + " ".repeat(inner - Bun.stringWidth(left) - Bun.stringWidth(right)) + right)] : [row(left), row(` ${right}`)]), ...statusText(view.status, pal, frame).map(l => row(` ${l}`))];
+	const clockRow = !view.seals.length ? [row(left)] : Bun.stringWidth(left) + Bun.stringWidth(right) < inner ? [row(left + " ".repeat(inner - Bun.stringWidth(left) - Bun.stringWidth(right)) + right)] : [row(left), row(` ${right}`)];
+	const head = [...clockRow, ...statusText(view.status, pal, frame).map(l => row(` ${l}`))];
 
 	const lead = "╔═ ✠ STRATEGIUM ── COGITATOR ";
 	const key = fit(view.key, Math.max(1, width - Bun.stringWidth(lead) - 5));
@@ -361,7 +392,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	const cols = Math.max(1, Math.min(view.boxes.length, Math.floor((inner - 1) / 27)));
 
 	return withHeight(
-		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...grid(boxes(boxCap(height, head.length + 4, Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
+		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...(box ? grid([box], 1, inner, pal).map(row) : []), ...grid(boxes(boxCap(height, head.length + 4 + (box ? box.lines.length + 2 : 0), Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
 		view.chronicle.map(e => row(` ${entryLine(e, pal)}`)),
 		row(""),
 		g(`╚═ esc/q close ${"═".repeat(inner - 14)}╝`),
