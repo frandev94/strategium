@@ -1,3 +1,35 @@
+## [0.2.27] - 2026-11-21
+
+### 🚀 Features
+
+- *(tooling)* Port the tui-shot harness to TypeScript on Bun
+- *(tooling)* Port the banner generator to TypeScript
+- *(cockpit)* Live status under each deployed agent
+
+### 🐛 Bug Fixes
+
+- *(tooling)* Tui-shot workflow uses runner.temp only where allowed
+- *(tooling)* The CI rerun takes PNGs of every snapshot
+- *(tooling)* Tui-shot triggers on the cockpit's imports, with a summary table
+- *(tooling)* Clearer failures in the Bun dev tools
+- *(tooling)* Readable errors and more tests in the Bun dev tools
+- *(cockpit)* Safer live status files and a stall before the first tool call
+- *(cockpit)* No stall without a live row
+- *(cockpit)* The overlay timer only reads the run; a redeploy ignores an old live file
+
+### 📚 Documentation
+
+- *(tooling)* Document the tui-shot CI job
+- *(tooling)* Name the Bun dev tools
+- *(cockpit)* Describe the live agent lines
+
+### 🧪 Testing
+
+- *(tooling)* Tui-shot replay of the live agent lines
+
+### ⚙️ Miscellaneous Tasks
+
+- *(tooling)* Run the tui-shot replays on a Windows runner
 ## [0.2.26] - 2026-11-21
 
 ### 🚀 Features
