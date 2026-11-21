@@ -1,3 +1,12 @@
+## [0.2.18] - 2026-11-21
+
+### 🚀 Features
+
+- *(extension)* Per-commit seal as a /strategium-config setting
+
+### 📚 Documentation
+
+- Muster reads the commit setting instead of asking it
 ## [0.2.17] - 2026-11-21
 
 ### 🐛 Bug Fixes
