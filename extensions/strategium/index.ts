@@ -17,8 +17,10 @@ import {
 	openKeys,
 	overlapMin,
 	release,
+	safeName,
 	type Ev,
 } from "./timer";
+import { debrief, type Reported } from "./debrief";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Note, type View, type ViewInput } from "./cockpit";
@@ -44,6 +46,7 @@ type Slice = { id: string; parallel: boolean; files: string[]; tier?: Tier };
 // archmagos spawns until a scout in `scouts` is done. `scouts`: the scouts spawned after the redraft, by agent id, running
 // or done (finished completed). `builds`: the battle-brother spawns per squad id; the second runs one tier up (see tierFor).
 // `phases`: the todo as last seen, so the cockpit boxes and seals come back after a restart.
+// `since`: local ISO time of the run's first begin (kept by a same-key begin and a takeover); the debrief reads the key's day-file events from then on. Absent: the run began before it was stored.
 type Run = {
 	key: string;
 	theatre: string;
@@ -65,6 +68,7 @@ type Run = {
 	redraft?: true;
 	builds?: Record<string, number>;
 	phases?: Phase[];
+	since?: string;
 };
 type Tui = { requestRender(): void; terminal: { rows: number } };
 type Component = { render(width: number): string[]; handleInput?(data: string): void; invalidate?(): void; dispose?(): void };
@@ -146,6 +150,14 @@ const runsDir = () => path.join(stateDir(), "runs");
 const CAPTAIN_REASON =
 	"Strategium: the Captain does not edit repository files. Delegate this change to a battle-brother agent.";
 
+/** A run event in today's file. The debrief is secondary: a failed write must not break the hook that records it. */
+const record = (ev: Omit<Ev, "ts">) => {
+	try {
+		append(today(), { ts: nowIso(), ...ev });
+	} catch {
+		// The debrief shows what was recorded.
+	}
+};
 const today = () => dayFile(stateDir(), new Date());
 const runFile = (sid: string) => path.join(runsDir(), `${sid}.json`);
 // The session's heartbeat (local ISO time), rewritten every minute while it lives; see closeGap.
@@ -399,7 +411,7 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	// Begun again on the same key, every stored field stays except the booking mode.
 	const { untimed: _u, ...kept } = keep ?? {};
 	// A run begun under another key still hands its hidden tools on, or end could never restore them.
-	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: keep ? keep.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}) });
+	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: keep ? keep.repo : other?.repo, since: keep?.since ?? other?.since ?? nowIso(), ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
 	sweepPointers();
 	startKey(key, booked, spent, untimed);
@@ -431,8 +443,62 @@ function fullStatus(sid: string): string {
 	return [statusLines(), ...runs].join("\n");
 }
 
+/** The key's events from the day of `since` to today (at most 366 day files). An unparsable or missing `since` reads today only. */
+function eventsSince(key: string, since?: string): Ev[] {
+	const from = new Date(since ?? Number.NaN);
+	const known = Number.isFinite(from.getTime());
+	const first = known ? from : new Date();
+	const evs: Ev[] = [];
+	for (let i = 0; i < 366; i++) {
+		const day = new Date(first.getFullYear(), first.getMonth(), first.getDate() + i);
+		if (day > new Date()) break;
+		evs.push(...load(dayFile(stateDir(), day)));
+	}
+	return evs.filter(e => e.key === key && (!known || new Date(e.ts) >= from));
+}
+
+/** The squad marks the cockpit saved beside the run; a missing or malformed file reads as none. */
+function savedNotes(sid: string): Record<string, { failed?: true; veteran?: true }> {
+	try {
+		const notes = asObj(JSON.parse(readFileSync(cockpitFile(sid), "utf8"))).notes;
+		return Object.fromEntries(
+			Object.entries(asObj(notes)).map(([id, n]) => [id, { ...(asObj(n).failed === true ? { failed: true as const } : {}), ...(asObj(n).veteran === true ? { veteran: true as const } : {}) }]),
+		);
+	} catch {
+		return {};
+	}
+}
+
+/** Build the run's debrief and save it under <state>/debriefs (kept after the run): the result lines for `end`. A failure never stops the end. */
+function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note> } | undefined, clamp: boolean): string[] {
+	try {
+		const evs = eventsSince(run.key, run.since);
+		// A run stopped before `end` has no pause tail: its last interval closes at the stop (or at a later station entry). A takeover keeps it: the crash gap is real.
+		const lastSpan = !clamp ? undefined : evs.filter(e => e.event === "start" || e.event === "stop").at(-1);
+		const clampTo = lastSpan?.event === "stop" ? Math.max(...evs.filter(e => e === lastSpan || e.event === "station").map(e => new Date(e.ts).getTime())) : Number.NaN;
+		const now = new Date();
+		const end = Number.isFinite(clampTo) && clampTo < now.getTime() ? new Date(clampTo) : now;
+		const agents = Object.values(run.agents ?? {});
+		const stopped = new Set((run.stopped ?? []).map(s => s.id));
+		const running = new Set(agents.map(s => s.id));
+		const known = new Map<string, Slice>();
+		for (const s of [...(run.slices ?? []), ...(run.stopped ?? []), ...agents]) if (!known.has(s.id)) known.set(s.id, s);
+		const squads = [...known.values()].map(s => ({ id: s.id, ...(s.tier ? { tier: s.tier } : {}), state: running.has(s.id) ? ("running" as const) : stopped.has(s.id) ? ("stopped" as const) : ("not built" as const) }));
+		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported });
+		const file = path.join(stateDir(), "debriefs", `${safeName(run.key)}-${nowIso(now).slice(0, 19).replace(/:/g, "-")}.md`);
+		try {
+			writeAtomic(file, markdown);
+		} catch (err) {
+			return [`DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`, ...summary, markdown];
+		}
+		return [`DEBRIEF ${file}`, ...summary];
+	} catch (err) {
+		return [`DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`];
+	}
+}
+
 /** End this session's run, or another session's run of `key` by naming that crashed session's id in `takeover`. */
-function endRun(sid: string, key?: string, takeover?: string): string {
+function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note> }): string {
 	// ownRun() may drop the run file, so ask for it once.
 	const mine = ownRun(sid);
 	const run = key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine;
@@ -444,9 +510,11 @@ function endRun(sid: string, key?: string, takeover?: string): string {
 	}
 	stopKey(run.key);
 	release(stateDir(), run.key, sid);
+	// After the last span is closed and before the run's files go: the debrief reads them.
+	const lines = writeDebrief(run, reported, live, run.sid === sid);
 	dropFiles(run.sid);
 	dropPointer(sid);
-	return `ENDED ${run.key}`;
+	return [`ENDED ${run.key}`, ...lines].join("\n");
 }
 
 function report(date?: string): string {
@@ -457,7 +525,7 @@ function report(date?: string): string {
 	// A past day ends at its midnight, so a block left open then does not grow until now.
 	const now = date && date !== path.basename(today(), ".jsonl") ? new Date(`${date}T23:59:59`) : new Date();
 	const bl = blocks(evs, now);
-	const keys = [...new Set(evs.filter(e => e.event !== "alert").map(e => e.key))];
+	const keys = [...new Set(evs.filter(e => e.event === "start" || e.event === "stop" || e.event === "adjust").map(e => e.key))];
 	if (!keys.length) return "IDLE";
 	const sum = (k: string, ev: string) =>
 		evs.filter(e => e.key === k && e.event === ev).reduce((n, e) => n + (e.prior ?? 0), 0);
@@ -562,13 +630,12 @@ const tiersState = () => {
 const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /**
- * The tier a battle-brother of a squad runs on: the squad's planned tier on its first spawn, one up on each later one,
- * never above heavy. Counts the spawn in the run (`builds`). Undefined when the spawnKey matches no squad.
+ * The squad a spawn builds, undefined when the spawnKey matches none.
  * `named`: item names that took their squad from the brief ("build squad <id>").
  * Exact ids and brief names win over the folded match, which tries the key without its -<digits> suffix first, then the whole key.
  * shortcut: a name ending in -<digits> reads as a reused name of the squad before it unless a squad has that exact id; upgrade if ids like that appear.
  */
-function tierFor(run: Run, spawnKey: string, named: Map<string, string>): Tier | undefined {
+function squadOf(run: Run, spawnKey: string, named: Map<string, string>): Slice | undefined {
 	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
 	const stripped = spawnKey.replace(/-\d+$/, "");
 	let slice: Slice | undefined;
@@ -577,7 +644,15 @@ function tierFor(run: Run, spawnKey: string, named: Map<string, string>): Tier |
 		slice = known.find(s => s.id === id || s.id === key);
 		if (slice) break;
 	}
-	slice ??= known.find(s => fold(s.id) === fold(stripped)) ?? known.find(s => fold(s.id) === fold(spawnKey));
+	return slice ?? known.find(s => fold(s.id) === fold(stripped)) ?? known.find(s => fold(s.id) === fold(spawnKey));
+}
+
+/**
+ * The tier a battle-brother of a squad runs on: the squad's planned tier on its first spawn, one up on each later one,
+ * never above heavy. Counts the spawn in the run (`builds`). Undefined when the spawnKey matches no squad.
+ */
+function tierFor(run: Run, spawnKey: string, named: Map<string, string>): Tier | undefined {
+	const slice = squadOf(run, spawnKey, named);
 	if (!slice) return undefined;
 	// `builds` counts at the hook, before the dispatch is known to succeed, like archmagosSpawned.
 	const n = run.builds && Object.hasOwn(run.builds, slice.id) ? run.builds[slice.id] : 0;
@@ -1148,10 +1223,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	}
 
 	/** End the session's run. When it was its own, the tools come back and the Strategium theme plays; a takeover end does neither. */
-	async function finish(sid: string, ctx: SessionCtx, key?: string, takeover?: string): Promise<string> {
+	async function finish(sid: string, ctx: SessionCtx, key?: string, takeover?: string, reported?: Reported): Promise<string> {
 		const mine = ownRun(sid);
-		const result = endRun(sid, key, takeover);
-		if (mine && result === `ENDED ${mine.key}`) {
+		const result = endRun(sid, key, takeover, reported, cockpit);
+		if (mine && result.split("\n", 1)[0] === `ENDED ${mine.key}`) {
 			await restoreTools(mine.hidden);
 			const err = alert(sid, "theme", `${mine.key}: run ended`, ctx);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
@@ -1247,6 +1322,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	};
 	pi.setLabel("Strategium");
 
+	const count = z.number().int().nonnegative().optional();
 	const schema = z.object({
 		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft", "seal", "signal"]),
 		key: z.string().optional(),
@@ -1260,6 +1336,12 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		minutes: z.number().int().optional(),
 		on: z.boolean().optional(),
 		archmagos: z.boolean().optional(),
+		reported: z
+			.object({
+				apothecary: z.object({ killed: count, survived: count, crashes: count }).optional(),
+				review: z.object({ pass: count, fail: count, opened: count, fixed: count, not_reproduced: count }).optional(),
+			})
+			.optional(),
 		slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()), tier: z.enum(["light", "standard", "heavy"]).optional() })).optional(),
 		lines: z.array(z.string()).optional(),
 		pct: z.number().int().min(0).max(100).optional(),
@@ -1272,7 +1354,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft, seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?, reported?), attention (message), notify (on?), slices (slices), redraft, seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned. end writes the run's debrief (time per station, seals, squads, spawns) to <state dir>/debriefs and answers ENDED <key>, DEBRIEF <path> and summary lines; reported = {apothecary: {killed, survived, crashes}, review: {pass, fail, opened, fixed, not_reproduced}}: whole numbers from the agents' reports, shown only in the (reported) sections.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub" && input.action !== "signal") return text("ERROR strategium tool is for the main session only");
@@ -1316,7 +1398,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 					case "report":
 						return text(report(params.date));
 					case "end":
-						return text(await finish(sid, ctx, params.key, params.takeover));
+						return text(await finish(sid, ctx, params.key, params.takeover, params.reported));
 					case "attention": {
 						const key = ownRun(sid)?.key;
 						const msg = params.message?.trim() || "Your attention is needed";
@@ -1368,6 +1450,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 						if (!run) return text("ERROR no active run in this session");
 						if (run.redraft) return text(`ERROR the redraft of ${run.key} is spent (1 per run)`);
 						writeRun({ ...run, redraft: true, builds: undefined });
+						record({ event: "redraft", key: run.key });
 						return text(
 							`REDRAFT ${run.key}: back to Auspex; no librarian or archmagos until a scout spawned now has finished${run.archmagosSpawned ? "; then one more archmagos may be spawned" : ""}`,
 						);
@@ -1791,6 +1874,12 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const run = ownRun(sid);
 		if (!run) return;
 		const agent = agentName(String(asObj(e).agent ?? "task"));
+		// The model the child runs on, for the debrief: the host's own choice when no tier sets one.
+		const hostModel = () => {
+			const { patterns, modelRole } = asObj(e);
+			const first = Array.isArray(patterns) ? patterns[0] : undefined;
+			return oneLine(typeof first === "string" && first ? first : typeof modelRole === "string" && modelRole ? `@${modelRole}` : "default").slice(0, 60) || "default";
+		};
 		if (!ROSTER.includes(agent)) return { block: true, reason: `Strategium: during a run only these agents may be spawned: ${ROSTER.join(", ")}.` };
 		if ((agent === "librarian" || agent === "archmagos") && run.redraft && !Object.values(run.scouts ?? {}).includes("done"))
 			return { block: true, reason: REDRAFT_REFRESH };
@@ -1804,15 +1893,19 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			// ponytail: counted here, once per real child (a write agent://<id> follow-up never fires this hook); a dispatch that
 			// fails after it, or a later extension's block, still spends the budget: redraft or the user is the way out.
 			writeRun({ ...run, archmagosSpawned: spawned + 1 });
+			record({ event: "spawn", key: run.key, role: agent, model: hostModel() });
 			return;
 		}
 		if (agent === "battle-brother" && run.repo && !run.slices) return { block: true, reason: SLICES_REASON };
 		// The tier sets the child's model and its effort (the selector's :level). Reviewers and the rest keep their own.
-		const key = asObj(e).spawnKey;
+		const key = typeof asObj(e).spawnKey === "string" ? (asObj(e).spawnKey as string) : "";
 		let tier: Tier | undefined;
+		const squad = agent === "veteran" || agent === "battle-brother" ? squadOf(run, key, briefNames)?.id : undefined;
 		if (agent === "veteran") tier = "heavy";
-		else if (agent === "battle-brother") tier = tierFor(run, typeof key === "string" ? key : "", briefNames) ?? "standard";
-		if (tier) return { model: parseTiers(process.env.STRATEGIUM_TIERS).selectors[tier], note: `Strategium tier ${tier}` };
+		else if (agent === "battle-brother") tier = tierFor(run, key, briefNames) ?? "standard";
+		const model = tier ? parseTiers(process.env.STRATEGIUM_TIERS).selectors[tier] : undefined;
+		record({ event: "spawn", key: run.key, role: agent, model: model ?? hostModel(), ...(tier ? { tier } : {}), ...(squad ? { squad } : {}) });
+		if (tier) return { model, note: `Strategium tier ${tier}` };
 	});
 
 	// The host gives no event when an agent ends; its result reaches the model as a message or a wait result that lists
@@ -1983,12 +2076,19 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		// A rebuild's init is auto-started by omp at its first task, which is not where the run is: no station or seal-waiting entry.
 		const rebuild = isRebuild(details?.op, before, phases);
 		const now = rebuild ? undefined : whereFrom(phases);
-		if (now && now.station !== was?.station) log(run.key, "STRATEGOS", `station ${now.station}`);
-		if (now?.seal && now.seal !== was?.seal) log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
+		if (now && now.station !== was?.station) {
+			log(run.key, "STRATEGOS", `station ${now.station}`);
+			record({ event: "station", key: run.key, station: now.station.slice(0, 200) });
+		}
+		if (now?.seal && now.seal !== was?.seal) {
+			log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
+			record({ event: "seal", key: run.key, seal: (waitingSeal(phases)?.id ?? now.seal).slice(0, 200), state: "asked" });
+		}
 		// A hand-off (plan stations replaced by the remaining ones) is the approval: the seal that waited is granted.
 		const handedOff = isHandOff(details?.op, before, phases) ? waitingSeal(before) : undefined;
 		for (const seal of handedOff ? [handedOff] : grantedSeals(before, phases)) {
 			log(run.key, "✠ SEAL", `${seal.id} granted`, "seal");
+			record({ event: "seal", key: run.key, seal: seal.id.slice(0, 200), state: "granted" });
 			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.id} granted`, ctx);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 		}

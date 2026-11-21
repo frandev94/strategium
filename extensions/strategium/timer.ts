@@ -7,12 +7,8 @@ export const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // The sanitised key keeps the lock readable; the hash keeps two keys apart ("A/B" and "A_B"
 // would otherwise share one lock). Exported so tests and tools use the same name.
-export const lockPath = (dir: string, key: string) =>
-	join(
-		dir,
-		"claims",
-		`${key.replace(/[^\w.-]/g, "_")}-${createHash("sha1").update(key).digest("hex").slice(0, 8)}.lock`,
-	);
+export const safeName = (key: string) => `${key.replace(/[^\w.-]/g, "_")}-${createHash("sha1").update(key).digest("hex").slice(0, 8)}`;
+export const lockPath = (dir: string, key: string) => join(dir, "claims", `${safeName(key)}.lock`);
 const holder = (lock: string) => {
 	try {
 		return readFileSync(lock, "utf8");
@@ -104,11 +100,18 @@ export function release(dir: string, key: string, sid: string): void {
  */
 export type Ev = {
 	ts: string;
-	event: "start" | "stop" | "alert" | "adjust";
+	event: "start" | "stop" | "alert" | "adjust" | "station" | "seal" | "spawn" | "redraft";
 	key: string;
 	booked?: number;
 	prior?: number;
 	p?: number;
+	station?: string; // station event: the todo station entered
+	seal?: string; // seal event: the seal id
+	state?: "asked" | "granted"; // seal event
+	role?: string; // spawn event: agent name
+	tier?: string;
+	model?: string;
+	squad?: string;
 };
 const isSpan = (e: Ev) => e.event === "start" || e.event === "stop";
 

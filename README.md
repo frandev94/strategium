@@ -86,7 +86,7 @@ flowchart TB
   end
   subgraph debrief["VIII · DEBRIEF"]
     direction LR
-    F[/"day report"/]
+    F[/"debrief · day report"/]
   end
 
   muster --> auspex --> scriptorium --> deployment --> skirmish --> inquisition --> extraction --> debrief --> E(["end of run"])
@@ -236,12 +236,14 @@ Then, in a fresh session, run `/skill:strategium-setup`. It checks the plugin, i
 /strategium-status                  every run and its time
 /strategium-config [notify on|off | sound on|off | toast on|off | volume <0-100> [preview] | idle <min> | archmagos on|off | commit on|off | cockpit-key <key> | cockpit-theme <name>|default]  show the effective settings; notify, sound or toast on|off, the alarm's volume (preview plays it at that volume), the idle minutes, archmagos or commit on|off for this session; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit theme and applies it at once
 /strategium-cockpit                 open the cockpit (also Alt+C, or the key set with cockpit-key)
-/strategium-end                     close the run
+/strategium-end                     close the run and write its debrief
 ```
 
 Free text needs the quotes, so it never clashes with a subcommand. Without a ticket, the librarian proposes the acceptance criteria and you confirm them at seal Plan, which cannot be skipped. The command begins the run at once, untimed, under a KEY taken from the objective (a key as given, a file's base name, or the free text's first words in kebab-case).
 
 Every session owns one run, claimed atomically, so several omp sessions can work on different objectives at the same time. Closing a session pauses its run and releases the claim; reopening that session takes it back and resumes it on its own, unless you had paused it (`/strategium-pause`, action `stop`, the stand down). A timed run on a new day stays paused until today's booking is given. A run still counting at midnight goes on: its block ends at 00:00 in yesterday's day file and a new one starts at 00:00 today, so `status`, `report` and the footer keep counting; a timed run counts there without a booking and without the 50/80/100 alerts (footer `<elapsed> min · new day: /strategium-resume <min>`) until `/strategium-resume <min>` gives today's. The Captain cannot edit the run's repository: from `begin`, `edit` and `ast_edit` are hidden from the main session and agents outside the Strategium roster are refused; once `strategium repo` arms the guard, `ast_edit` and `write` are blocked inside the run's repo and its `<repo>-worktrees` folder, bash test and build runners and bash file writes are blocked (only redirects into `$TEMP`, `$TMP`, `$TMPDIR`, `%TEMP%`, `/tmp/`, `local://`, `out://`, `/dev/null` and file descriptors pass), and battle-brothers are refused until the plan's squads are declared (`strategium` `slices`; parallel squads must not share a file). In omp's plan mode the run walks the same stations, but its todo holds only the ones that can run there: Muster (Orders without the Plan box), Auspex and Scriptorium, with the squads declared before `xd://propose`. The proposed plan opens with the stations already done and lists only what the approval starts. "Approve and execute" opens a fresh session and the run moves with it (booking, Archmagos mark and squads included); its todo holds Deployment onwards and starts at Deployment's first task. A plain `/new` leaves the run with its own session.
+
+The debrief: `end` (and `/strategium-end`) writes the run's report to `<state dir>/debriefs/<key, sanitised>-<8-hex>-<YYYY-MM-DDTHH-MM-SS>.md`, which stays after the run ends, and returns its path plus a short summary in chat (time, seals, spawns). Its sections are time per station (active and paused minutes, adding up to the run's total), seals (asked, granted, wait), squads (builder runs, penances, veteran runs, last result, state) and agents spawned per role and the model requested (the selector Strategium asked of the host; the host may run another, so that column is not exact); every other number is exact, read from the plugin's own records, and survive an omp restart. The Captain passes the numbers the agents reported in the optional `reported` parameter of `end` (`apothecary`: `killed`, `survived`, `crashes`; `review`: `pass`, `fail`, `opened`, `fixed`, `not_reproduced`); they show only in the `Apothecary (reported)` and `Review (reported)` sections, or as `Not reported.`. It then copies the file next to the run's other files with `cat "<path>" > local://<KEY>-debrief.md`.
 
 <details>
 <summary><strong>Idle pause, footer and cockpit</strong></summary>
