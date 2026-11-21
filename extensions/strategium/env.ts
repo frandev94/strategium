@@ -4,7 +4,8 @@
  */
 export function childEnv(extra: Record<string, string> = {}): Record<string, string> {
 	const env: Record<string, string> = {};
-	for (const k of ["PATH", "HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"]) {
+	// Non-secret names the alarm needs to find its audio player and notifier (Windows: SystemDrive for ProgramData; Linux: the session bus and display).
+	for (const k of ["PATH", "HOME", "USERPROFILE", "SystemRoot", "SystemDrive", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "XDG_RUNTIME_DIR", "DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"]) {
 		const v = process.env[k];
 		if (v) env[k] = v;
 	}

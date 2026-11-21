@@ -1786,11 +1786,12 @@ describe("the bundled alarm", () => {
 		await a.call({ action: "attention", message: "two" });
 		await Bun.sleep(20);
 		expect(a.notes.filter(n => n.includes("exited with code 1"))).toHaveLength(1);
-		const b = setup("sess-0002", a.dir);
+		// The same extension instance, another session id: the warned set is per session, not global.
+		a.ctx.sessionManager = { getSessionId: () => "sess-0002" };
 		exitAlarm(1);
-		await b.call({ action: "attention", message: "three" });
+		await a.call({ action: "attention", message: "three" });
 		await Bun.sleep(20);
-		expect(b.notes.filter(n => n.includes("exited with code 1"))).toHaveLength(1);
+		expect(a.notes.filter(n => n.includes("exited with code 1"))).toHaveLength(2);
 	});
 
 	test("a vox that exits 0 reports nothing", async () => {

@@ -5,7 +5,7 @@ description: Use when a long task, build, run or timer finishes or needs the use
 
 # Strategium alarm (vox-caster)
 
-`bun <plugin>/alarm/vox.ts [50|80|100|done|attention|idle|theme] ["message"]` plays a synthesized sound (no audio files, no dependencies) and exits 0 when playback ends and non-zero when it cannot play. The level is argv[2], else env `STRATEGIUM_P`, else `done`. With a message (argv[3], else env `STRATEGIUM_MSG`) it also shows a desktop notification titled "Strategium" (Windows toast, macOS notification, Linux `notify-send`), so the user sees it with the terminal hidden. A missing audio player prints one line to stderr and the exit code is non-zero (it also exits non-zero when playback fails). `STRATEGIUM_SOUND=0` skips the sound; `STRATEGIUM_VOLUME` (`0`-`100`, default `20`) sets its volume.
+`bun <plugin>/alarm/vox.ts [50|80|100|done|attention|idle|theme] ["message"]` plays a synthesized sound (no audio files, no dependencies) and exits 0 when playback ends and non-zero when it cannot play or playback fails. The level is argv[2], else env `STRATEGIUM_P`, else `done`. With a message (argv[3], else env `STRATEGIUM_MSG`) it also shows a desktop notification titled "Strategium" (Windows toast, macOS notification, Linux `notify-send`), so the user sees it with the terminal hidden. On Linux a missing audio player prints one line to stderr. `STRATEGIUM_SOUND=0` skips the sound; `STRATEGIUM_VOLUME` (`0`-`100`, default `20`) sets its volume.
 
 | Level | Sound |
 |---|---|
