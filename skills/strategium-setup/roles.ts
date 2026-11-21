@@ -1,7 +1,7 @@
 export const ROLE_AGENTS = {
 	plan: "librarian and archmagos",
 	slow: "inquisitor",
-	task: "battle-brother, veteran, apothecary and confessor (without Codex)",
+	task: "apothecary, confessor without Codex, and standard-tier battle-brothers",
 } as const;
 
 const FALLBACK = {
