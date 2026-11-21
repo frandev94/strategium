@@ -2192,6 +2192,7 @@ describe("the archmagos setting", () => {
 		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
 		await s.commands["strategium-config"].handler("", ctx);
 		expect(notes.at(-1)).toContain("archmagos: on (this session)");
+		expect(notes.at(-1)).toContain("commit: off (STRATEGIUM_COMMIT)");
 		sm.sid = "sess-A";
 		await s.commands["strategium-config"].handler("", ctx);
 		expect(notes.at(-1)).toContain("archmagos: off (STRATEGIUM_ARCHMAGOS)");
