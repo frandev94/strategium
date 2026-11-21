@@ -12,7 +12,7 @@ export type Live = { since: number; at: number; tool?: string; intent?: string; 
 export type Depth = "truecolor" | "256";
 type Ansi = `\x1b[${string}`; // an escape sequence, not a hex: keeps a Theme out of renderCockpit
 export type Palette = Record<Tone, Ansi> & { bg?: Ansi }; // a foreground sequence per tone, bg a background one
-export type Nav = { cursor?: { id: string; at: number }; shown?: { phase: number; from: number } }; // cursor: the selected line by identity and its position; shown: a browsed station and the active one it was taken at. In memory only (see cockpitView)
+export type Nav = { cursor?: { id: string; at: number }; shown?: { phase: number; from: number }; tops?: Record<string, number> }; // cursor: the selected line by identity and its position; shown: a browsed station and the active one it was taken at; tops: the first line a windowed box shows, by box title (renderCockpit writes it, as only it knows the room). In memory only (see cockpitView)
 export type ViewInput = {
 	nav?: Nav;
 	key: string;
@@ -128,7 +128,7 @@ const NAV_VK: Record<number, NavKey> = { 36: "home", 37: "left", 38: "up", 39: "
 const NAV_U: Record<number, NavKey> = { 9: "tab", 57417: "left", 57418: "right", 57419: "up", 57420: "down", 57423: "home" };
 const NAV_PLAIN = /^\x1b[[O]([ABCDH])$/;
 const NAV_MOD = /^\x1b\[1;(\d{1,3})(?::(\d))?([ABCDH])$/;
-const NAV_CSI_U = /^\x1b\[(9|5741[789]|57420|57423)(?::\d*)*(?:;(\d{1,3})(?::(\d))?)?(?:;[\d:]*)?u$/;
+const NAV_CSI_U = /^\x1b\[(9|5741[789]|57420|57423)(?::\d*)*(?:;(\d{1,3})(?::(\d))?(?:;[\d:]*)?)?u$/;
 const NAV_WIN32 = /^\x1b\[(\d{1,5});\d{0,5};\d{0,5};(\d);(\d{0,5});\d{0,5}_$/;
 const plainMod = (m: string | undefined, ev: string | undefined) => ((Number(m ?? 1) - 1) & ~192) === 0 && (ev === undefined || ev === "1" || ev === "2");
 /** The cursor key `data` is, or undefined. Arrows and Home in VT, SS3, xterm/kitty modified (locks allowed, no other modifier, press or repeat), Home as `CSI 1~`/`CSI 7~`, kitty keypad CSI-u, Tab, and win32-input-mode records (key down, no Alt/Ctrl/Shift). Any other sequence, a release, Alt+arrow and Shift+Tab give undefined, and never a bare Esc: closes() is false for all of them. Every pattern is anchored with bounded numbers, so a hostile string costs linear time. */
@@ -224,7 +224,7 @@ export function cockpitView(input: ViewInput) {
 	const active = activePhase(phases); // -1 with no phases
 	const browse = input.nav?.shown;
 	// Browsing holds only while the run stays at the station it was taken at.
-	const shown = browse && browse.from === active && browse.phase !== active && Number.isInteger(browse.phase) && browse.phase >= 0 && browse.phase < phases.length ? browse.phase : undefined;
+	const shown = browse && browse.from === active && Number.isInteger(browse.phase) && browse.phase >= 0 && browse.phase < phases.length ? browse.phase : undefined;
 	const at = shown ?? active;
 	const phase = phases.at(at); // undefined with no phases
 
@@ -321,7 +321,8 @@ export function cockpitView(input: ViewInput) {
 	const was = input.nav?.cursor;
 	const found = was ? items.findIndex(i => i.id === was.id) : -1;
 	const to = was && items.length ? (found >= 0 ? found : Math.min(Math.max(0, Math.trunc(was.at) || 0), items.length - 1)) : -1;
-	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }) };
+	const tops = Object.fromEntries(Object.entries(input.nav?.tops ?? {}).filter(([k, n]) => (k === "seal" ? !!panel : boxes.some(b => b.title === k)) && Number.isInteger(n) && n > 0));
+	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }), ...(Object.keys(tops).length ? { tops } : {}) };
 
 	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav };
 }
@@ -333,6 +334,7 @@ export type NavKey = "up" | "down" | "left" | "right" | "home" | "tab";
 export function navigate(view: View, key: NavKey): Nav {
 	const { items, stations, nav } = view;
 	const from = nav.cursor?.at ?? -1;
+	const keep = nav.tops ? { tops: nav.tops } : {};
 	const go = (i: number): Nav => ({ ...nav, ...(items.length ? { cursor: { id: items[i].id, at: i } } : {}) });
 	switch (key) {
 		case "up":
@@ -344,11 +346,11 @@ export function navigate(view: View, key: NavKey): Nav {
 			return go(Math.max(0, next));
 		}
 		case "home":
-			return { ...(nav.cursor ? { cursor: nav.cursor } : {}) };
+			return { ...(nav.cursor ? { cursor: nav.cursor } : {}), ...keep };
 		default: {
 			if (!stations.count) return nav;
 			const to = Math.min(stations.count - 1, Math.max(0, stations.shown + (key === "left" ? -1 : 1)));
-			return { ...(nav.cursor ? { cursor: nav.cursor } : {}), ...(to === stations.active ? {} : { shown: { phase: to, from: stations.active } }) };
+			return { ...(nav.cursor ? { cursor: nav.cursor } : {}), ...keep, ...(to === stations.active ? {} : { shown: { phase: to, from: stations.active } }) };
 		}
 	}
 }
@@ -394,9 +396,10 @@ function sealsText(seals: Seal[], pal: Palette, ic: View["ic"]): string {
 
 const SEAL_CAP = 12;
 /** The seal panel as a box: its lines parchment when prepared, else the default line in iron; past SEAL_CAP a window of SEAL_CAP - 1 lines that keeps the selected one (see windowOf) and an iron "+k more". `ids` name its lines for the cursor. */
-function sealBox(panel: NonNullable<View["panel"]>, ids: string[], pal: Palette, selected?: string): Box {
+function sealBox(panel: NonNullable<View["panel"]>, ids: string[], pal: Palette, win: Win, selected?: string): Box {
 	const si = ids.indexOf(selected ?? "");
-	const [start, end] = panel.lines.length > SEAL_CAP ? windowOf(panel.lines.map(() => 1), SEAL_CAP, si) : [0, panel.lines.length];
+	const [start, end] = panel.lines.length > SEAL_CAP ? windowOf(panel.lines.map(() => 1), SEAL_CAP, si, win.get("seal")) : [0, panel.lines.length];
+	win.set("seal", start);
 	const lines = panel.lines.slice(start, end).map(l => paint(panel.prepared ? pal.parchment : pal.iron, l));
 	if (end - start < panel.lines.length) lines.push(paint(pal.iron, `+${panel.lines.length - (end - start)} more`));
 	return { title: panel.title, lines, tone: "gold", ...(si >= start && si < end ? { sel: si - start } : {}) };
@@ -467,23 +470,29 @@ function withHeight(body: string[], entries: string[], blank: string, close: str
 const boxCap = (height: number | undefined, fixed: number, blocks: number, chrome: number) =>
 	height === undefined || !blocks ? BOX_CAP : Math.max(1, Math.min(BOX_CAP, Math.floor((height - fixed - CHRONICLE_MIN) / blocks) - chrome));
 
-/** The lines [start, end) a box past its cap shows in cap - 1 rows (`rows`: the rows of each line): from 0, moved down only as far as the selected line `sel` (-1: none) needs, and always including it even when it alone is taller than the room. */
-function windowOf(rows: number[], cap: number, sel: number): [number, number] {
+/** The lines [start, end) a box past its cap shows in cap - 1 rows (`rows`: the rows of each line): from `top` (the window's last start), moved only as far as the selected line `sel` (-1: none) needs, pulled back up while room is left below, and always including the selected line even when it alone is taller than the room. */
+function windowOf(rows: number[], cap: number, sel: number, top = 0): [number, number] {
 	const room = cap - 1;
-	let start = 0;
-	let need = sel < 0 ? 0 : rows.slice(0, sel + 1).reduce((a, b) => a + b, 0);
-	while (start < sel && need > room) need -= rows[start++];
+	const sum = (a: number, b: number) => rows.slice(a, b).reduce((x, y) => x + y, 0);
+	let start = Math.min(Math.max(0, top), Math.max(0, rows.length - 1));
+	if (sel >= 0 && sel < start) start = sel;
+	while (start < sel && sum(start, sel + 1) > room) start++;
+	while (start > 0 && sum(start - 1, rows.length) <= room) start--;
 	let end = start;
 	for (let used = 0; end < rows.length && used + rows[end] <= room; used += rows[end++]);
 	return [start, Math.max(end, sel + 1)];
 }
 
+/** Where renderCockpit reads and writes the window starts, by box. */
+type Win = { get: (k: string) => number; set: (k: string, n: number) => void };
+
 /** A box's rows, at most cap (a detail is a row of its own, 2 cells in; gold when stalled, else iron): past it the window of whole lines (see windowOf) and an iron "+k more (…)" row counting every hidden line, above and below, by state in HIDE order. A line and its detail are never split. `sel` is the row of the selected line, if drawn. */
-function boxLines(lines: View["boxes"][number]["lines"], cap: number, pal: Palette, frame: number, selected?: string): { lines: string[]; sel?: number } {
+function boxLines(lines: View["boxes"][number]["lines"], cap: number, pal: Palette, frame: number, win: Win, key: string, selected?: string): { lines: string[]; sel?: number } {
 	const rows = (l: Line) => (l.detail ? 2 : 1);
 	const draw = (l: Line) => [markText(l.kind, l.mark, l.text, pal, frame, l.stalled && "gold"), ...(l.detail ? [`  ${paint(pal[l.stalled ? "gold" : "iron"], l.detail)}`] : [])];
 	const si = lines.findIndex(l => l.id === selected);
-	const [start, end] = lines.reduce((n, l) => n + rows(l), 0) <= cap ? [0, lines.length] : windowOf(lines.map(rows), cap, si);
+	const [start, end] = lines.reduce((n, l) => n + rows(l), 0) <= cap ? [0, lines.length] : windowOf(lines.map(rows), cap, si, win.get(key));
+	win.set(key, start);
 	const out: string[] = [];
 	let sel: number | undefined;
 	for (const [i, l] of lines.slice(start, end).entries()) {
@@ -508,8 +517,18 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	const s = view.station;
 	const station = markText(s.kind, s.mark, s.name, pal, frame) + (s.note ? ` · ${paint(pal.gold, s.note)}` : "");
 	const sel = view.nav.cursor?.id;
-	const boxes = (cap: number): Box[] => view.boxes.map(b => ({ title: b.title, tone: b.tone, ...boxLines(b.lines, cap, pal, frame, sel) }));
-	const box = view.panel && sealBox(view.panel, view.sealIds, pal, sel);
+	const win: Win = {
+		get: k => view.nav.tops?.[k] ?? 0,
+		set: (k, n) => {
+			if (n > 0) (view.nav.tops ??= {})[k] = n;
+			else if (view.nav.tops) {
+				delete view.nav.tops[k];
+				if (!Object.keys(view.nav.tops).length) delete view.nav.tops;
+			}
+		},
+	};
+	const boxes = (cap: number): Box[] => view.boxes.map(b => ({ title: b.title, tone: b.tone, ...boxLines(b.lines, cap, pal, frame, win, b.title, sel) }));
+	const box = view.panel && sealBox(view.panel, view.sealIds, pal, win, sel);
 
 	if (width < 72) {
 		const ind = (b: Box) => b.lines.map((l, i) => (i === b.sel ? `${paint(pal.gold, "▸")} ${selected(l, width - 2)}` : `  ${l}`));
@@ -543,7 +562,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	const cols = Math.max(1, Math.min(view.boxes.length, Math.floor((inner - 1) / 27)));
 
 	const si = view.chronicle.findIndex(e => e.id === sel);
-	const hint = "esc/q close · ↑↓ line · ←→ station · tab box · home";
+	const hint = "esc/q close · ↑↓ line · ←→ station · tab box · home active";
 	return withHeight(
 		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...(box ? grid([box], 1, inner, pal).map(row) : []), ...grid(boxes(boxCap(height, head.length + 4 + (box ? box.lines.length + 2 : 0), Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
 		view.chronicle.map((e, i) => row(i === si ? `${g("▸")}${selected(entryLine(e, pal), inner - 1)}` : ` ${entryLine(e, pal)}`)),

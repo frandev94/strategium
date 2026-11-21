@@ -3609,6 +3609,51 @@ describe("cockpit", () => {
 			expect(text(comp)).not.toContain("viewing");
 			comp.handleInput!("q");
 		});
+
+		test("a second down moves the marker to another line", async () => {
+			const { s, comp } = await open();
+			s.todo(stations("completed", "completed", "in_progress")); // a second chronicle entry
+			comp.handleInput!("\x1b[B");
+			const first = text(comp);
+			comp.handleInput!("\x1b[B");
+			const second = text(comp);
+			expect(second).toContain("▸");
+			expect(second).not.toBe(first);
+			comp.handleInput!("q");
+		});
+
+		test("home after browsing shows the active station again", async () => {
+			const { comp } = await open();
+			const before = text(comp);
+			comp.handleInput!("\x1b[D");
+			expect(text(comp)).toContain("viewing");
+			comp.handleInput!("\x1b[H");
+			expect(text(comp)).toBe(before);
+			comp.handleInput!("q");
+		});
+
+		test("the cursor stays on its line when a redraw adds a chronicle entry above it", async () => {
+			const { s, comp } = await open();
+			comp.handleInput!("\x1b[B");
+			const marked = (t: string) => t.split("\n").find(l => l.includes("▸"))!;
+			const line = marked(text(comp));
+			s.todo(stations("completed", "completed", "in_progress")); // the station change logs a new entry
+			const after = text(comp);
+			expect(after).toContain("station Deployment");
+			expect(marked(after)).toBe(line);
+			comp.handleInput!("q");
+		});
+
+		test("a run key change with the cockpit open leaves no marker", async () => {
+			const { s, comp } = await open();
+			comp.handleInput!("\x1b[B");
+			expect(text(comp)).toContain("▸");
+			await s.call({ action: "end" });
+			await s.call({ action: "begin", key: "K-2" });
+			s.todo(stations("completed", "in_progress", "pending"));
+			expect(text(comp)).not.toContain("▸");
+			comp.handleInput!("q");
+		});
 	});
 
 	describe("the overlay", () => {

@@ -1313,6 +1313,8 @@ const NOT_KEYS = [
 	"\x1b[38;72;0;0;256;1_", "\x1b[38;72;0;1;258;1_", "\x1b[38;72;0;1;4;1_", "\x1b[38;72;0;1;16;1_", "\x1b[41;80;0;1;256;1_", "\x1b[38;72;0;1;256;1", "\x1b[38;72;0;1;4294967296;1_",
 	// a number too long for a modifier must not wrap around into "no modifier"
 	`\x1b[1;${"9".repeat(400)}A`, `\x1b[38;72;0;1;${"9".repeat(400)};1_`,
+	// a malformed or 4+-digit modifier must not backtrack into "no modifier"
+	"\x1b[57420;1000u", "\x1b[57420;5::u", "\x1b[9;2::u",
 ];
 
 describe("navKey", () => {
@@ -1419,6 +1421,42 @@ describe("cursor model", () => {
 					if (w.nav.cursor) expect(w.items[w.nav.cursor.at].id).toBe(w.nav.cursor.id);
 				}
 			}
+	});
+});
+
+describe("window memory", () => {
+	const base = input({ phases: [{ name: "Skirmish", tasks: Array.from({ length: 20 }, (_, i) => ({ content: `[captain] t${i}`, status: "pending" })) }] });
+	/** Press `keys`, drawing between presses as the cockpit does (the render keeps each box's window start); the final drawn lines. */
+	const pressDrawing = (...keys: NavKey[]) => {
+		let nav: Nav = {};
+		for (const k of keys) {
+			const v = cockpitView({ ...base, nav });
+			draw(v);
+			nav = navigate(v, k);
+		}
+		const v = cockpitView({ ...base, nav });
+		return draw(v);
+	};
+	/** The marker's row inside the box, from its first line (7 lines fit), and the text of the first line shown. */
+	const marker = (lines: string[]) => {
+		const top = lines.findIndex(l => l.includes("┌"));
+		return { at: lines.findIndex(l => l.includes("▸")) - top - 1, first: lines[top + 1].match(/t\d+/)![0] };
+	};
+	const down = (n: number) => Array<NavKey>(n).fill("down");
+	const up = (n: number) => Array<NavKey>(n).fill("up");
+
+	test("going up from the end moves the marker up the window until it reaches the top, then the window scrolls", () => {
+		expect(marker(pressDrawing(...down(20)))).toEqual({ at: 6, first: "t13" });
+		expect(marker(pressDrawing(...down(20), ...up(3)))).toEqual({ at: 3, first: "t13" });
+		expect(marker(pressDrawing(...down(20), ...up(6)))).toEqual({ at: 0, first: "t13" });
+		expect(marker(pressDrawing(...down(20), ...up(8)))).toEqual({ at: 0, first: "t11" });
+	});
+	test("going down inside the window moves the marker without scrolling", () => {
+		expect(marker(pressDrawing(...down(4)))).toEqual({ at: 3, first: "t0" });
+	});
+	test("a window start for a box that is gone is dropped", () => {
+		const v = cockpitView({ ...base, nav: { tops: { "no such box": 3 } } });
+		expect(v.nav.tops).toBeUndefined();
 	});
 });
 
@@ -1610,7 +1648,7 @@ describe("the selected line renders inside the frame", () => {
 	});
 	test("the footer lists the keys on every wide width, still starting with esc/q close", () => {
 		const last = (w: number) => draw(cockpitView(FULL()), w).at(-1)!;
-		for (const w of [72, 100, 140]) expect(last(w)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home ═+╝$/);
+		for (const w of [72, 100, 140]) expect(last(w)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active ═+╝$/);
 		expect(draw(cockpitView(FULL()), 50).at(-1)).toBe("esc/q close");
 	});
 	test("property: every line is at most the width and exactly the width from 72 columns, with or without a selection", () => {
