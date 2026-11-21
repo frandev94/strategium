@@ -21,7 +21,7 @@ function parseRule(file: string) {
 }
 
 /** The `rule://strategium-…` names listed in SKILL.md's `## Rules` section vs the files: what is listed without a file, and what has a file but is not listed. */
-export function missingRules(skill: string, ruleFiles: string[]) {
+function missingRules(skill: string, ruleFiles: string[]) {
 	const section = skill.replace(/\r\n/g, "\n").match(/^## Rules\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? "";
 	const listed = [...new Set([...section.matchAll(/rule:\/\/(strategium-[a-z-]+)/g)].map(m => m[1]))];
 	const have = ruleFiles.map(f => f.replace(/\.md$/, ""));
@@ -85,12 +85,17 @@ describe("frontmatter", () => {
 // Samples per TTSR rule: the raw command (what `omp ttsr test` takes) and the JSON-args form the tool stream carries.
 const samples: Record<string, { violations: string[]; valid: string[] }> = {
 	"strategium-plan-copy": {
-		violations: ["cp agent://L60 local://60-plan.md", '{"command":"cp agent://L60 local://60-plan.md"}'],
+		violations: [
+			"cp agent://L60 local://60-plan.md",
+			'{"command":"cp agent://L60 local://60-plan.md"}',
+			'{"command":"echo hi\\ncp agent://L60 y"}',
+			"cp -t /tmp agent://L60",
+		],
 		valid: [
 			"cat agent://L60 > local://60-plan.md",
 			'{"command":"cat agent://L60 > local://60-plan.md"}',
 			"cp README.md /tmp/x && cat agent://L60 > local://60-plan.md",
-			'{"command":"cp a.txt b.txt\ncat agent://L60 > local://p.md"}',
+			'{"command":"cp a.txt b.txt\\ncat agent://L60 > local://p.md"}',
 			"ls my-cp-dir agent://x",
 		],
 	},
@@ -166,6 +171,7 @@ describe("omp ttsr test (binary, optional)", () => {
 				expect(s, `${file} has no samples`).toBeDefined();
 				const run = (snippet: string) => {
 					const p = Bun.spawnSync(["omp", "ttsr", "test", "--json", "--rule", join(rulesDir, file), "--source", "tool", "--tool", "bash", snippet]);
+					expect(p.exitCode).toBe(0);
 					return (JSON.parse(p.stdout.toString()).triggered as unknown[]).length;
 				};
 				expect(run(s.violations[0])).toBe(1);

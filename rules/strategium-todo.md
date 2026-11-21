@@ -24,5 +24,5 @@ These rules apply while a Strategium run is open.
 ## Building it
 
 - The run's first action is `todo init` of the skeleton in the skill, then `todo start` Objective.
-- In omp plan mode that first `init` is the same skeleton built with `todo.ts --to Scriptorium`, so the todo holds only Muster, Auspex and Scriptorium.
+- In omp plan mode that first `init` is the same skeleton built with `todo.ts --to Scriptorium`, so the todo holds only Muster, Auspex and Scriptorium and the footer never shows a station that cannot run there.
 - Build every todo with `todo.ts`, never by hand. It tags each task, checks the agent names and the duplicates the todo tool would refuse, and owns the glyph table.
