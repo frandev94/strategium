@@ -1595,6 +1595,38 @@ describe("the run follows an approved plan", () => {
 		expect(log).not.toContain("station Muster");
 	});
 
+	test("a reverse init with the real shape (Muster/Auspex/Scriptorium) at Skirmish with a Demo seal waiting moves nothing and grants nothing", async () => {
+		const { s, ctx } = await owner();
+		await todoResult(s, ctx, "start", [
+			phase("Deployment", ["[captain] Branch and squads", "completed"]),
+			phase("Skirmish", ["[battle-brother] Squads", "completed"], ["[seal] Demo", "in_progress"]),
+			phase("Inquisition", ["[inquisitor] Review", "pending"]),
+			phase("Debrief", ["[captain] Debrief", "pending"]),
+		]);
+		expect(s.shown()).toContain("seal Demo");
+		await todoResult(s, ctx, "init", [
+			phase("Muster", ["[captain] Objective", "in_progress"], ["[captain] Orders", "pending"]),
+			phase("Auspex", ["[scout] Map", "pending"]),
+			phase("Scriptorium", ["[librarian] Plan", "pending"], ["[seal] Plan", "pending"]),
+		]);
+		const log = (JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.cockpit"), "utf8")).chronicle as { text: string }[]).map(e => e.text);
+		expect(s.shown()).toContain("seal Demo");
+		expect(log).not.toContain("station Muster");
+		expect(log.filter(t => t.includes("granted"))).toEqual([]);
+	});
+
+	test("a hand-off with a pending user task left in Scriptorium still logs the Plan grant once and moves the footer to Deployment", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", [
+			phase("Muster", ["[captain] Objective", "completed"]),
+			phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "in_progress"], ["[user] Own errand", "pending"]),
+		]);
+		await approve(s, sm, ctx);
+		await todoResult(s, ctx, "init", handOff());
+		expect(chronicleOf(s.dir).filter(t => t.includes("Plan granted"))).toHaveLength(1);
+		expect(s.shown()).toContain("Deployment");
+	});
+
 	test("squads declared in plan mode survive approve and execute", async () => {
 		const { s, sm, ctx } = await owner();
 		const slices = [{ id: "S1", parallel: false, files: ["a.ts"] }];

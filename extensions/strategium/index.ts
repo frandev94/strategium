@@ -107,13 +107,19 @@ export function whereFrom(phases: Phase[]): Where | undefined {
 	return { station: phases[i].name, ...(back ? { back: true as const } : {}), ...(seal ? { seal } : {}), ...(short ? { task: short } : {}) };
 }
 
-/** An init over existing phases that shares a station with them re-creates the todo (full skeleton, compaction): omp's auto-start there is not progress. One that shares none is the plan-mode hand-off. */
-const isRebuild = (op: string | undefined, before: Phase[] | undefined, after: Phase[] | undefined) =>
-	op === "init" && !!before?.length && !!after?.some(p => before.some(b => b.name === p.name));
+const STATION_ORDER = ["Muster", "Auspex", "Scriptorium", "Deployment", "Skirmish", "Inquisition", "Extraction", "Debrief"];
 
-/** The plan-mode hand-off: a non-empty init replacing non-empty phases without sharing a station. An empty init is not one. */
-const isHandOff = (op: string | undefined, before: Phase[] | undefined, after: Phase[] | undefined): before is Phase[] =>
-	op === "init" && !!before?.length && !before.some(p => p.tasks.some(t => t.status === "pending")) && !!after?.length && !isRebuild(op, before, after);
+/** The plan-mode hand-off: a non-empty init that shares no station with the phases it replaces and starts after their last one in the skeleton order. An unknown station is no hand-off. */
+const isHandOff = (op: string | undefined, before: Phase[] | undefined, after: Phase[] | undefined): before is Phase[] => {
+	if (op !== "init" || !before?.length || !after?.length || after.some(p => before.some(b => b.name === p.name))) return false;
+	const at = (p: Phase) => STATION_ORDER.indexOf(p.name);
+	const last = Math.max(...before.map(at));
+	return before.every(p => at(p) >= 0) && at(after[0]) > last;
+};
+
+/** Any other non-empty init over existing phases (compaction, reverse init) re-creates the todo: omp's auto-start there is not progress, and it grants nothing. An empty init is ignored. */
+const isRebuild = (op: string | undefined, before: Phase[] | undefined, after: Phase[] | undefined) =>
+	op === "init" && !!before?.length && !isHandOff(op, before, after);
 
 /**
  * The run's KEY from the objective as /strategium parsed it: a key as given, a `@file`'s base name, or the first words of "free text".
