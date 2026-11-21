@@ -36,11 +36,11 @@ Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition �
 ```
 
 1. **Muster** — the objective and the orders: Plan by default, Demo and MR when they apply (Demo when the objective has something to see running: a screen, an HTTP API, a DLL loaded by a host), and with ticketing the booking. You are asked only when there is a choice (a booking, a Demo or MR toggle, `Review & merge`, a theatre field or the Archmagos box); otherwise the run takes the defaults and goes straight to Auspex.
-2. **Auspex** — scouts map the code the objective touches.
+2. **Auspex** — scouts map the code the objective touches and the repo's check tiers (fast, squad, full); a `sonic` times the full checks on `main` as the baseline and marks a failure that passes on one rerun as flaky.
 3. **Scriptorium** — one librarian writes a spec, 1–5 squads and a Merge bar; when the objective splits into areas, one librarian per area, then a lead merges the parts (with the Archmagos Dominus marked in Muster, an `archmagos` integrates the parts instead of the lead).
 4. **Deployment** — one branch for the run, the squads declared with their files; each isolated agent works in its own omp checkout.
-5. **Skirmish** — a `battle-brother` implements each squad test-first; an `apothecary` tries to break the new tests, only on squads with new logic and within a fixed budget.
-6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar, and a `confessor` of another model family (when available) joins when the plan flags the diff as large or risky, or in the Review & merge loop; a `sonic` runs the repo's checks.
+5. **Skirmish** — a `battle-brother` implements each squad test-first with the fast and squad check tiers (the full checks stay with `sonic`); an `apothecary` tries to break the new tests, only on squads with new logic and within a fixed budget.
+6. **Inquisition** — an `inquisitor` reviews the diff against the Merge bar and checks that every deleted or weakened test is still covered by another, and a `confessor` of another model family (when available) joins when the plan flags the diff as large or risky, or in the Review & merge loop; a `sonic` runs the repo's full checks and reports their times next to the baseline's.
 7. **Extraction** — the commit and the merge request, after your seal. With the optional `Review & merge` seal, a fresh inquisitor and confessor review the PR once CI is green, for at most 2 rounds, and a clean review ends in the merge.
 
 ```mermaid
@@ -54,7 +54,7 @@ flowchart TB
   end
   subgraph auspex["II · AUSPEX"]
     direction LR
-    A1["scout ×1-3<br/>map the code"] --> A2["sonic<br/>baseline"]
+    A1["scout ×1-3<br/>map the code"] --> A2["sonic<br/>timed baseline"]
   end
   subgraph scriptorium["III · SCRIPTORIUM"]
     direction LR
@@ -73,7 +73,7 @@ flowchart TB
   end
   subgraph inquisition["VI · INQUISITION"]
     direction LR
-    Q1["inquisitor"] --> Q4["sonic<br/>checks"]
+    Q1["inquisitor"] --> Q4["sonic<br/>full checks · times"]
     QF{"large or<br/>risky diff?"} -->|"yes"| Q2["confessor"] --> Q4
     QF -->|"no"| Q4
     QS{"auth or<br/>network?"} -->|"yes"| Q3["security-reviewer"] --> Q4
@@ -121,7 +121,7 @@ A run goes back instead of forward, and every return has a trigger, a target and
 | **Recon** | the map of the code is wrong | one more `scout` with that exact gap | 1 per run |
 | **Redraft** | the plan is wrong, or a squad's acceptance check cannot be satisfied as written, or you reject the plan at seal Plan | back to Auspex first: one or two scouts refresh the map with what changed (a `## Redraft` section, never a full sweep). Then the same `librarian` re-plans the remaining work (with areas, only the affected area, then the lead merges again; on a run marked for the Archmagos Dominus, one new `archmagos` re-integrates only that area), and seal Plan is asked again | 1 per run |
 | **Penance** | the code is wrong: check red, apothecary survivors or fuzz crashes, BLOCKING findings | a `battle-brother` fix run with every open finding ID in one brief, never the previous report; it first reproduces each finding, and one it cannot reproduce comes back NOT REPRODUCED | 2 rounds per squad, then one `veteran` run |
-| **Retrial** | the fixed code needs a new look | the `inquisitor` again (the `confessor` re-checks its own IDs) on the open finding IDs and the fix range only, then `sonic` for the checks | 2 rounds per Merge bar item |
+| **Retrial** | the fixed code needs a new look | the `inquisitor` again (the `confessor` re-checks its own IDs) on the open finding IDs and the fix range only, then `sonic` for the full checks | 2 rounds per Merge bar item |
 | **Stand down** | the budget is spent, or the failure is not in the code | you, with the open items | — |
 
 If the code can satisfy the squad's check as written, it is a penance; if it cannot, the squad was cut wrong and it is a redraft. A return past a granted seal breaks the seal (except the Review & merge loop), and it is asked for again. What already passed stays passed.
@@ -136,13 +136,13 @@ The Captain plans and delegates; every other role is an agent it starts. Each on
 | <img src="docs/icons/radar.svg" width="18" alt=""> `scout` | Auspex | maps the code the objective touches; 1–3 at once, each with its own focus | writes files or runs bash | `@smol` / medium |
 | <img src="docs/icons/book-open-page-variant.svg" width="18" alt=""> `librarian` | Scriptorium | writes the spec, the squads and the Merge bar; one per area when the objective splits, then a lead merges | edits repository files | `@plan` / high |
 | <img src="docs/icons/head-cog.svg" width="18" alt=""> `archmagos` | Scriptorium | integrates the area plans into one, checking every assumption against the source; only when marked in Muster | edits, writes or starts agents | `@plan` / xhigh |
-| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | builds one squad test-first and reports red/green evidence | commits or touches files outside its squad | its squad's [tier](#tiers) |
-| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rebuilds a squad that failed twice, after finding why | commits | heavy tier (`@slow:high`); escalation only |
+| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | builds one squad test-first with the fast and squad check tiers and reports red/green evidence | commits, touches files outside its squad or runs the full checks | its squad's [tier](#tiers) |
+| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rebuilds a squad that failed twice, after finding why | commits or runs the full checks | heavy tier (`@slow:high`); escalation only |
 | <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | mutates the squad's changed lines and fuzzes untrusted input, to show where the tests do not protect the code | edits the tests under audit, or leaves the tree changed | `@task` / medium |
-| <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | reviews the diff against the Merge bar; a PASS needs file:line or command evidence | edits, commits or pushes | `@slow` / high |
+| <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | reviews the diff against the Merge bar and every deleted or weakened test; a PASS needs file:line or command evidence | edits, commits or pushes | `@slow` / high |
 | <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | a second, independent review by another model family, when the plan flags the diff as large or risky, or in the Review & merge loop | reads the inquisitor's report | gpt-6-astra (else `@task`) / high |
 | <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | joins when the diff touches auth, external input, secrets or the network | edits | bundled, your session's model |
-| <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | runs the repo's checks: the baseline first, the full checks at the end | fixes what fails | `@smol` / medium |
+| <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | runs the repo's full checks: the timed baseline first (a failure that passes on one rerun is flaky), the full checks at the end with their times next to the baseline's | fixes what fails | `@smol` / medium |
 
 #### Models
 
