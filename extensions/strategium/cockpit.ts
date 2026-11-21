@@ -224,7 +224,7 @@ export function cockpitView(input: ViewInput) {
 		else {
 			const raw = (c.el * 100) / c.bk;
 			const fill = Math.floor((Math.min(raw, 100) * BAR) / 100);
-			clock.text = `⧗ ${el}/${Math.round(c.bk)} min`;
+			clock.text = `⧗ ${el}|${Math.round(c.bk)} min`;
 			clock.pct = Math.round(raw);
 			clock.bar = "▰".repeat(fill) + "▱".repeat(BAR - fill);
 			clock.tone = raw >= 100 ? "red" : raw >= 80 ? "gold" : "green";
