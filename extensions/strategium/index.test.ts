@@ -3511,6 +3511,151 @@ describe("cockpit", () => {
 		});
 	});
 
+	describe("the cursor", () => {
+		const stations = (a: string, b: string, c: string) => [
+			{ name: "Muster", tasks: [{ content: "one", status: a }] },
+			{ name: "Auspex", tasks: [{ content: "two", status: b }] },
+			{ name: "Deployment", tasks: [{ content: "three", status: c }] },
+		];
+		const open = async () => {
+			const { s, ui } = await running();
+			s.todo(stations("completed", "in_progress", "pending"));
+			await s.sub("cockpit");
+			return { s, comp: ui.opened.at(-1)!.component, ui };
+		};
+		const text = (c: { render(w: number): string[] }) => plain(c.render(100).join("\n"));
+
+		test("left shows the previous station and right comes back to the active one", async () => {
+			const { comp } = await open();
+			const before = text(comp);
+			comp.handleInput!("\x1b[D");
+			expect(text(comp)).not.toBe(before);
+			comp.handleInput!("\x1b[C");
+			expect(text(comp)).toBe(before);
+			comp.handleInput!("q");
+		});
+
+		test("down selects a line, and the selection survives a redraw of the run", async () => {
+			const { s, comp } = await open();
+			const before = text(comp);
+			comp.handleInput!("\x1b[B");
+			const selected = text(comp);
+			expect(selected).not.toBe(before);
+			expect(selected).toContain("▸");
+			s.todo(stations("completed", "in_progress", "pending"));
+			expect(text(comp)).toBe(selected);
+			comp.handleInput!("q");
+		});
+
+		test("a station change drops the browsed station and shows the active one", async () => {
+			const { s, comp } = await open();
+			const active = text(comp);
+			comp.handleInput!("\x1b[D");
+			s.todo(stations("completed", "completed", "in_progress"));
+			const moved = text(comp);
+			comp.handleInput!("\x1b[D");
+			comp.handleInput!("\x1b[C");
+			expect(text(comp)).toBe(moved);
+			expect(moved).not.toBe(active);
+			comp.handleInput!("q");
+		});
+
+		test("Esc and q close in one press while browsing", async () => {
+			for (const key of ["\x1b", "q"]) {
+				const { comp, ui } = await open();
+				comp.handleInput!("\x1b[D");
+				comp.handleInput!("\x1b[B");
+				comp.handleInput!(key);
+				expect(ui.draws.closed).toBe(1);
+			}
+		});
+
+		test("a reopened cockpit starts clean: no selection and no viewing note", async () => {
+			const { s, comp, ui } = await open();
+			comp.handleInput!("\x1b[B");
+			comp.handleInput!("\x1b[D");
+			expect(text(comp)).toContain("viewing");
+			comp.handleInput!("q");
+			await s.sub("cockpit");
+			const again = text(ui.opened.at(-1)!.component);
+			expect(again).not.toContain("▸");
+			expect(again).not.toContain("viewing");
+			ui.opened.at(-1)!.component.handleInput!("q");
+			const saved = readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8");
+			expect(saved).not.toContain("nav");
+			expect(saved).not.toContain("cursor");
+		});
+
+		test("a key keeps the agent status the host reported since the last redraw", async () => {
+			const { s, comp } = await open();
+			const host: { idle: boolean } = Reflect.get(s.ctx, "host");
+			host.idle = false;
+			s.handlers.agent_start.forEach(f => f({}, s.ctx));
+			expect(text(comp)).toContain("AGENT AT WORK");
+			host.idle = true;
+			s.handlers.agent_end.forEach(f => f({}, s.ctx));
+			expect(text(comp)).toContain("VOX OPEN");
+			comp.handleInput!("\x1b[B");
+			expect(text(comp)).toContain("VOX OPEN");
+			comp.handleInput!("q");
+		});
+
+		test("browsing back to the station the run returns to does not leave a viewing note", async () => {
+			const { s, comp } = await open();
+			comp.handleInput!("\x1b[D"); // browse Muster while Auspex is active
+			expect(text(comp)).toContain("viewing");
+			s.todo(stations("completed", "completed", "in_progress")); // the run moves on to Deployment
+			s.todo(stations("completed", "in_progress", "pending")); // and back to Auspex
+			expect(text(comp)).not.toContain("viewing");
+			comp.handleInput!("q");
+		});
+
+		test("a second down moves the marker to another line", async () => {
+			const { s, comp } = await open();
+			s.todo(stations("completed", "completed", "in_progress")); // a second chronicle entry
+			comp.handleInput!("\x1b[B");
+			const first = text(comp);
+			comp.handleInput!("\x1b[B");
+			const second = text(comp);
+			expect(second).toContain("▸");
+			expect(second).not.toBe(first);
+			comp.handleInput!("q");
+		});
+
+		test("home after browsing shows the active station again", async () => {
+			const { comp } = await open();
+			const before = text(comp);
+			comp.handleInput!("\x1b[D");
+			expect(text(comp)).toContain("viewing");
+			comp.handleInput!("\x1b[H");
+			expect(text(comp)).toBe(before);
+			comp.handleInput!("q");
+		});
+
+		test("the cursor stays on its line when a redraw adds a chronicle entry above it", async () => {
+			const { s, comp } = await open();
+			comp.handleInput!("\x1b[B");
+			const marked = (t: string) => t.split("\n").find(l => l.includes("▸"))!;
+			const line = marked(text(comp));
+			s.todo(stations("completed", "completed", "in_progress")); // the station change logs a new entry
+			const after = text(comp);
+			expect(after).toContain("station Deployment");
+			expect(marked(after)).toBe(line);
+			comp.handleInput!("q");
+		});
+
+		test("a run key change with the cockpit open leaves no marker", async () => {
+			const { s, comp } = await open();
+			comp.handleInput!("\x1b[B");
+			expect(text(comp)).toContain("▸");
+			await s.call({ action: "end" });
+			await s.call({ action: "begin", key: "K-2" });
+			s.todo(stations("completed", "in_progress", "pending"));
+			expect(text(comp)).not.toContain("▸");
+			comp.handleInput!("q");
+		});
+	});
+
 	describe("the overlay", () => {
 		test("with no run it warns", async () => {
 			const s = setup();

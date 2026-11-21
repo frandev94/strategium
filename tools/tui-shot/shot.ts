@@ -165,6 +165,10 @@ export const KEYS: Record<string, string[]> = {
 	q: [rec(81, 16, 113, 1, 0), rec(81, 16, 113, 0, 0)],
 	"plain-q": ["q"],
 	down: [rec(40, 80, 0, 1, 256), rec(40, 80, 0, 0, 256)],
+	up: [rec(38, 72, 0, 1, 256), rec(38, 72, 0, 0, 256)],
+	left: [rec(37, 75, 0, 1, 256), rec(37, 75, 0, 0, 256)],
+	home: [rec(36, 71, 0, 1, 256), rec(36, 71, 0, 0, 256)],
+	tab: [rec(9, 15, 9, 1, 0), rec(9, 15, 9, 0, 0)],
 	right: [rec(39, 77, 0, 1, 256), rec(39, 77, 0, 0, 256)],
 	enter: ["\r"],
 };
@@ -938,6 +942,71 @@ function checksAgentCost(C: Ctx) {
 	}
 }
 
+/** Cells holding the selection marker ▸ (the cockpit's cursor), as [row, col]. */
+const markers = (s: Snap) => s.cells.flatMap((r, y) => r.flatMap((c, x) => (c === "▸" ? [[y, x] as [number, number]] : [])));
+/** The wide layout's station row: the ╟─ row that is not the CHRONICLE rule. */
+const stationRow = (s: Snap) => s.rowsText.find(r => r.startsWith("╟─") && !r.includes("CHRONICLE")) ?? "";
+
+// Every key of cockpit-cursor: [step and snapshot name, bytes sent, what the screen must show, PNG]. win32 is Windows Terminal's real path; the rest go through conhost's own parser.
+// move: one ▸ that moved (the first one appears); chron: ▸ under the CHRONICLE rule; station: the ╟─ row names it (viewing, active: Skirmish, unless it is the active one); narrow: 60 columns, one ▸, foot kept.
+// shortcut: "moved" is a changed cell, not "lower": boxes sit in a grid, so the next line may be in the next column, higher up; upgrade if the check must prove direction.
+type Want = "move" | "chron" | "narrow" | ["station", string];
+const CURSOR: [name: string, seqs: string[], want: Want, png?: boolean][] = [
+	["down", KEYS.down, "move", true], ["down-vt", ["\x1b[B"], "move"], ["down-ss3", ["\x1bOB"], "move"], ["down-mod", ["\x1b[1;1B"], "move"],
+	["down-events", ["\x1b[1;1:1B", "\x1b[1;1:3B"], "move"], ["down-num", ["\x1b[1;129B"], "move"], ["down-kp", ["\x1b[57420u"], "move"],
+	["up", KEYS.up, "move"], ["up-vt", ["\x1b[A"], "move"],
+	["tab", KEYS.tab, "move"], ["tab-ht", ["\t"], "move"],
+	["chronicle", Array.from({ length: 30 }, () => KEYS.down).flat(), "chron", true], // clamps on the oldest entry
+	["left", KEYS.left, ["station", "Deployment"], true], ["home-vt", ["\x1b[H"], ["station", "Skirmish"]],
+	["left-vt", ["\x1b[D"], ["station", "Deployment"]], ["home", KEYS.home, ["station", "Skirmish"]],
+	["left-mod", ["\x1b[1;1D"], ["station", "Deployment"]], ["left-2", KEYS.left, ["station", "Scriptorium"]],
+	["right", KEYS.right, ["station", "Deployment"]], ["home-vt-2", ["\x1b[H"], ["station", "Skirmish"]],
+	["narrow", KEYS.down, "narrow", true],
+];
+async function stepsCockpitCursor(R: Run) {
+	R.notes = {};
+	const inputs = () => R.logEvents().filter(e => e.ev === "input").map(e => e.data as string);
+	await R.open(); await R.snap("open");
+	R.notes.open = R.altOpen();
+	for (const [name, seqs, want, png] of CURSOR) {
+		if (want === "narrow") { await R.resize(60, R.rows); await R.sleep(1.5); }
+		const n = inputs().length;
+		for (const s of seqs) { R.send(s); await R.sleep(0.03); }
+		await R.sleep(0.7); await R.snap(name, !!png);
+		R.notes[name] = [R.altOpen(), inputs().slice(n).join(""), seqs];
+	}
+	await R.key("esc"); await R.waitQuiet(1.0, 3.0); await R.snap("closed");
+}
+function checksCockpitCursor(C: Ctx) {
+	const o = snapOf(C, "open");
+	C.ck("open: alternate buffer, framed, no ▸ (the cursor starts unset)", C.R.notes.open && o.type === "alternate" && o.framed() && markers(o).length === 0, markers(o), "none", o);
+	let prev: [number, number] | null = null;
+	for (const [name, , want] of CURSOR) {
+		const [open, saw, sent] = C.R.notes[name] as [boolean, string, string[]], s = snapOf(C, name), m = markers(s);
+		if (!saw) { C.say(`${name.padEnd(11)} skip: not delivered, omp's onTerminalInput saw nothing`); continue; }
+		C.say(`${name.padEnd(11)} sent=${JSON.stringify(sent.join(""))} onTerminalInput saw=${JSON.stringify(saw)}` + (!sent[0].endsWith("_") && sent.join("") !== saw ? "  not faithful: conhost rewrote it" : ""));
+		C.ck(`${name}: cockpit still open (alternate buffer${want === "narrow" ? "" : ", framed"})`, open && s.type === "alternate" && (want === "narrow" || s.framed()), s.type, "alternate", s);
+		const bad = range(0, s.rows).filter(i => oneOf(s.at(i, 0), "╔║╟╚") && !oneOf(s.at(i, s.cols - 1), "╗║╢╝"));
+		C.ck(`${name}: every framed row ends at col ${s.cols - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, s);
+		if (want === "move" || want === "chron") {
+			C.ck(`${name}: exactly one ▸`, m.length === 1, m, "1 marker", s);
+			if (want === "move" && m.length === 1 && prev) C.ck(`${name}: ▸ moved`, m[0][0] !== prev[0] || m[0][1] !== prev[1], m, `not ${repr(prev)}`, s);
+			if (want === "chron") C.ck(`${name}: ▸ is under the CHRONICLE rule`, m.length === 1 && s.where("CHRONICLE") >= 0 && m[0][0] > s.where("CHRONICLE"), m, `row > ${s.where("CHRONICLE")}`, s);
+			prev = m.length === 1 ? m[0] : prev;
+		} else if (want === "narrow") {
+			const last = s.rowsText.findLast(r => r) ?? "";
+			C.ck("narrow: 60 columns, one ▸ visible", s.cols === 60 && m.length === 1, [s.cols, m], "60, 1", s);
+			C.ck("narrow: last row is esc/q close", last.includes("esc/q close"), last, "esc/q close", s);
+		} else {
+			const st = want[1], row = stationRow(s), active = st === "Skirmish";
+			C.ck(`${name}: the ╟─ row names ${st}${active ? "" : ", viewing, active: Skirmish"}`,
+				row.includes(st) && (active ? !row.includes("viewing") : row.includes("viewing") && row.includes("active: Skirmish")), row, st, s);
+		}
+	}
+	const c = snapOf(C, "closed");
+	C.ck("closed: Esc closes in one press (normal buffer, no frame, footer back)", c.type === "normal" && !c.framed() && c.has("strategium: demo-shot"), c.type, "normal, no frame", c);
+}
+
 // name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, settle (false: wait only for the first heartbeat), steps, checks
 type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
 export const REPLAYS: Record<string, Replay> = {
@@ -964,6 +1033,7 @@ export const REPLAYS: Record<string, Replay> = {
 	"agent-signal": { r: "R21,#115", kind: "FIXED", seed: "signal", steps: stepsAgentSignal, checks: checksAgentSignal },
 	"agent-cost": { r: "R22,#25", kind: "FIXED", seed: "live", steps: stepsAgentCost, checks: checksAgentCost },
 	"cockpit-restart": { r: "#19", kind: "FIXED", seed: "restart", steps: stepsCockpitRestart, checks: checksCockpitRestart },
+	"cockpit-cursor": { r: "#123", kind: "FIXED", seed: "restart", ext: true, steps: stepsCockpitCursor, checks: checksCockpitCursor },
 };
 
 // shortcut: only the entities Chromium's --dump-dom writes in text (amp, lt, gt, quot, apos, nbsp, numeric); a full table if that ever changes
