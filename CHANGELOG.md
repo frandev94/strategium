@@ -1,3 +1,12 @@
+## [0.2.19] - 2026-11-21
+
+### 🐛 Bug Fixes
+
+- *(extension)* Move per-session settings off the old session id
+
+### 🧪 Testing
+
+- *(extension)* An unset setting does not move as a session value
 ## [0.2.18] - 2026-11-21
 
 ### 🚀 Features
