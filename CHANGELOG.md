@@ -1,3 +1,17 @@
+## [0.2.15] - 2026-11-21
+
+### 🚀 Features
+
+- *(skills)* Plans give each squad a cost tier
+- *(extension)* Route each battle-brother to its squad's tier
+
+### 🐛 Bug Fixes
+
+- *(extension)* Read squad builds as own keys only
+
+### 📚 Documentation
+
+- *(skills)* Tier brief in plan mode and the smol fallback wording
 ## [0.2.14] - 2026-11-21
 
 ### 🚀 Features
