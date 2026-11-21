@@ -14,6 +14,7 @@ import {
 	sealsFrom,
 	type Deployed,
 	type Entry,
+	type Live,
 	type Phase,
 	type ViewInput,
 } from "./cockpit";
@@ -958,5 +959,159 @@ describe("seal panel hardening", () => {
 						else expect(Bun.stringWidth(plain(l))).toBeLessThanOrEqual(width);
 					}
 		});
+	});
+});
+
+describe("live agent lines", () => {
+	const MIN = 60_000;
+	const NOW = 1_700_000_000_000;
+	const live = (over: Partial<Live> = {}): Live => ({ since: NOW - 10 * MIN, at: NOW, ...over });
+	// One scout deployed `ago` minutes before NOW, with `l` as its live file.
+	const scout = (l: Live | undefined, d: Partial<Deployed> = {}, ago = 10) =>
+		input({ phases: phases(["[scout] look", "in_progress"]), deployed: new Map([["A", dep({ at: NOW - ago * MIN, ...d })]]), live: l && new Map([["A", l]]), now: NOW });
+	const draw = (i: ViewInput, width = 100) => renderCockpit(cockpitView(i), width, 0, TRUE);
+	const rows = (i: ViewInput, width = 100) => draw(i, width).map(plain);
+	const squad = (l: Live | undefined) =>
+		input({
+			phases: [{ name: "Skirmish", tasks: [{ content: "[battle-brother] build", status: "in_progress" }] }],
+			slices: [{ id: "a" }],
+			agents: { Brother: { id: "a" } },
+			deployed: new Map([["A", dep({ role: "battle-brother", squad: "a", station: "Skirmish", at: NOW - 10 * MIN })]]),
+			live: l && new Map([["A", l]]),
+			now: NOW,
+		});
+
+	test("a squad shows elapsed, done/total, the ETA and the current task under its line", () => {
+		const out = rows(squad(live({ done: 2, total: 5, current: "Write tests" })));
+		const at = out.findIndex(l => l.includes("squad a forging"));
+		expect(at).toBeGreaterThan(-1);
+		expect(out[at + 1]).toContain("10m · 2/5 · ~15m · Write tests");
+	});
+
+	test("no ETA while nothing is done, nor when everything is", () => {
+		expect(rows(squad(live({ done: 0, total: 5, current: "x" }))).join("\n")).toContain("10m · 0/5 · x");
+		expect(rows(squad(live({ done: 0, total: 5 }))).join("\n")).not.toContain("~");
+		expect(rows(squad(live({ done: 5, total: 5 }))).join("\n")).not.toContain("~");
+	});
+
+	test("the ETA rounds up and reads hours past 60 minutes", () => {
+		expect(rows(scout(live({ done: 1, total: 2 }), {}, 61)).join("\n")).toContain("1h01m · 1/2 · ~1h01m");
+		expect(rows(scout(live({ done: 1, total: 3 }), {}, 1)).join("\n")).toContain("1m · 1/3 · ~2m");
+	});
+
+	test("without a todo: elapsed and the intent, else the tool name", () => {
+		expect(rows(scout(live({ intent: "Reading the cockpit", tool: "read" }))).join("\n")).toContain("10m · Reading the cockpit");
+		expect(rows(scout(live({ tool: "read" }))).join("\n")).toContain("10m · read");
+		expect(rows(scout(live())).join("\n")).toMatch(/\n.*│ {3}10m {1,}│/);
+	});
+
+	test("a todo with total 0 is no todo", () => {
+		expect(rows(scout(live({ done: 0, total: 0, intent: "Idle" }))).join("\n")).toContain("10m · Idle");
+	});
+
+	test("elapsed reads <1m under a minute and 1h05m past an hour", () => {
+		expect(rows(scout(live(), {}, 0.5)).join("\n")).toContain("<1m");
+		expect(rows(scout(live(), {}, 65)).join("\n")).toContain("1h05m");
+	});
+
+	test("with no live entry: elapsed only; with no deploy time and no live: no detail", () => {
+		expect(rows(scout(undefined)).join("\n")).toMatch(/\n.*│ {3}10m {1,}│/);
+		const bare = input({ phases: phases(["[scout] look", "in_progress"]), deployed: new Map([["A", dep({})]]), now: NOW });
+		expect(rows(bare).join("\n")).not.toMatch(/\dm\b|<1m/);
+		expect(rows(bare).join("\n")).toContain("▶ A");
+	});
+
+	test("with no deploy time the live file's since gives the elapsed", () => {
+		expect(rows(scout(live({ since: NOW - 3 * MIN, intent: "Go" }), { at: undefined })).join("\n")).toContain("3m · Go");
+	});
+
+	test("done agents show no detail", () => {
+		expect(rows(scout(live({ intent: "Reading" }), { state: "done" })).join("\n")).not.toContain("Reading");
+	});
+
+	test("a stalled agent draws mark, text and detail in gold, with the minutes", () => {
+		const l = live({ at: NOW - 6 * MIN, intent: "Reading" });
+		const raw = draw(scout(l, { stalled: l.at })).join("\n");
+		expect(rows(scout(l, { stalled: l.at })).join("\n")).toContain("stalled 6m · 10m · Reading");
+		expect(raw).toContain(`${GOLD}▶\x1b[39m ${GOLD}A\x1b[39m`);
+		expect(raw).toContain(`${GOLD}stalled 6m`);
+	});
+
+	test("a stall mark for an older tool call no longer applies", () => {
+		const l = live({ at: NOW - 1 * MIN });
+		const out = rows(scout(l, { stalled: NOW - 8 * MIN })).join("\n");
+		expect(out).not.toContain("stalled");
+		expect(draw(scout(l, { stalled: NOW - 8 * MIN })).join("\n")).not.toContain(`${GOLD}▶`);
+	});
+
+	test("a warn chronicle entry is gold", () => {
+		const raw = draw(input({ chronicle: [{ at: "10:00", who: "A", text: "stalled 6m", tone: "warn" }] })).join("\n");
+		expect(raw).toContain(`${GOLD}stalled 6m`);
+	});
+
+	test("ANSI, OSC links, control, bidi and U+2028 are removed from current, intent and tool, on one row", () => {
+		const hostile = "\x1b[31mred\x1b[0m \x1b]8;;http://evil.test\x07link\x1b]8;;\x07\ttab\r\nnl \u202eRTL\u2066\u2028x\u0085\x00\x7f end";
+		for (const i of [squad(live({ done: 1, total: 2, current: hostile })), scout(live({ intent: hostile })), scout(live({ tool: hostile }))]) {
+			const out = draw(i, 140);
+			expect(out.join("\n").replace(/\x1b\[[0-9;]*m/g, "")).not.toMatch(/[\x1b\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\u2028\u2029]/);
+			expect(out.join("\n")).toContain("red link tab nl RTL x end");
+		}
+	});
+
+	test.each([100, 140])("a 300-character intent is cut with … inside the box width at %i columns", width => {
+		const out = rows(scout(live({ intent: "w".repeat(300) })), width);
+		const row = out.find(l => l.includes("wwww"))!;
+		expect(row).toContain("…");
+		expect(Bun.stringWidth(row)).toBeLessThanOrEqual(width);
+		for (const l of out.slice(0, -1)) expect(Bun.stringWidth(l)).toBe(width);
+	});
+
+	test("the row cap never separates a line from its detail", () => {
+		const many = Array.from({ length: 6 }, (_, i) => [`A${i}`, dep({ at: NOW - 10 * MIN })] as const);
+		const i = input({ phases: phases(["[scout] look", "in_progress"]), deployed: new Map(many), live: new Map(many.map(([id]) => [id, live({ intent: `intent ${id}` })])), now: NOW });
+		const out = rows(i);
+		const box = out.slice(out.findIndex(l => l.includes("┌")) + 1, out.findIndex(l => l.includes("└")));
+		expect(box).toHaveLength(8); // the task line, 3 whole line+detail pairs, then the +N more row
+		for (const [n, r] of box.entries()) if (/intent A\d/.test(r)) expect(box[n - 1]).toMatch(/▶ A\d/);
+		expect(box.at(-1)).toMatch(/\+\d+ more/);
+		// The pair that would cross the cap goes whole into the +N more count.
+		const shown = box.filter(r => /▶ A\d/.test(r)).length;
+		expect(box.filter(r => /intent A\d/.test(r))).toHaveLength(shown);
+		expect(shown).toBe(3);
+		expect(box.at(-1)).toContain(`+${6 - shown} more`);
+	});
+
+	test("a rendered row is 2 cells in for a detail, in iron when not stalled", () => {
+		const raw = draw(scout(live({ intent: "Reading" }))).find(l => l.includes("Reading"))!;
+		expect(raw).toContain(`  ${TRUE.iron}10m · Reading`);
+	});
+
+	// properties: no property-test library in the repo, so each invariant runs over a fixed adversarial corpus.
+	const CORPUS = ["", " ", "plain", "\x1b[31mred", "\x1b]8;;u\x07l\x1b]8;;\x07", "\x1b", "\x1b]8;;http://x", "a\tb\r\nc", "\u202e\u2066\u2028\u2029\u200e\u061c", "\x00\x07\x7f\x9b", "日本語".repeat(40), "e\u0301".repeat(150), "👨‍👩‍👧".repeat(60), "x".repeat(5000), "\x1b[".repeat(100)];
+	const NUMS: [number | undefined, number | undefined][] = [[0, 5], [1, 5], [4, 5], [5, 5], [6, 5], [0, 0], [undefined, 3], [2, undefined], [-1, 4], [1.5, 4], [Number.NaN, 4], [3, Number.POSITIVE_INFINITY]];
+
+	test("property 1: a row has no escape but the palette's, nor a control or bidi character from agent text", () => {
+		const sgr = /\x1b\[[0-9;]*m/g;
+		for (const s of CORPUS)
+			for (const width of [40, 100, 140]) {
+				const out = [squad(live({ done: 1, total: 2, current: s, intent: s, tool: s })), scout(live({ intent: s, tool: s }))].flatMap(i => draw(i, width));
+				for (const l of out) expect(l.replace(sgr, "")).not.toMatch(/[\x00-\x09\x0b-\x1a\x1c-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\u2028\u2029\u200e\u200f\u061c]|\x1b/);
+			}
+	});
+
+	test("property 2: every drawn row is exactly the width, so no box row is wider than the box", () => {
+		for (const s of CORPUS)
+			for (const width of [40, 71, 72, 100, 140]) {
+				const out = rows(squad(live({ done: 1, total: 2, current: s })), width).concat(rows(scout(live({ intent: s })), width));
+				for (const l of out) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
+			}
+	});
+
+	test("property 3: the ETA is there iff 0 < done < total", () => {
+		for (const [done, total] of NUMS) {
+			const detail = rows(squad(live({ done, total, current: "t" })), 140).join("\n");
+			const valid = Number.isInteger(done) && Number.isInteger(total) && done! > 0 && done! < total!;
+			expect(detail.includes("~")).toBe(valid);
+		}
 	});
 });

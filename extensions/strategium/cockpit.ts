@@ -4,9 +4,11 @@ import { DEFAULT_THEME, THEMES, type Theme, type Tone } from "./themes";
 
 export type Phase = { name: string; tasks: { content: string; status: string }[] };
 export type Seal = { id: string; state: "granted" | "waiting" | "pending" };
-export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" };
+export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" | "warn" };
 export type Note = { veteran?: true; failed?: true };
-export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed" }; // station: its name at spawn; undefined with no phases
+export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; stalled?: number }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. stalled: the `at` of the live entry that stalled
+/** What a child writes about itself, already validated by the reader (contract v1): ms timestamps, its todo counts and its last tool call. */
+export type Live = { since: number; at: number; tool?: string; intent?: string; done?: number; total?: number; current?: string };
 export type Depth = "truecolor" | "256";
 type Ansi = `\x1b[${string}`; // an escape sequence, not a hex: keeps a Theme out of renderCockpit
 export type Palette = Record<Tone, Ansi> & { bg?: Ansi }; // a foreground sequence per tone, bg a background one
@@ -24,10 +26,34 @@ export type ViewInput = {
 	seal?: { id: string; lines: string[] }; // what the Captain prepared for the seal that waits (the `seal` action); shown only while that seal waits
 	glyphs?: boolean; // Nerd Font glyphs (STRATEGIUM_GLYPHS=1) instead of plain symbols; never emoji
 	status?: "working" | "awaiting"; // what the main agent is doing: a turn runs, or the prompt is free for the user's orders
+	live?: Map<string, Live>; // agent id → what that agent last wrote about itself; text in it is untrusted
+	now?: number; // ms; the elapsed time of a live row counts to it. No now, no live rows
 };
 export type View = ReturnType<typeof cockpitView>;
 
 type Kind = "active" | "done" | "failed" | "idle";
+type Line = { kind: Kind; mark: string; text: string; detail?: string; stalled?: true }; // detail: its own row under the line
+
+/** Agent text as one printable line: ANSI sequences stripped, then control and bidi characters and whitespace runs as single spaces. */
+const oneLine = (s: unknown) => (typeof s === "string" ? clean(Bun.stripANSI(s)).replace(/\s+/g, " ").trim() : "");
+const span = (min: number) => (min < 1 ? "<1m" : min < 60 ? `${min}m` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}m`);
+const minutes = (ms: number) => Math.floor(Math.max(0, ms) / 60_000);
+
+/** The row under an active agent's line: elapsed, then its todo (`done/total · ~eta · current`) or its last intent (else tool); `stalled Nm · ` first when the reader marked this live entry stalled. */
+function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): Pick<Line, "detail" | "stalled"> {
+	const from = d.at ?? live?.since;
+	if (d.state !== "active" || from === undefined || now === undefined) return {};
+	const ms = Math.max(0, now - from);
+	const parts = [span(minutes(ms))];
+	const { done = 0, total = 0 } = live ?? {};
+	if (Number.isInteger(done) && Number.isInteger(total) && total > 0 && done >= 0 && done <= total) {
+		parts.push(`${done}/${total}`);
+		if (done > 0 && done < total) parts.push(`~${span(Math.max(1, Math.ceil((ms * (total - done)) / done / 60_000)))}`);
+		parts.push(oneLine(live?.current));
+	} else parts.push(oneLine(live?.intent) || oneLine(live?.tool));
+	const stalled = !!live && d.stalled === live.at;
+	return { detail: `${stalled ? `stalled ${minutes(now - live.at)}m · ` : ""}${parts.filter(Boolean).join(" · ")}`, ...(stalled ? { stalled: true as const } : {}) };
+}
 
 const BG_RESET = "\x1b[49m";
 const SEAL_TAG = /^\s*(?:\[seal\]|\u{f047a}\s*seal\s*·)\s*(.+?)\s*$/u;
@@ -188,7 +214,7 @@ export function cockpitView(input: ViewInput) {
 				: returned.has(id)
 					? ["done", "returned"]
 					: ["idle", "awaiting deployment"];
-		return { kind, mark: MARK[kind], text: label(note.veteran ? ic.veteran : ic.brother, `squad ${id} ${state}`) };
+		return { id, kind, mark: MARK[kind], text: label(note.veteran ? ic.veteran : ic.brother, `squad ${id} ${state}`) };
 	});
 
 	const tasks = (phase?.tasks ?? []).flatMap(t => {
@@ -203,13 +229,20 @@ export function cockpitView(input: ViewInput) {
 		const brothers = def.tags.includes("battle-brother");
 		// In the brothers' box every line carries the icon of its own rank.
 		const who = (role: string, text: string) => (brothers ? label(role === "veteran" ? ic.veteran : ic.brother, text) : text);
-		const lines = [
+		const row = (id: string, d: Deployed) => liveRow(d, input.live?.get(id), input.now);
+		const lines: Line[] = [
 			...mine.map(t => {
 				const kind = ROLE_LINE[t.status] ?? "failed";
 				return { kind, mark: MARK[kind], text: who(t.role, t.text) };
 			}),
-			...(brothers ? squads : []),
-			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ kind: d.state, mark: MARK[d.state], text: who(d.role, id) })),
+			// A forging squad's row is the first active agent deployed for it.
+			...(brothers
+				? squads.map(({ id, ...line }) => {
+						const hit = line.kind === "active" ? agents.find(([, d]) => d.squad === id && d.state === "active") : undefined;
+						return hit ? { ...line, ...row(...hit) } : line;
+					})
+				: []),
+			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ kind: d.state, mark: MARK[d.state], text: who(d.role, id), ...row(id, d) })),
 		].sort((a, b) => RANK[a.kind] - RANK[b.kind]);
 		const tone = def.tone ?? (lines.some(l => l.kind === "failed") ? "red" : lines.some(l => l.kind !== "idle") ? "green" : "iron");
 		return [{ title: label(ic[def.icon], def.title), tone, lines }];
@@ -260,8 +293,8 @@ function fit(line: string, width: number): string {
 const kindTone: Record<Kind, Tone> = { active: "green", done: "green", failed: "red", idle: "iron" };
 // Marks and text of a box: green/red/iron marks, parchment text unless the state itself speaks.
 const mark = (k: Kind, m: string, frame: number) => (k === "active" && m === "▶" && frame % 2 ? "▷" : m);
-const markText = (k: Kind, m: string, text: string, pal: Palette, frame = 0) =>
-	`${paint(pal[kindTone[k]], mark(k, m, frame))} ${paint(pal[k === "active" || k === "done" ? "parchment" : kindTone[k]], text)}`;
+const markText = (k: Kind, m: string, text: string, pal: Palette, frame = 0, tone?: Tone) =>
+	`${paint(pal[tone ?? kindTone[k]], mark(k, m, frame))} ${paint(pal[tone ?? (k === "active" || k === "done" ? "parchment" : kindTone[k])], text)}`;
 
 /** The run's seals in todo order as a chain; no seals, no row (the callers skip it). */
 function sealsText(seals: Seal[], pal: Palette, ic: View["ic"]): string {
@@ -298,7 +331,7 @@ const statusText = (status: View["status"], pal: Palette, frame: number): string
 	status === "working" ? [markText("active", "▶", "AGENT AT WORK", pal, frame)] : status === "awaiting" ? [paint(pal.gold, "○ VOX OPEN · esc to give orders")] : [];
 
 const entryLine = (e: Entry, pal: Palette) => {
-	const tone: Tone = e.tone === "ok" ? "green" : e.tone === "fail" ? "red" : e.tone === "seal" ? "gold" : "parchment";
+	const tone: Tone = e.tone === "ok" ? "green" : e.tone === "fail" ? "red" : e.tone === "seal" || e.tone === "warn" ? "gold" : "parchment";
 	return `${paint(pal.iron, e.at)}  ${paint(pal.parchment, pad(clean(e.who), 11))} ${paint(pal[tone], clean(e.text))}`;
 };
 
@@ -342,13 +375,17 @@ function withHeight(body: string[], entries: string[], blank: string, close: str
 const boxCap = (height: number | undefined, fixed: number, blocks: number, chrome: number) =>
 	height === undefined || !blocks ? BOX_CAP : Math.max(1, Math.min(BOX_CAP, Math.floor((height - fixed - CHRONICLE_MIN) / blocks) - chrome));
 
-/** A box's lines drawn, at most cap: past it the first cap - 1 and an iron "+k more (…)" line counting the hidden states in HIDE order. */
+/** A box's rows, at most cap (a detail is a row of its own, 2 cells in; gold when stalled, else iron): past it the whole lines that fit in cap - 1 rows and an iron "+k more (…)" row counting the hidden lines by state in HIDE order. A line and its detail are never split. */
 function boxLines(lines: View["boxes"][number]["lines"], cap: number, pal: Palette, frame: number): string[] {
-	const drawn = lines.map(l => markText(l.kind, l.mark, l.text, pal, frame));
-	if (lines.length <= cap) return drawn;
-	const hidden = lines.slice(cap - 1);
+	const rows = (l: Line) => (l.detail ? 2 : 1);
+	const draw = (l: Line) => [markText(l.kind, l.mark, l.text, pal, frame, l.stalled && "gold"), ...(l.detail ? [`  ${paint(pal[l.stalled ? "gold" : "iron"], l.detail)}`] : [])];
+	if (lines.reduce((n, l) => n + rows(l), 0) <= cap) return lines.flatMap(draw);
+	let used = 0;
+	let shown = 0;
+	while (shown < lines.length && used + rows(lines[shown]) <= cap - 1) used += rows(lines[shown++]);
+	const hidden = lines.slice(shown);
 	const parts = HIDE.map(k => [k, hidden.filter(l => l.kind === k).length] as const).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k}`);
-	return [...drawn.slice(0, cap - 1), paint(pal.iron, `+${hidden.length} more (${parts.join(", ")})`)];
+	return [...lines.slice(0, shown).flatMap(draw), paint(pal.iron, `+${hidden.length} more (${parts.join(", ")})`)];
 }
 
 export function renderCockpit(view: View, width: number, frame: number, pal: Palette, height?: number): string[] {

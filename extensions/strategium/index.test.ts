@@ -4660,6 +4660,208 @@ describe("cockpit", () => {
 			expect(await peek(s, ui)).toMatch(/│ ▶ eval-apothecary-1 +│/);
 		});
 	});
+
+	describe("live agent status", () => {
+		type S = ReturnType<typeof setup>;
+		const T0 = new Date(2026, 10, 16, 9, 0, 0).getTime();
+		const at = (ms: number) => setSystemTime(T0 + ms);
+		const MIN = 60_000;
+		const brother = (name: string) => ({ agent: "battle-brother", name, isolated: true, task: "build squad a." });
+		const taskResult = (s: S, id: string) =>
+			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother(id)] }, details: { progress: [{ index: 0, id, status: "running" }] }, isError: false }, s.ctx));
+		// A Captain with squad a forging and agent A deployed at T0.
+		async function squad() {
+			at(0);
+			const r = await running();
+			await r.s.call({ action: "slices", slices: [{ id: "a", parallel: false, files: ["a.ts"] }] });
+			r.s.todo([{ name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
+			r.s.handlers.before_subagent_spawn.forEach(h => h({ agent: "battle-brother", spawnKey: "A" }, r.s.ctx));
+			taskResult(r.s, "A");
+			return r;
+		}
+		// A second extension instance in the same process (the same pid), as a subagent: one STRATEGIUM_STATE_DIR is shared.
+		function child(s: S, id = "A") {
+			const f = fakePi();
+			extension(f.pi as never);
+			const ctx = { ...fakeCtx("child-sid", s.dir), agent: { kind: "sub", id } };
+			const fire = (event: string, e: unknown) => f.handlers[event]?.forEach(h => h(e, ctx));
+			const phases = (done: number, total: number, current?: string) => [
+				{
+					name: "Work",
+					tasks: [
+						...Array.from({ length: done }, (_, i) => ({ content: `done ${i}`, status: "completed" })),
+						...(current ? [{ content: current, status: "in_progress" }] : []),
+						...Array.from({ length: total - done - (current ? 1 : 0) }, (_, i) => ({ content: `later ${i}`, status: "pending" })),
+					],
+				},
+			];
+			const todo = (done: number, total: number, current?: string) => fire("tool_result", { toolName: "todo", isError: false, details: { phases: phases(done, total, current) } });
+			const start = (toolName: string, intent?: string) => fire("tool_execution_start", { toolName, intent });
+			const end = (toolName: string) => fire("tool_execution_end", { toolName, isError: false });
+			return { fire, todo, start, end };
+		}
+		const liveFile = (s: S, id = "A") => join(s.dir, "runs", "sess-0001.live", `${id}.json`);
+		const readLive = (s: S, id = "A") => JSON.parse(readFileSync(liveFile(s, id), "utf8"));
+		const top = (t: string) => t.slice(0, t.indexOf("CHRONICLE"));
+
+		test("a squad's own todo shows under its line: done/total, the ETA and the current task", async () => {
+			const { s, ui } = await squad();
+			const c = child(s);
+			c.start("read", "Reading the cockpit");
+			at(10 * MIN);
+			c.todo(2, 5, "Write tests");
+			expect(readLive(s)).toMatchObject({ done: 2, total: 5, current: "Write tests", tool: "read", intent: "Reading the cockpit" });
+			const t = await peek(s, ui);
+			expect(t).toContain("squad a forging");
+			expect(t).toContain("10m · 2/5 · ~15m · Write tests");
+		});
+
+		test("a scout without a todo shows its elapsed time and its last intent", async () => {
+			at(0);
+			const { s, ui } = await running();
+			s.todo([{ name: "Auspex", tasks: [{ content: "[scout] Map the code", status: "in_progress" }] }]);
+			s.handlers.before_subagent_spawn.forEach(h => h({ agent: "scout", spawnKey: "A" }, s.ctx));
+			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "scout", name: "A", task: "look" }] }, details: { progress: [{ index: 0, id: "A", status: "running" }] }, isError: false }, s.ctx));
+			const c = child(s);
+			at(3 * MIN);
+			c.start("read", "Reading the cockpit");
+			expect(await peek(s, ui)).toContain("3m · Reading the cockpit");
+		});
+
+		test("a second update within a second reaches the file after the trailing write, and the parent shows it with only a redraw", async () => {
+			const { s, ui } = await squad();
+			const c = child(s);
+			at(1000);
+			c.todo(2, 5, "Write tests");
+			at(1400);
+			c.todo(3, 5, "Run mutants");
+			expect(readLive(s)).toMatchObject({ done: 2 });
+			at(2600);
+			await Bun.sleep(700); // the trailing write is a real timer set for the rest of the second
+			expect(readLive(s)).toMatchObject({ done: 3, current: "Run mutants" });
+			expect(await peek(s, ui)).toContain("3/5");
+		});
+
+		test("an open overlay redraws from the child's file on its own, every second frame", async () => {
+			const { s, ui } = await squad();
+			const c = child(s);
+			c.todo(2, 5, "Write tests");
+			await s.sub("cockpit");
+			const comp = ui.opened.at(-1)!.component;
+			expect(plain(comp.render(100).join("\n"))).toContain("2/5");
+			at(5000);
+			c.todo(3, 5, "Run mutants");
+			await Bun.sleep(1100);
+			expect(plain(comp.render(100).join("\n"))).toContain("3/5");
+			comp.handleInput!("q");
+		});
+
+		describe("stalled", () => {
+			test("5 min with no tool call logs one entry however often it is drawn, and a newer tool call clears the gold", async () => {
+				const { s, ui } = await squad();
+				const c = child(s);
+				c.start("read");
+				at(2000);
+				c.end("read");
+				at(2000 + 6 * MIN);
+				expect(top(await peek(s, ui))).toContain("stalled 6m");
+				await peek(s, ui);
+				expect((await chron(s, ui)).match(/stalled 6m/g)).toHaveLength(1);
+				const saved = JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8"));
+				expect(saved.deployed).toEqual([["A", expect.objectContaining({ stalled: T0 + 2000 })]]);
+				c.start("bash");
+				expect(top(await peek(s, ui))).not.toContain("stalled");
+			});
+
+			test("a tool call still in flight is not stalled, however long it runs", async () => {
+				const { s, ui } = await squad();
+				const c = child(s);
+				c.start("bash", "Running the tests");
+				at(20 * MIN);
+				const t = await peek(s, ui);
+				expect(t).not.toContain("stalled");
+				expect(t).toContain("20m · Running the tests");
+			});
+
+			test("the 5 minutes count from the end of the last tool call", async () => {
+				const { s, ui } = await squad();
+				const c = child(s);
+				c.start("bash");
+				at(10 * MIN);
+				c.end("bash");
+				at(14 * MIN);
+				expect(await peek(s, ui)).not.toContain("stalled");
+				at(16 * MIN);
+				expect(top(await peek(s, ui))).toContain("stalled 6m");
+			});
+		});
+
+		test("an eval spawn whose key matches no live file shows its elapsed time only", async () => {
+			at(0);
+			const { s, ui } = await running();
+			s.todo([{ name: "Auspex", tasks: [{ content: "[scout] Map the code", status: "in_progress" }] }]);
+			s.handlers.before_subagent_spawn.forEach(h => h({ invocationKind: "eval", agent: "scout", spawnKey: "E" }, s.ctx));
+			const c = child(s, "other");
+			c.start("read", "Reading elsewhere");
+			at(4 * MIN);
+			const t = await peek(s, ui);
+			expect(t).toMatch(/│ +4m +│/);
+			expect(t).not.toContain("Reading elsewhere");
+		});
+
+		test("a stale pointer makes the child write nothing", async () => {
+			const { s } = await squad();
+			rmSync(join(s.dir, "runs", "sess-0001.json"));
+			const c = child(s);
+			c.start("read", "Reading");
+			c.todo(1, 2, "x");
+			expect(existsSync(join(s.dir, "runs", "sess-0001.live"))).toBe(false);
+		});
+
+		test("with no pointer at all the child writes nothing", async () => {
+			at(0);
+			const { s } = await running();
+			child(s).start("read", "Reading");
+			expect(existsSync(join(s.dir, "runs", "sess-0001.live"))).toBe(false);
+		});
+
+		test("end removes the live files, and shutdown the pointer", async () => {
+			const { s } = await squad();
+			child(s).start("read");
+			expect(existsSync(liveFile(s))).toBe(true);
+			expect(readFileSync(join(s.dir, "runs", `${process.pid}.pid`), "utf8")).toBe("sess-0001");
+			shutdown(s);
+			expect(existsSync(join(s.dir, "runs", `${process.pid}.pid`))).toBe(false);
+			await s.call({ action: "end" });
+			expect(existsSync(join(s.dir, "runs", "sess-0001.live"))).toBe(false);
+		});
+
+		test.each([
+			["not JSON", "{nope"],
+			["too big", JSON.stringify({ since: 1, at: 1, current: "x".repeat(5000) })],
+			["wrong shape", JSON.stringify({ since: "1", at: 1 })],
+			["a negative number", JSON.stringify({ since: -1, at: 1 })],
+			["a fraction", JSON.stringify({ since: 1, at: 1.5 })],
+			["a number for the text", JSON.stringify({ since: 1, at: 1, current: 7 })],
+		])("a live file that is %s is ignored", async (_why, body) => {
+			const { s, ui } = await squad();
+			mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+			writeFileSync(liveFile(s), body);
+			at(10 * MIN);
+			const t = await peek(s, ui);
+			expect(t).toContain("10m");
+			expect(t).not.toContain("stalled");
+		});
+
+		test("a sub agent's tool_call is still not judged", async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			const call = (ctx: unknown) => s.handlers.tool_call[0]({ toolName: "task", input: { tasks: [brother("A")] } }, ctx);
+			expect((call(s.ctx) as { block?: boolean }).block).toBe(true);
+			expect(call({ ...s.ctx, agent: { kind: "sub", id: "A" } })).toBeUndefined();
+		});
+	});
 });
 
 describe("cost tiers", () => {
