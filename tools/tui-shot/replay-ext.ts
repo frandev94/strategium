@@ -28,7 +28,7 @@ export default function (pi: ExtensionAPI) {
 			yield* events;
 		},
 		result: async () => final,
-	});
+	}) as never;
 
 	pi.registerProvider("replay", {
 		api: "strategium-replay",

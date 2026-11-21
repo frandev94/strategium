@@ -10,5 +10,5 @@
 		"types": ["bun"],
 		"paths": { "@oh-my-pi/pi-coding-agent": ["./node_modules/@oh-my-pi/pi-coding-agent/dist/types/index.d.ts"] }
 	},
-	"include": ["extensions/**/*.ts"]
+	"include": ["extensions/**/*.ts", "tools/**/*.ts"]
 }
