@@ -30,7 +30,8 @@ import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 // `untimed`: the run has no booking until a `begin` or `start` with booked. Its time is counted, but there are no alerts, no stand down and no new shift.
 // `where`: the station the run is at, read from the todo (see whereFrom), so the footer shows it after a restart too.
 type Where = { station: string; back?: true; seal?: string; task?: string };
-type Slice = { id: string; parallel: boolean; files: string[] };
+type Tier = "light" | "standard" | "heavy";
+type Slice = { id: string; parallel: boolean; files: string[]; tier?: Tier };
 // `hidden`: the tools hidden from the Captain for this run, put back when it ends. `slices`: the plan's squads as declared.
 // `launched`: the parallel squads went out together in one task call.
 // `agents`: the running battle-brothers and veterans, by the agent id the host allocated → the squad each builds.
@@ -41,7 +42,7 @@ type Slice = { id: string; parallel: boolean; files: string[] };
 // agent id, running or done (finished completed; a failed or cancelled one never counts). `archmagosSpawned`: archmagos
 // spawns let through. `redraft`: the run's one redraft (both plan paths): one more archmagos may spawn, and no librarian or
 // archmagos spawns until a scout in `scouts` is done. `scouts`: the scouts spawned after the redraft, by agent id, running
-// or done (finished completed).
+// or done (finished completed). `builds`: the battle-brother spawns per squad id; the second runs one tier up (see tierFor).
 // `phases`: the todo as last seen, so the cockpit boxes and seals come back after a restart.
 type Run = {
 	key: string;
@@ -62,6 +63,7 @@ type Run = {
 	scouts?: Record<string, "running" | "done">;
 	archmagosSpawned?: number;
 	redraft?: true;
+	builds?: Record<string, number>;
 	phases?: Phase[];
 };
 type Tui = { requestRender(): void; terminal: { rows: number } };
@@ -452,6 +454,62 @@ const ARCHMAGOS_SPENT = "Strategium: this run already spawned its archmagos and 
 // Tool input arrives as unknown; anything that is not an object reads as empty.
 const asObj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
 
+// The cost tiers: each one is an omp model selector, and its `:level` suffix sets the effort. STRATEGIUM_TIERS overrides them.
+const TIERS: Record<Tier, string> = { light: "@smol:medium", standard: "@task:medium", heavy: "@slow:high" };
+const LADDER: Tier[] = ["light", "standard", "heavy"];
+
+/**
+ * `tier=selector` entries separated by `;` over the defaults. An entry with an unknown tier or an empty selector is
+ * dropped and listed in `ignored`. Always returns a selector for each tier.
+ */
+export function parseTiers(env: string | undefined): { selectors: Record<Tier, string>; ignored: string[] } {
+	const selectors = { ...TIERS };
+	const ignored: string[] = [];
+	for (const raw of (env ?? "").split(";")) {
+		const entry = raw.trim();
+		if (!entry) continue;
+		const at = entry.indexOf("=");
+		const name = entry.slice(0, Math.max(at, 0)).trim();
+		const selector = entry.slice(at + 1).trim();
+		if (!selector || !LADDER.includes(name as Tier)) ignored.push(entry);
+		else selectors[name as Tier] = selector;
+	}
+	return { selectors, ignored };
+}
+
+const tiersState = () => {
+	const env = process.env.STRATEGIUM_TIERS?.trim() ?? "";
+	const { selectors, ignored } = parseTiers(env);
+	const list = LADDER.map(t => `${t}=${selectors[t]}`).join(" ");
+	return `${list} (${env ? "STRATEGIUM_TIERS" : "default"})${ignored.length ? `; ignored: ${ignored.join(", ")}` : ""}`;
+};
+
+const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * The tier a battle-brother of a squad runs on: the squad's planned tier on its first spawn, one up on each later one,
+ * never above heavy. Counts the spawn in the run (`builds`). Undefined when the spawnKey matches no squad.
+ * `named`: item names that took their squad from the brief ("build squad <id>").
+ * Exact ids and brief names win over the folded match, which tries the key without its -<digits> suffix first, then the whole key.
+ * shortcut: a name ending in -<digits> reads as a reused name of the squad before it unless a squad has that exact id; upgrade if ids like that appear.
+ */
+function tierFor(run: Run, spawnKey: string, named: Map<string, string>): Tier | undefined {
+	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
+	const stripped = spawnKey.replace(/-\d+$/, "");
+	let slice: Slice | undefined;
+	for (const key of [spawnKey, stripped]) {
+		const id = named.get(key);
+		slice = known.find(s => s.id === id || s.id === key);
+		if (slice) break;
+	}
+	slice ??= known.find(s => fold(s.id) === fold(stripped)) ?? known.find(s => fold(s.id) === fold(spawnKey));
+	if (!slice) return undefined;
+	// `builds` counts at the hook, before the dispatch is known to succeed, like archmagosSpawned.
+	const n = run.builds && Object.hasOwn(run.builds, slice.id) ? run.builds[slice.id] : 0;
+	writeRun({ ...run, builds: { ...run.builds, [slice.id]: n + 1 } });
+	return LADDER[Math.min(LADDER.indexOf(slice.tier ?? "standard") + (n ? 1 : 0), LADDER.length - 1)];
+}
+
 // Windows and macOS filesystems ignore case; Linux does not.
 const normFile = (f: string) => {
 	const n = f.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
@@ -556,7 +614,6 @@ const taskItems = (input: unknown) => {
 function builtSlice(item: Record<string, unknown>, run: Run): Slice | undefined {
 	if (!["battle-brother", "veteran"].includes(agentName(String(item.agent ?? "task")))) return undefined;
 	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
-	const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 	const name = typeof item.name === "string" ? fold(item.name) : undefined;
 	const built = [...String(item.task ?? "").matchAll(/\b(?:squad|slice)\s+([\w.-]*\w)/gi)].map(m => m[1]);
 	return known.find(s => fold(s.id) === name) ?? known.find(s => built.includes(s.id));
@@ -716,6 +773,8 @@ export default function (pi: ExtensionAPI) {
 	const channels = (sid: string) => (notifyOn(sid) ? [soundOn(sid) && "sound", toastOn(sid) && "toast"].filter(Boolean) as string[] : []);
 	// /strategium-config archmagos on|off per session id; it wins over STRATEGIUM_ARCHMAGOS (1, true, on, yes), which is off when unset.
 	const archmagosBySession = new Map<string, boolean>();
+	// Task item name → the squad its brief builds, for the tier of a builder whose name is not its squad id. Not persisted: it only lives from the call to the spawn.
+	const briefNames = new Map<string, string>();
 	const archmagosOn = (sid: string) =>
 		archmagosBySession.get(sid) ?? /^(1|true|on|yes)$/i.test(process.env.STRATEGIUM_ARCHMAGOS?.trim() ?? "");
 	const archmagosState = (sid: string) =>
@@ -1027,14 +1086,14 @@ export default function (pi: ExtensionAPI) {
 		minutes: z.number().int().optional(),
 		on: z.boolean().optional(),
 		archmagos: z.boolean().optional(),
-		slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()) })).optional(),
+		slices: z.array(z.object({ id: z.string(), parallel: z.boolean(), files: z.array(z.string()), tier: z.enum(["light", "standard", "heavy"]).optional() })).optional(),
 	});
 
 	pi.registerTool({
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files}]: the plan's squads; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?), attention (message), notify (on?), slices (slices), redraft. booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub") return text("ERROR strategium tool is for the main session only");
@@ -1074,7 +1133,7 @@ export default function (pi: ExtensionAPI) {
 						return text(addMin(run, params.minutes ?? 0));
 					}
 					case "status":
-						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}`);
+						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}\nTIERS ${tiersState()}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}`);
 					case "report":
 						return text(report(params.date));
 					case "end":
@@ -1108,14 +1167,14 @@ export default function (pi: ExtensionAPI) {
 						if (err) return text([...lines, `ERROR ${err}`].join("\n"));
 						const live = slices.filter(s => !stopped.some(d => d.id === s.id));
 						writeRun({ ...run, slices: live, launched: undefined });
-						lines.push(`SQUADS ${live.map(s => s.id + (s.parallel ? " (parallel)" : "")).join(", ") || "none"}`);
+						lines.push(`SQUADS ${live.map(s => s.id + (s.parallel || s.tier ? ` (${[s.parallel && "parallel", s.tier].filter(Boolean).join(", ")})` : "")).join(", ") || "none"}`);
 						return text(lines.join("\n"));
 					}
 					case "redraft": {
 						const run = ownRun(sid);
 						if (!run) return text("ERROR no active run in this session");
 						if (run.redraft) return text(`ERROR the redraft of ${run.key} is spent (1 per run)`);
-						writeRun({ ...run, redraft: true });
+						writeRun({ ...run, redraft: true, builds: undefined });
 						return text(
 							`REDRAFT ${run.key}: back to Auspex; no librarian or archmagos until a scout spawned now has finished${run.archmagosSpawned ? "; then one more archmagos may be spawned" : ""}`,
 						);
@@ -1529,6 +1588,12 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		if (agent === "battle-brother" && run.repo && !run.slices) return { block: true, reason: SLICES_REASON };
+		// The tier sets the child's model and its effort (the selector's :level). Reviewers and the rest keep their own.
+		const key = asObj(e).spawnKey;
+		let tier: Tier | undefined;
+		if (agent === "veteran") tier = "heavy";
+		else if (agent === "battle-brother") tier = tierFor(run, typeof key === "string" ? key : "", briefNames) ?? "standard";
+		if (tier) return { model: parseTiers(process.env.STRATEGIUM_TIERS).selectors[tier], note: `Strategium tier ${tier}` };
 	});
 
 	// The host gives no event when an agent ends; its result reaches the model as a message or a wait result that lists
@@ -1629,6 +1694,10 @@ export default function (pi: ExtensionAPI) {
 			const starting: Slice[] = [];
 			for (const item of items) {
 				const slice = builtSlice(item, run);
+				if (typeof item.name === "string") {
+					if (slice) briefNames.set(item.name.trim(), slice.id);
+					else briefNames.delete(item.name.trim());
+				}
 				if (!slice) continue;
 				const clash = [...busy, ...starting].find(other => sharedFiles(slice, other).length);
 				if (clash)

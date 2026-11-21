@@ -2,7 +2,7 @@ import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension, { keyOf, whereFrom } from "./index";
+import extension, { keyOf, parseTiers, whereFrom } from "./index";
 import { cockpitView } from "./cockpit";
 import { claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
 
@@ -100,6 +100,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
 	delete process.env.STRATEGIUM_ARCHMAGOS;
+	delete process.env.STRATEGIUM_TIERS;
 	delete process.env.STRATEGIUM_SOUND;
 	delete process.env.STRATEGIUM_VOLUME;
 	delete process.env.STRATEGIUM_TOAST;
@@ -1467,7 +1468,7 @@ describe("the run follows an approved plan", () => {
 		expect(await s.call({ action: "slices", slices })).toContain("SQUADS S1");
 		await approve(s, sm, ctx);
 		expect(movedRun(s.dir).slices).toEqual(slices);
-		expect(await s.handlers.before_subagent_spawn[0]({ agent: "battle-brother" }, ctx)).toBeUndefined();
+		expect(((await s.handlers.before_subagent_spawn[0]({ agent: "battle-brother" }, ctx)) as { block?: true } | undefined)?.block).toBeUndefined();
 	});
 
 	test("booking and the archmagos mark recorded in plan mode survive the switch", async () => {
@@ -1914,7 +1915,7 @@ describe("tools, begin and end", () => {
 			expect(s.handlers.tool_call[0]({ toolName: "task", input: brothers(2) }, s.ctx)).toBeUndefined();
 			await s.call({ action: "begin", key: "K-1" });
 			expect(await s.call({ action: "status" })).toContain(`repo=${s.dir}`);
-			expect(s.handlers.before_subagent_spawn[0]({ agent: "battle-brother" }, s.ctx)).toBeUndefined();
+			expect((s.handlers.before_subagent_spawn[0]({ agent: "battle-brother" }, s.ctx) as { block?: true } | undefined)?.block).toBeUndefined();
 			// launched survived: a single battle-brother is no longer refused.
 			expect(s.handlers.tool_call[0]({ toolName: "task", input: brothers(1) }, s.ctx)).toBeUndefined();
 			await s.call({ action: "end" });
@@ -2021,7 +2022,7 @@ describe("the Captain's hooks never throw and keep their wording", () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1" });
 		const spawn = (agent: unknown) => s.handlers.before_subagent_spawn[0]({ agent }, s.ctx) as Verdict;
-		expect(spawn("battle-brother")).toBeUndefined();
+		expect(spawn("battle-brother")?.block).toBeUndefined();
 		await s.call({ action: "repo", repo: s.dir });
 		for (const name of ["battle-brother", "Battle-Brother", "omp:battle-brother", "x/battle-brother"])
 			expect(spawn(name)?.reason).toContain("declare the plan's squads first");
@@ -2039,7 +2040,7 @@ describe("the Captain's hooks never throw and keep their wording", () => {
 	test("the whole roster passes, anything else is refused with the roster in the reason", async () => {
 		const { spawn } = await run(disjoint);
 		// The archmagos has its own guards (setting, mark, librarians, budget): see "the archmagos guard".
-		for (const name of ROSTER.filter(n => n !== "archmagos")) expect(spawn(name)).toBeUndefined();
+		for (const name of ROSTER.filter(n => n !== "archmagos")) expect(spawn(name)?.block).toBeUndefined();
 		expect(spawn("code-reviewer")).toEqual({
 			block: true,
 			reason: `Strategium: during a run only these agents may be spawned: ${ROSTER.join(", ")}.`,
@@ -2247,7 +2248,7 @@ describe("the archmagos guard", () => {
 		expect(spawn("librarian")).toEqual({ block: true, reason: REFRESH });
 		// The refresh itself must stay possible, or the redraft would deadlock.
 		expect(spawn("scout")).toBeUndefined();
-		expect(spawn("battle-brother")).toBeUndefined();
+		expect(spawn("battle-brother")?.block).toBeUndefined();
 		expect(spawn("archmagos")).toEqual({ block: true, reason: REFRESH });
 		// S0 was spawned before the redraft: its end is no refresh.
 		jobs("completed", "S0");
@@ -3885,6 +3886,253 @@ describe("cockpit", () => {
 			spawn(s, { invocationKind: "eval", agent: "apothecary" });
 			ctxMsg(s, cell("other", "completed"));
 			expect(await peek(s, ui)).toMatch(/│ ▶ eval-apothecary-1 +│/);
+		});
+	});
+});
+
+describe("cost tiers", () => {
+	type Verdict = { block?: true; reason?: string; model?: string; note?: string } | undefined;
+	type S = ReturnType<typeof setup>;
+	const spawn = (s: S, agent: string, spawnKey?: string) => s.handlers.before_subagent_spawn[0]({ agent, spawnKey }, s.ctx) as Verdict;
+	const DEFAULT = { light: "@smol:medium", standard: "@task:medium", heavy: "@slow:high" };
+	const squads = [
+		{ id: "S1", parallel: true, files: ["a.ts"], tier: "light" },
+		{ id: "S2", parallel: true, files: ["b.ts"], tier: "heavy" },
+		{ id: "S3", parallel: false, files: ["c.ts"] },
+	];
+	const begin = async (slices: unknown[] = squads) => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		await s.call({ action: "slices", slices });
+		return s;
+	};
+
+	test("slices shows a declared tier in the SQUADS line and none otherwise", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		expect(await s.call({ action: "slices", slices: squads })).toBe("SQUADS S1 (parallel, light), S2 (parallel, heavy), S3");
+		expect(await s.call({ action: "slices", slices: squads.map(({ tier: _t, ...q }) => q) })).toBe("SQUADS S1 (parallel), S2 (parallel), S3");
+	});
+
+	describe("status shows the TIERS line", () => {
+		const tiersLine = async (s: S) => (await s.call({ action: "status" })).split("\n").find(l => l.startsWith("TIERS"));
+
+		test("the defaults", async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			expect(await tiersLine(s)).toBe("TIERS light=@smol:medium standard=@task:medium heavy=@slow:high (default)");
+		});
+
+		test("an override from STRATEGIUM_TIERS, with the ignored entries", async () => {
+			process.env.STRATEGIUM_TIERS = "light=anthropic/claude-haiku-5-5:low; heavy=@task:high;bogus=@x;standard=";
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			expect(await tiersLine(s)).toBe(
+				"TIERS light=anthropic/claude-haiku-5-5:low standard=@task:medium heavy=@task:high (STRATEGIUM_TIERS); ignored: bogus=@x, standard=",
+			);
+		});
+
+		test("the line sits right after ARCHMAGOS", async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			const lines = (await s.call({ action: "status" })).split("\n");
+			expect(lines[lines.findIndex(l => l.startsWith("ARCHMAGOS")) + 1]).toStartWith("TIERS ");
+		});
+	});
+
+	test("a parallel batch: each battle-brother gets its own squad's selector", async () => {
+		const s = await begin();
+		expect(spawn(s, "battle-brother", "S1")).toEqual({ model: DEFAULT.light, note: "Strategium tier light" });
+		expect(spawn(s, "battle-brother", "S2")).toEqual({ model: DEFAULT.heavy, note: "Strategium tier heavy" });
+		expect(spawn(s, "battle-brother", "S3")?.model).toBe(DEFAULT.standard);
+	});
+
+	test("STRATEGIUM_TIERS changes the selector a tier maps to", async () => {
+		process.env.STRATEGIUM_TIERS = "light=@smol:low";
+		const s = await begin();
+		expect(spawn(s, "battle-brother", "S1")?.model).toBe("@smol:low");
+		expect(spawn(s, "battle-brother", "S2")?.model).toBe(DEFAULT.heavy);
+	});
+
+	test("a second builder of a squad runs one tier up, and heavy stays heavy", async () => {
+		const s = await begin();
+		expect(spawn(s, "battle-brother", "S1")?.model).toBe(DEFAULT.light);
+		expect(spawn(s, "battle-brother", "S1-2")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother", "S1-3")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother", "S2")?.model).toBe(DEFAULT.heavy);
+		expect(spawn(s, "battle-brother", "S2-2")?.model).toBe(DEFAULT.heavy);
+		expect(spawn(s, "battle-brother", "S2-3")?.model).toBe(DEFAULT.heavy);
+	});
+
+	test("property: the rung is never below the planned tier and never above heavy", async () => {
+		const order = ["light", "standard", "heavy"] as const;
+		for (const tier of order) {
+			const s = await begin([{ id: "S1", parallel: false, files: ["a.ts"], tier }]);
+			for (let n = 0; n < 4; n++) {
+				const at = order.findIndex(t => DEFAULT[t] === spawn(s, "battle-brother", n ? `S1-${n + 1}` : "S1")?.model);
+				expect(at).toBeGreaterThanOrEqual(order.indexOf(tier));
+				expect(at).toBeLessThanOrEqual(2);
+			}
+		}
+	});
+
+	test("the veteran runs on the heavy tier", async () => {
+		const s = await begin();
+		expect(spawn(s, "veteran", "S1-3")).toEqual({ model: DEFAULT.heavy, note: "Strategium tier heavy" });
+	});
+
+	test("an item named X whose brief says build squad S1 gets S1's tier", async () => {
+		const s = await begin([{ id: "S1", parallel: false, files: ["a.ts"], tier: "standard" }]);
+		const input = { tasks: [{ agent: "battle-brother", name: "X", isolated: true, task: "Read local://K-1-plan.md; build squad S1." }] };
+		expect(s.handlers.tool_call[0]({ toolName: "task", input }, s.ctx)).toBeUndefined();
+		expect(spawn(s, "battle-brother", "X")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother", "X-2")?.model).toBe(DEFAULT.heavy);
+	});
+
+	test("a squad id that is an Object.prototype key still gets its planned tier on the first builder", async () => {
+		const s = await begin([
+			{ id: "S1", parallel: true, files: ["a.ts"] },
+			{ id: "constructor", parallel: true, files: ["b.ts"], tier: "light" },
+		]);
+		spawn(s, "battle-brother", "S1");
+		expect(spawn(s, "battle-brother", "constructor")?.model).toBe(DEFAULT.light);
+		expect(spawn(s, "battle-brother", "constructor-2")?.model).toBe(DEFAULT.standard);
+	});
+
+	const brotherItem = (name: string, slice: string) => ({ agent: "battle-brother", name, isolated: true, task: `Read local://K-1-plan.md; build squad ${slice}.` });
+	const launchBrother = (s: S, tasks: unknown[], ids: string[]) => {
+		expect(s.handlers.tool_call[0]({ toolName: "task", input: { tasks } }, s.ctx)).toBeUndefined();
+		const details = { progress: ids.map((id, index) => ({ index, id, status: "running" })) };
+		for (const h of s.handlers.tool_result) h({ toolName: "task", input: { tasks }, details, isError: false }, s.ctx);
+	};
+	const endAgents = (s: S, ...ids: string[]) =>
+		s.handlers.context[0]({ type: "context", messages: [{ role: "custom", customType: "async-result", details: { jobs: ids.map((label, i) => ({ jobId: `j-${label}-${i}`, type: "task", status: "completed", label })) } }] }, s.ctx);
+
+	test("a squad with parallel false and a tier prints the tier alone", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		expect(await s.call({ action: "slices", slices: [{ id: "S1", parallel: false, files: ["a.ts"], tier: "light" }] })).toBe("SQUADS S1 (light)");
+	});
+
+	test("a squad whose agent stopped keeps its ladder when the list is declared again without it", async () => {
+		const s = await begin([{ id: "S1", parallel: false, files: ["a.ts"], tier: "standard" }]);
+		expect(spawn(s, "battle-brother", "S1")?.model).toBe(DEFAULT.standard);
+		launchBrother(s, [brotherItem("S1", "S1")], ["S1"]);
+		endAgents(s, "S1");
+		await s.call({ action: "slices", slices: [{ id: "S2", parallel: false, files: ["b.ts"] }] });
+		expect(spawn(s, "battle-brother", "S1-2")?.model).toBe(DEFAULT.heavy);
+	});
+
+	test("a stopped light squad never spawned yet still gets its own tier", async () => {
+		const s = await begin([{ id: "S1", parallel: false, files: ["a.ts"], tier: "light" }]);
+		launchBrother(s, [brotherItem("S1", "S1")], ["S1"]);
+		endAgents(s, "S1");
+		await s.call({ action: "slices", slices: [{ id: "S2", parallel: false, files: ["b.ts"] }] });
+		expect(spawn(s, "battle-brother", "S1")?.model).toBe(DEFAULT.light);
+	});
+
+	test("a squad whose id ends in -<digits> wins over the squad before it", async () => {
+		const s = await begin([
+			{ id: "S1", parallel: true, files: ["a.ts"], tier: "light" },
+			{ id: "S1-2", parallel: true, files: ["b.ts"], tier: "heavy" },
+		]);
+		expect(spawn(s, "battle-brother", "S1-2")?.model).toBe(DEFAULT.heavy);
+	});
+
+	test("a key folds onto a squad id, with or without a -<digits> suffix", async () => {
+		const s = await begin([{ id: "A.1", parallel: false, files: ["a.ts"], tier: "standard" }]);
+		expect(spawn(s, "battle-brother", "A1")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother", "A1-2")?.model).toBe(DEFAULT.heavy);
+	});
+
+	test("an item named A-1 reaches squad A1 by folding the whole key", async () => {
+		const s = await begin([{ id: "A1", parallel: false, files: ["a.ts"], tier: "light" }]);
+		expect(spawn(s, "battle-brother", "A-1")?.model).toBe(DEFAULT.light);
+	});
+
+	test("a suffix of several digits is stripped", async () => {
+		const s = await begin([{ id: "S1", parallel: false, files: ["a.ts"], tier: "standard" }]);
+		expect(spawn(s, "battle-brother", "S1")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother", "S1-12")?.model).toBe(DEFAULT.heavy);
+	});
+
+	test("a reused item name whose new brief names no squad loses its old squad within the run", async () => {
+		const s = await begin([{ id: "S1", parallel: false, files: ["a.ts"], tier: "light" }]);
+		expect(s.handlers.tool_call[0]({ toolName: "task", input: { tasks: [brotherItem("X", "S1")] } }, s.ctx)).toBeUndefined();
+		const input = { tasks: [{ agent: "battle-brother", name: "X", isolated: true, task: "Fix the docs." }] };
+		expect(s.handlers.tool_call[0]({ toolName: "task", input }, s.ctx)).toBeUndefined();
+		expect(spawn(s, "battle-brother", "X")?.model).toBe(DEFAULT.standard);
+	});
+
+	test("a reused name that folds onto another squad's id still gets its own squad's ladder", async () => {
+		const s = await begin([
+			{ id: "S1", parallel: true, files: ["a.ts"], tier: "light" },
+			{ id: "S12", parallel: true, files: ["b.ts"], tier: "heavy" },
+		]);
+		expect(spawn(s, "battle-brother", "S1")?.model).toBe(DEFAULT.light);
+		expect(spawn(s, "battle-brother", "S1-2")?.model).toBe(DEFAULT.standard);
+	});
+
+	test("a brief name from a finished run does not route an item of the next run", async () => {
+		const s = await begin([{ id: "S1", parallel: false, files: ["a.ts"], tier: "light" }]);
+		expect(s.handlers.tool_call[0]({ toolName: "task", input: { tasks: [brotherItem("X", "S1")] } }, s.ctx)).toBeUndefined();
+		await s.call({ action: "end" });
+		await s.call({ action: "begin", key: "K-2" });
+		await s.call({ action: "repo", repo: s.dir });
+		await s.call({ action: "slices", slices: [{ id: "S1", parallel: false, files: ["a.ts"], tier: "light" }] });
+		const input = { tasks: [{ agent: "battle-brother", name: "X", isolated: true, task: "Fix the docs." }] };
+		expect(s.handlers.tool_call[0]({ toolName: "task", input }, s.ctx)).toBeUndefined();
+		expect(spawn(s, "battle-brother", "X")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother", "S1")?.model).toBe(DEFAULT.light);
+	});
+
+	test("a battle-brother matching no squad, or with no spawnKey, runs on standard", async () => {
+		const s = await begin();
+		expect(spawn(s, "battle-brother", "Mystery")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother", "S9-2")?.model).toBe(DEFAULT.standard);
+	});
+
+	test("redraft resets the ladder", async () => {
+		const s = await begin();
+		spawn(s, "battle-brother", "S1");
+		expect(spawn(s, "battle-brother", "S1-2")?.model).toBe(DEFAULT.standard);
+		await s.call({ action: "redraft" });
+		await s.call({ action: "slices", slices: squads });
+		expect(spawn(s, "battle-brother", "S1")?.model).toBe(DEFAULT.light);
+	});
+
+	test.each(["inquisitor", "confessor", "apothecary", "scout", "librarian", "sonic", "task"])("a %s keeps its own tier: no model", async agent => {
+		const s = await begin();
+		expect(spawn(s, agent, "S1")?.model).toBeUndefined();
+	});
+
+	test("without a run nothing is routed", () => {
+		const s = setup();
+		expect(spawn(s, "battle-brother", "S1")).toBeUndefined();
+	});
+
+	describe("parsing STRATEGIUM_TIERS", () => {
+		test("property: always light, standard and heavy, and only those", () => {
+			const inputs = ["", "   ", ";;;", "=", "light", "light=", "=x", "__proto__=x", "toString=y;constructor=z", "light=a;light=b", "heavy==@x:high", " standard = @a ; ", "LIGHT=x", "light=@smol:low;nope=1"];
+			for (const env of inputs) {
+				const { selectors, ignored } = parseTiers(env);
+				expect(Object.keys(selectors).sort()).toEqual(["heavy", "light", "standard"]);
+				for (const v of Object.values(selectors)) expect(v.length).toBeGreaterThan(0);
+				expect(Array.isArray(ignored)).toBe(true);
+			}
+		});
+
+		test("valid entries override, invalid ones are reported and the rest keep their defaults", () => {
+			expect(parseTiers("light=@smol:low;nope=1;=x;heavy=")).toEqual({
+				selectors: { ...DEFAULT, light: "@smol:low" },
+				ignored: ["nope=1", "=x", "heavy="],
+			});
+			expect(parseTiers(" standard = a,b:high ").selectors.standard).toBe("a,b:high");
+			expect(parseTiers(undefined)).toEqual({ selectors: DEFAULT, ignored: [] });
 		});
 	});
 });

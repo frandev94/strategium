@@ -136,8 +136,8 @@ The Captain plans and delegates; every other role is an agent it starts. Each on
 | <img src="docs/icons/radar.svg" width="18" alt=""> `scout` | Auspex | maps the code the objective touches; 1–3 at once, each with its own focus | writes files or runs bash | `@smol` / medium |
 | <img src="docs/icons/book-open-page-variant.svg" width="18" alt=""> `librarian` | Scriptorium | writes the spec, the squads and the Merge bar; one per area when the objective splits, then a lead merges | edits repository files | `@plan` / high |
 | <img src="docs/icons/head-cog.svg" width="18" alt=""> `archmagos` | Scriptorium | integrates the area plans into one, checking every assumption against the source; only when marked in Muster | edits, writes or starts agents | `@plan` / xhigh |
-| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | builds one squad test-first and reports red/green evidence | commits or touches files outside its squad | `@task` / medium |
-| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rebuilds a squad that failed twice, after finding why | commits | `@task` / high |
+| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | builds one squad test-first and reports red/green evidence | commits or touches files outside its squad | its squad's [tier](#tiers) |
+| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rebuilds a squad that failed twice, after finding why | commits | heavy tier (`@slow:high`); escalation only |
 | <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | mutates the squad's changed lines and fuzzes untrusted input, to show where the tests do not protect the code | edits the tests under audit, or leaves the tree changed | `@task` / medium |
 | <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | reviews the diff against the Merge bar; a PASS needs file:line or command evidence | edits, commits or pushes | `@slow` / high |
 | <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | a second, independent review by another model family, when the plan flags the diff as large or risky, or in the Review & merge loop | reads the inquisitor's report | gpt-6-astra (else `@task`) / high |
@@ -152,10 +152,22 @@ Agents pick their model through omp's role aliases, so you choose the models onc
 modelRoles:
   plan: anthropic/claude-opus-5-5   # librarian, archmagos
   slow: anthropic/claude-opus-5-5   # inquisitor
-  task: anthropic/claude-sonnet-5-5 # battle-brother, veteran, apothecary, confessor without Codex
+  task: anthropic/claude-sonnet-5-5 # apothecary, confessor without Codex; standard tier
 ```
 
-The effort each agent asks for is in the table above. To move a single agent to another model, use `task.agentModelOverrides`, e.g. `inquisitor: anthropic/claude-sonnet-5-5`. The full recommended config and its reasons: [docs/models.md](docs/models.md); `/skill:strategium-setup` checks your roles against it.
+The effort each agent asks for is in the table above. To move a single agent to another model, use `task.agentModelOverrides`, e.g. `inquisitor: anthropic/claude-sonnet-5-5`. During a run, `battle-brother` and `veteran` follow `STRATEGIUM_TIERS` instead: the hook's model replaces that override. The full recommended config and its reasons: [docs/models.md](docs/models.md); `/skill:strategium-setup` checks your roles against it.
+
+#### Tiers
+
+The plan gives every squad a cost tier with a one-line reason, and the plugin runs each `battle-brother` on its squad's tier, so one parallel batch can mix tiers. A tier is an omp model selector; its `:level` suffix sets the effort and beats the agent's own `thinkingLevel`.
+
+| Tier | Default selector | For |
+|---|---|---|
+| `light` | `@smol:medium` | docs, prompts, renames, fixtures, mechanical edits with a clear check |
+| `standard` | `@task:medium` | ordinary code with tests (the default for a squad with no tier) |
+| `heavy` | `@slow:high` | concurrency, security, parsers, CI workflows holding write tokens, code without tests, anything irreversible |
+
+Seal Plan shows each squad's tier and a rough estimate (relative cost 1 / 3 / 10, about 5 / 10 / 20 minutes per squad, from the table in the skill), and you can change a tier there (`S2 heavy`) without a redraft. A squad whose builder failed gets its penance one tier up (heavy stays heavy, then the `veteran`); the reviewers keep their own tiers. Set `STRATEGIUM_TIERS` to change the selectors, and set the `smol` role, which `light` needs: see [docs/models.md](docs/models.md).
 
 ## Install
 
@@ -270,6 +282,7 @@ An **untimed** run still counts its time (`status`, `report`), with no alerts, n
 | `STRATEGIUM_ARCHMAGOS` | `1` lets a run mark the Archmagos Dominus in Muster; off by default; `/strategium-config archmagos on` or `off` overrides it for the session |
 | `STRATEGIUM_COCKPIT_KEY` | the key that opens the cockpit, e.g. `ctrl+shift+k` or `f8`; it needs `ctrl`, `alt` or `super`, or is `f1`-`f12`, so a bare letter never takes your typing; default `alt+c`; `/strategium-config cockpit-key <key>` saves another for the next omp start and wins over it, `cockpit-key default` drops it |
 | `STRATEGIUM_COCKPIT_THEME` | the cockpit theme: `blood-angels` (default), `ultramarines`, `dark-angels` or `cogitator`; it applies only when no theme is saved: `/strategium-config cockpit-theme <name>` saves one, applies it at once and wins over this, `cockpit-theme default` drops it; an unknown value is warned at session start and ignored |
+| `STRATEGIUM_TIERS` | the selector of each cost tier, `;`-separated `tier=selector` entries, e.g. `light=anthropic/claude-haiku-5-5:low;heavy=@task:high`; a tier you leave out keeps its default (`light=@smol:medium`, `standard=@task:medium`, `heavy=@slow:high`); an unknown tier or an empty selector is ignored and shown by `strategium status` |
 
 `/strategium-config` shows the effective values: the notify, sound, volume and toast settings, the idle minutes, the archmagos setting, the cockpit key and the cockpit theme (`cockpit-theme: <name> (<source>)`), each with its source, the theatre, the alarm, the glyphs and the state directory.
 

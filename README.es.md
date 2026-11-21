@@ -136,8 +136,8 @@ El Capitán planifica y delega; cada uno de los demás papeles es un agente que 
 | <img src="docs/icons/radar.svg" width="18" alt=""> `scout` | Auspex | mapea el código que toca el objetivo; de 1 a 3 a la vez, cada uno con su foco | escribe ficheros o ejecuta bash | `@smol` / medium |
 | <img src="docs/icons/book-open-page-variant.svg" width="18" alt=""> `librarian` | Scriptorium | escribe la spec, los squads y el Merge bar; uno por área cuando el objetivo se divide, y luego un líder une las partes | edita ficheros del repositorio | `@plan` / high |
 | <img src="docs/icons/head-cog.svg" width="18" alt=""> `archmagos` | Scriptorium | integra los planes de cada área en uno, comprobando cada supuesto contra el código; solo si se marcó en Muster | edita, escribe o lanza agentes | `@plan` / xhigh |
-| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | construye un squad con los tests primero y reporta la evidencia rojo/verde | hace commits o toca ficheros fuera de su squad | `@task` / medium |
-| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rehace un squad que falló dos veces, después de averiguar por qué | hace commits | `@task` / high |
+| <img src="docs/icons/shield-sword.svg" width="18" alt=""> `battle-brother` | Skirmish | construye un squad con los tests primero y reporta la evidencia rojo/verde | hace commits o toca ficheros fuera de su squad | el [tier](#tiers) de su squad |
+| <img src="docs/icons/sword-cross.svg" width="18" alt=""> `veteran` | Skirmish | rehace un squad que falló dos veces, después de averiguar por qué | hace commits | tier heavy (`@slow:high`); solo para escalar |
 | <img src="docs/icons/medical-bag.svg" width="18" alt=""> `apothecary` | Skirmish | muta las líneas cambiadas del squad y hace fuzzing de la entrada no fiable, para enseñar dónde los tests no protegen el código | edita los tests que audita, o deja el árbol cambiado | `@task` / medium |
 | <img src="docs/icons/gavel.svg" width="18" alt=""> `inquisitor` | Inquisition | revisa el diff contra el Merge bar; un PASS necesita evidencia con fichero:línea o un comando | edita, hace commits o push | `@slow` / high |
 | <img src="docs/icons/book-cross.svg" width="18" alt=""> `confessor` | Inquisition | una segunda revisión, independiente y de otra familia de modelos, cuando el plan marca el diff como grande o arriesgado, o en el bucle Review & merge | lee el informe del inquisitor | gpt-6-astra (si no, `@task`) / high |
@@ -152,10 +152,22 @@ Los agentes eligen modelo con los alias de rol de omp: eliges los modelos una ve
 modelRoles:
   plan: anthropic/claude-opus-5-5   # librarian, archmagos
   slow: anthropic/claude-opus-5-5   # inquisitor
-  task: anthropic/claude-sonnet-5-5 # battle-brother, veteran, apothecary, confessor sin Codex
+  task: anthropic/claude-sonnet-5-5 # apothecary, confessor sin Codex; nivel standard
 ```
 
-El effort que pide cada agente está en la tabla de arriba. Para llevar un solo agente a otro modelo, usa `task.agentModelOverrides`, p. ej. `inquisitor: anthropic/claude-sonnet-5-5`. La config recomendada completa y sus motivos: [docs/models.md](docs/models.md) (en inglés); `/skill:strategium-setup` compara tus roles con ella.
+El effort que pide cada agente está en la tabla de arriba. Para llevar un solo agente a otro modelo, usa `task.agentModelOverrides`, p. ej. `inquisitor: anthropic/claude-sonnet-5-5`. Durante una run, `battle-brother` y `veteran` siguen `STRATEGIUM_TIERS`: el modelo del hook sustituye ese override. La config recomendada completa y sus motivos: [docs/models.md](docs/models.md) (en inglés); `/skill:strategium-setup` compara tus roles con ella.
+
+#### Tiers
+
+El plan da a cada squad un tier de coste con un motivo de una línea, y el plugin lanza cada `battle-brother` con el tier de su squad, así que un mismo lote en paralelo puede mezclar tiers. Un tier es un selector de modelo de omp; su sufijo `:nivel` fija el effort y gana al `thinkingLevel` del propio agente.
+
+| Tier | Selector por defecto | Para |
+|---|---|---|
+| `light` | `@smol:medium` | docs, prompts, renombrados, fixtures, ediciones mecánicas con un check claro |
+| `standard` | `@task:medium` | código normal con tests (el valor por defecto de un squad sin tier) |
+| `heavy` | `@slow:high` | concurrencia, seguridad, parsers, workflows de CI con tokens de escritura, código sin tests, todo lo irreversible |
+
+El sello Plan muestra el tier de cada squad y una estimación aproximada (coste relativo 1 / 3 / 10, unos 5 / 10 / 20 minutos por squad, de la tabla de la skill), y puedes cambiar un tier ahí (`S2 heavy`) sin redraft. Un squad cuyo builder falló recibe su penance un tier más arriba (heavy sigue en heavy, y después el `veteran`); los revisores conservan sus propios tiers. Con `STRATEGIUM_TIERS` cambias los selectores, y hay que configurar el rol `smol`, que `light` necesita: mira [docs/models.md](docs/models.md) (en inglés).
 
 ## Instalación
 
@@ -270,6 +282,7 @@ Una run **sin temporizador** sigue contando su tiempo (`status`, `report`), sin 
 | `STRATEGIUM_ARCHMAGOS` | `1` deja que una run marque al Archmagos Dominus en Muster; apagado por defecto; `/strategium-config archmagos on` u `off` lo cambia para la sesión |
 | `STRATEGIUM_COCKPIT_KEY` | la tecla que abre el cockpit, p. ej. `ctrl+shift+k` o `f8`; necesita `ctrl`, `alt` o `super`, o ser `f1`-`f12`, así que una letra suelta nunca se come lo que escribes; por defecto `alt+c`; `/strategium-config cockpit-key <key>` guarda otra para el próximo arranque de omp y gana a esta, `cockpit-key default` la quita |
 | `STRATEGIUM_COCKPIT_THEME` | el tema del cockpit: `blood-angels` (por defecto), `ultramarines`, `dark-angels` o `cogitator`; solo rige si no hay un tema guardado: `/strategium-config cockpit-theme <name>` guarda uno, lo aplica al instante y gana a esta, `cockpit-theme default` lo quita; un valor desconocido se avisa al iniciar la sesión y se ignora |
+| `STRATEGIUM_TIERS` | el selector de cada tier de coste, entradas `tier=selector` separadas por `;`, p. ej. `light=anthropic/claude-haiku-5-5:low;heavy=@task:high`; un tier que omitas conserva su valor por defecto (`light=@smol:medium`, `standard=@task:medium`, `heavy=@slow:high`); un tier desconocido o un selector vacío se ignora y lo muestra `strategium status` |
 
 `/strategium-config` muestra los valores efectivos: los ajustes notify, sound, volume y toast, los minutos de inactividad, el ajuste del archmagos, la tecla del cockpit y el tema del cockpit (`cockpit-theme: <name> (<origen>)`), cada uno con su origen, el teatro, la alarma, los glifos y el directorio de estado.
 

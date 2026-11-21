@@ -63,7 +63,7 @@ An installed but disabled plugin → offer `omp plugin enable <name>`.
 ## 4c. Model roles
 The recommended config and its reasons are in `<R>/docs/models.md`; read it before advising.
 - Run `bun "<R>/skills/strategium-setup/roles.ts"` first and report every `WARN` line in the setup table. The bullets below are the advice that follows.
-- `omp config get modelRoles` and `omp config get task.agentModelOverrides`. Strategium agents need `plan` (librarian, archmagos), `slow` (inquisitor) and `task` (battle-brother, veteran, apothecary, confessor without Codex); the bundled `scout` and `sonic` use `smol`.
+- `omp config get modelRoles` and `omp config get task.agentModelOverrides`. Strategium agents need `plan` (librarian, archmagos), `slow` (inquisitor) and `task` (apothecary, confessor without Codex; battle-brother and veteran run on `smol`, `task` or `slow` by cost tier, set by `STRATEGIUM_TIERS`, and `task.agentModelOverrides` does not move them during a run); the bundled `scout` and `sonic` use `smol`.
 - Unset `plan` or `task` → report that they run on the session's model. Unset `slow` or `smol` → they use the configured `default` with its `:level` suffix (e.g. `default: …:medium` runs the inquisitor at `medium`, and scout and sonic on the main model); only with `default` unset too does `slow` fall to omp's slow list (`gpt-5.6-sol` with a Codex login, else Fable 5.2, the costliest model).
 - A `:level` suffix on `plan`, `task` or `smol` overrides the effort of every agent on that role (e.g. `plan: …:xhigh` runs the librarian at `xhigh`, `smol: …:low` runs scout and sonic at `low`): report it and recommend the role without a suffix.
 - Compare every role with the recommended config and show a table (role | current | recommended | why). Recommend; never push the user's existing choices: a different model or effort that is set on purpose is fine, only flag `max` effort or Fable as costly.
@@ -86,6 +86,7 @@ The recommended config and its reasons are in `<R>/docs/models.md`; read it befo
 | `STRATEGIUM_ARCHMAGOS` | optional | `0` (off; `1` lets runs mark the Archmagos Dominus in Muster; per session `/strategium-config archmagos on` or `off`) |
 | `STRATEGIUM_COCKPIT_KEY` | optional | `alt+c` (the key that opens the cockpit, e.g. `f8` or `ctrl+shift+k`; it needs `ctrl`, `alt` or `super`, or is `f1`-`f12`; `/strategium-config cockpit-key <key>` saves another for the next omp start and wins over it) |
 | `STRATEGIUM_COCKPIT_THEME` | optional | `blood-angels` (the cockpit theme: `blood-angels`, `ultramarines`, `dark-angels` or `cogitator`; used only when no theme is saved; an unknown value is warned at session start and ignored; `/strategium-config cockpit-theme <name>` saves one and applies it at once, `default` drops it) |
+| `STRATEGIUM_TIERS` | optional | leave unset (defaults `light=@smol:medium;standard=@task:medium;heavy=@slow:high`; `;`-separated `tier=selector` entries override one tier each, e.g. `light=anthropic/claude-haiku-5-5:low;heavy=@task:high`; `light` needs the `smol` role set, see `docs/models.md`) |
 | `OBSIDIAN_VAULT_PATH` | only with obsidian-second-brain | absolute path of the vault; check the folder exists and contains `.obsidian/` |
 
 - Ask the user for the values in one `ask` form (text inputs prefilled with the defaults; the vault path has no default).
