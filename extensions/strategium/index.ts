@@ -1005,10 +1005,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.view = { ...cockpit.view!, status: cockpit.status };
 		cockpit.overlay.requestRender();
 	};
-	const BLOCK_COOLDOWN_MS = 60_000;
-	const blockRang = new Map<string, number>();
+
 	/** Rebuild the view from the run and the in-memory state, then repaint an open overlay. Never ticks the timer. */
-	const drawCockpit = (run: Run, ctx?: SessionCtx) => {
+	const drawCockpit = (run: Run, ctx: SessionCtx) => {
 		if (cockpit.key !== run.key) resetCockpit(run.key);
 		// What each active agent wrote about itself. A stalled one (no tool call in flight, none ended for 5 min) is logged once per `at`.
 		const now = Date.now();
@@ -1026,18 +1025,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			}
 			// shortcut: a block undone before the parent's next read (≤1 s with the cockpit open, ≤60 s closed) is never seen; upgrade if agents unblock themselves that fast.
 			if (row?.blocked === true) {
-				// Once per transition, and only when a ctx can sound it, so the transition is never used up without its alarm. A blocked row still falls through to the stall rule below.
-				if (ctx && !job.blocked) {
+				// Once per transition. A blocked row still falls through to the stall rule below.
+				if (!job.blocked) {
 					job.blocked = true;
 					const line = cap(oneLine(row.line));
 					log(run.key, job.who, line ? `blocked: ${line}` : "blocked", "warn");
-					// At most one alarm per agent a minute: a block, unblock, block loop is logged each time but rings once.
-					const rang = blockRang.get(`${run.sid}/${id}`) ?? -BLOCK_COOLDOWN_MS;
-					if (now - rang >= BLOCK_COOLDOWN_MS) {
-						blockRang.set(`${run.sid}/${id}`, now);
-						const err = alert(run.sid, "attention", `${run.key}: ${job.who} is blocked${line ? `: ${line}` : ""}`, ctx);
-						if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
-					}
+					const err = alert(run.sid, "attention", `${run.key}: ${job.who} is blocked${line ? `: ${line}` : ""}`, ctx);
+					if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 				}
 			}
 			// The idle period starts at the last tool call; an agent with no live row has nothing to count from (it may be an eval spawn or another process), so it is never stalled.

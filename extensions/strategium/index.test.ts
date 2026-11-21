@@ -4831,7 +4831,7 @@ describe("cockpit", () => {
 				expect(t).not.toContain("stalled");
 			});
 
-			test("block, unblock, block within 60 s rings once and logs twice; after 60 s it rings again", async () => {
+			test("block, unblock, block within 60 s rings and logs twice", async () => {
 				const { s, ui, c } = await blockedChild();
 				const block = async (line: string) => {
 					await c.call({ action: "signal", blocked: true, line });
@@ -4845,12 +4845,8 @@ describe("cockpit", () => {
 				await unblock();
 				at(10_000);
 				await block("second");
-				expect(alarmLines()).toEqual(["attention|K-1: SQUAD a is blocked: first"]);
+				expect(alarmLines()).toEqual(["attention|K-1: SQUAD a is blocked: first", "attention|K-1: SQUAD a is blocked: second"]);
 				expect((await chron(s, ui)).match(/blocked: /g)).toHaveLength(2);
-				await unblock();
-				at(61_000);
-				await block("third");
-				expect(alarmLines()).toEqual(["attention|K-1: SQUAD a is blocked: first", "attention|K-1: SQUAD a is blocked: third"]);
 			});
 
 			test("a failing alarm for a block is told to the user", async () => {
@@ -4924,7 +4920,7 @@ describe("cockpit", () => {
 				await peek(s, ui);
 				await c.call({ action: "signal", line: "go on" });
 				expect(top(await peek(s, ui))).not.toContain("blocked · ");
-				at(61_000); // past the 60 s alarm cooldown
+				at(10_000);
 				await c.call({ action: "signal", blocked: true, line: "need a decision" });
 				await peek(s, ui);
 				expect(alarmLines()).toEqual(["attention|K-1: SQUAD a is blocked: need the API shape", "attention|K-1: SQUAD a is blocked: need a decision"]);
