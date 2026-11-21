@@ -271,7 +271,6 @@ An **untimed** run still counts its time (`status`, `report`), with no alerts, n
 | Variable | Meaning |
 |---|---|
 | `STRATEGIUM_THEATRE` | default theatre for `/strategium`; empty → the GitHub theatre when the run's repo is on GitHub |
-| `STRATEGIUM_ALARM` | command run when the timer fires, e.g. `bun /path/to/strategium/alarm/vox.ts`; quote a path with spaces (`bun "C:/my tools/vox.ts"`) |
 | `STRATEGIUM_STATE_DIR` | where the session state lives (default `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | `1` to use Nerd Font glyphs instead of emoji |
 | `STRATEGIUM_NOTIFY` | `1` turns on the alarm (its sound and desktop notifications, each with its own switch); off by default, and off means neither; `/strategium-config notify on` or `off` overrides it for the session |
@@ -285,13 +284,13 @@ An **untimed** run still counts its time (`status`, `report`), with no alerts, n
 | `STRATEGIUM_COCKPIT_THEME` | the cockpit theme: `blood-angels` (default), `ultramarines`, `dark-angels` or `cogitator`; it applies only when no theme is saved: `/strategium-config cockpit-theme <name>` saves one, applies it at once and wins over this, `cockpit-theme default` drops it; an unknown value is warned at session start and ignored |
 | `STRATEGIUM_TIERS` | the selector of each cost tier, `;`-separated `tier=selector` entries, e.g. `light=anthropic/claude-haiku-5-5:low;heavy=@task:high`; a tier you leave out keeps its default (`light=@smol:medium`, `standard=@task:medium`, `heavy=@slow:high`); an unknown tier or an empty selector is ignored and shown by `strategium status` |
 
-`/strategium-config` shows the effective values: the notify, sound, volume and toast settings, the idle minutes, the archmagos setting, the commit setting, the cockpit key and the cockpit theme (`cockpit-theme: <name> (<source>)`), each with its source, the theatre, the alarm, the glyphs and the state directory.
+`/strategium-config` shows the effective values: the notify, sound, volume and toast settings, the idle minutes, the archmagos setting, the commit setting, the cockpit key and the cockpit theme (`cockpit-theme: <name> (<source>)`), each with its source, the theatre, the glyphs and the state directory.
 
 The state (one JSONL per day plus the run claims) stays outside the repository, so no session data is ever committed.
 
 ### The alarm
 
-`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies, all original and under the project's MIT licence. They share one grimdark kit at 100 bpm in C minor (war drums with a double kick, drop-C guitar and bass, choir, brass, bell). Levels are `50`, `80`, `100` (the guitar chugs tighten from one to the next), `done` (also the sound of a seal granted in the cockpit), `attention`, `idle` (a quieter stand-by sound when the clock pauses after idle) and `theme` (four bars, 9.6 s, that loop without a seam: a guitar riff with the bass and the double kick locked to it, under the choir; plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`); `STRATEGIUM_SOUND=0` skips the sound and `STRATEGIUM_VOLUME` (`0` to `100`, default `50`) sets its volume.
+`alarm/vox.ts` synthesises every sound from scratch: no samples, no dependencies, all original and under the project's MIT licence. They share one grimdark kit at 100 bpm in C minor (war drums with a double kick, drop-C guitar and bass, choir, brass, bell). Levels are `50`, `80`, `100` (the guitar chugs tighten from one to the next), `done` (also the sound of a seal granted in the cockpit), `attention`, `idle` (a quieter stand-by sound when the clock pauses after idle) and `theme` (four bars, 9.6 s, that loop without a seam: a guitar riff with the bass and the double kick locked to it, under the choir; plays when the session's run ends, or by hand: `bun alarm/vox.ts theme`); with a message it also raises a desktop notification (Windows toast, macOS notification, Linux `notify-send`); `STRATEGIUM_SOUND=0` skips the sound and `STRATEGIUM_VOLUME` (`0` to `100`, default `20`) sets its volume. With notifications on, the plugin plays its own bundled `alarm/vox.ts` at 50/80/100 % of a booking, on `attention` (an `ask`, a waiting plan review, the Captain's `attention` call, a pause after a silent gap), on the `idle` pause, `done` when a seal is granted and `theme` when the run ends. Nothing chooses the command: only the toggles notify, sound, toast (and volume) exist. A vox run that exits non-zero is reported once per session.
 
 ```
 bun alarm/vox.ts 100 "the booking is over"
