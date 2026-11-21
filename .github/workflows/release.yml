@@ -10,7 +10,7 @@ name: release
 on:
   push:
     branches: [main]
-    paths: [extensions/**, skills/**, agents/**, alarm/**, .omp-plugin/**, '!**/*.test.ts']
+    paths: [extensions/**, skills/**, agents/**, alarm/**, rules/**, .omp-plugin/**, '!**/*.test.ts']
 
 permissions:
   contents: read

@@ -43,7 +43,7 @@ Each scenario starts its own omp in the ConPTY (work dir `work<suffix>-<name>`),
 Run against an **export** of a commit, never against a worktree that is changing. Put the short sha next to it as `<dir>.sha`; the table header prints it:
 
 ```
-git -C <repo> archive <rev> extensions skills alarm agents .omp-plugin package.json | tar -x -C %TEMP%\strategium-tui-shot\plugin-head
+git -C <repo> archive <rev> extensions skills alarm agents rules .omp-plugin package.json | tar -x -C %TEMP%\strategium-tui-shot\plugin-head
 git -C <repo> rev-parse --short <rev> > %TEMP%\strategium-tui-shot\plugin-head.sha
 ```
 
