@@ -1,3 +1,17 @@
+## [0.2.29] - 2026-11-21
+
+### 🚀 Features
+
+- *(cockpit)* Run report at Debrief
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* A truer debrief: requested models, used tiers, redrafts and pauses
+- *(cockpit)* Builds from before a redraft get their own debrief row
+
+### 📚 Documentation
+
+- *(cockpit)* Describe the Debrief report
 ## [0.2.28] - 2026-11-21
 
 ### 🚀 Features
