@@ -1480,6 +1480,34 @@ describe("the run follows an approved plan", () => {
 		expect(s.shown()).toContain("Deployment › Branch and squads");
 	});
 
+	test("a rebuild init logs no station in the chronicle", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", [
+			phase("Muster", ["[captain] Objective", "completed"], ["[captain] Orders", "completed"]),
+			phase("Auspex", ["[scout] Map", "completed"]),
+			phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "in_progress"]),
+		]);
+		await approve(s, sm, ctx);
+		const stations = (rest: "pending" | "completed") => [
+			phase("Muster", ["[captain] Objective", rest], ["[captain] Orders", rest]),
+			phase("Auspex", ["[scout] Map", rest]),
+			phase("Scriptorium", ["[librarian] Plan", rest], ["[seal] Plan", rest]),
+			phase("Deployment", ["[captain] Branch and squads", "pending"]),
+		];
+		const chronicle = () =>
+			(JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.cockpit"), "utf8")).chronicle as { text: string }[]).map(e => e.text);
+		const init = stations("pending");
+		init[0].tasks[0].status = "in_progress";
+		await todoResult(s, ctx, "init", init);
+		expect(chronicle()).not.toContain("station Muster");
+		expect(movedRun(s.dir).phases).toEqual(init);
+		const done = stations("completed");
+		done[3].tasks[0].status = "in_progress";
+		await todoResult(s, ctx, "done", done);
+		expect(chronicle()).toContain("station Deployment");
+		expect(chronicle()).not.toContain("station Muster");
+	});
+
 	test("squads declared in plan mode survive approve and execute", async () => {
 		const { s, sm, ctx } = await owner();
 		const slices = [{ id: "S1", parallel: false, files: ["a.ts"] }];
@@ -1506,6 +1534,8 @@ describe("the run follows an approved plan", () => {
 		s.start();
 		await todoResult(s, s.ctx, "init", [phase("Muster", ["[captain] Objective", "in_progress"], ["[captain] Orders", "pending"])]);
 		expect(s.shown()).toContain("Muster › Objective");
+		const cockpit = JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8"));
+		expect(cockpit.chronicle.map((e: { text: string }) => e.text)).toContain("station Muster");
 	});
 
 	test.each(["resume", "fork"])("a %s with a review open moves nothing", async reason => {

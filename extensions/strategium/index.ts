@@ -1804,13 +1804,16 @@ export default function (pi: ExtensionAPI) {
 	// A seal granted: it was in the todo before, not completed, and is completed now.
 	pi.on("tool_result", (e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || e.toolName.replace(/^_+/, "") !== "todo" || e.isError) return;
-		const phases = (e.details as { phases?: Phase[] } | undefined)?.phases;
+		const details = e.details as { op?: string; phases?: Phase[] } | undefined;
+		const phases = details?.phases;
 		const run = ownRun(sidOf(ctx));
 		if (!run || !Array.isArray(phases)) return;
 		const before = run.phases;
 		writeRun({ ...run, phases });
 		const was = before && whereFrom(before);
-		const now = whereFrom(phases);
+		// A rebuild's init is auto-started by omp at its first task, which is not where the run is: no station or seal-waiting entry.
+		const rebuild = details?.op === "init" && !!before?.length;
+		const now = rebuild ? undefined : whereFrom(phases);
 		if (now && now.station !== was?.station) log(run.key, "STRATEGOS", `station ${now.station}`);
 		if (now?.seal && now.seal !== was?.seal) log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
 		for (const seal of grantedSeals(before, phases)) {
