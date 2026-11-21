@@ -107,6 +107,14 @@ export function whereFrom(phases: Phase[]): Where | undefined {
 	return { station: phases[i].name, ...(back ? { back: true as const } : {}), ...(seal ? { seal } : {}), ...(short ? { task: short } : {}) };
 }
 
+/** An init over existing phases that shares a station with them re-creates the todo (full skeleton, compaction): omp's auto-start there is not progress. One that shares none is the plan-mode hand-off. */
+const isRebuild = (op: string | undefined, before: Phase[] | undefined, after: Phase[] | undefined) =>
+	op === "init" && !!before?.length && !!after?.some(p => before.some(b => b.name === p.name));
+
+/** The plan-mode hand-off: a non-empty init replacing non-empty phases without sharing a station. An empty init is not one. */
+const isHandOff = (op: string | undefined, before: Phase[] | undefined, after: Phase[] | undefined) =>
+	op === "init" && !!before?.length && !!after?.length && !isRebuild(op, before, after);
+
 /**
  * The run's KEY from the objective as /strategium parsed it: a key as given, a `@file`'s base name, or the first words of "free text".
  * A key as given passes through verbatim (any text without spaces; timer.lockPath sanitises it for the lock file). A `@file` or "free text" gives
@@ -1282,7 +1290,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			const key = keyOf(objective);
 			const sid = sidOf(ctx);
 			// Begin the run now, untimed, so the clock counts from the command; a key this session already holds is left as it is.
-			let note = `Strategium run ${key} has begun, untimed: first todo init the skeleton todo from the skill.`;
+			let note = `Strategium run ${key} has begun, untimed: first todo init the skeleton todo from the skill (in omp plan mode only the plan stations, --to Scriptorium).`;
 			if (ownRun(sid)?.key === key) note = `Strategium run ${key} is already this session's run.`;
 			else {
 				try {
@@ -1638,8 +1646,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const details = e.details as { op?: string; phases?: Phase[] } | undefined;
 		const phases = details?.phases;
 		const run = ownRun(sidOf(ctx));
-		// A rebuild's init is auto-started by omp at its first task, which is not where the run is.
-		if (details?.op === "init" && run?.phases?.length) return;
+		// A rebuild's init (it shares a station with the run's phases) is auto-started by omp at its first task, which is not where the run is.
+		if (isRebuild(details?.op, run?.phases, phases)) return;
 		const where = phases && whereFrom(phases);
 		if (!run || !where) return;
 		writeRun({ ...run, where });
@@ -1845,11 +1853,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		writeRun({ ...run, phases });
 		const was = before && whereFrom(before);
 		// A rebuild's init is auto-started by omp at its first task, which is not where the run is: no station or seal-waiting entry.
-		const rebuild = details?.op === "init" && !!before?.length;
+		const rebuild = isRebuild(details?.op, before, phases);
 		const now = rebuild ? undefined : whereFrom(phases);
 		if (now && now.station !== was?.station) log(run.key, "STRATEGOS", `station ${now.station}`);
 		if (now?.seal && now.seal !== was?.seal) log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
-		for (const seal of grantedSeals(before, phases)) {
+		// A hand-off (plan stations replaced by the remaining ones) is the approval: the seal that waited is granted.
+		const handedOff = before && isHandOff(details?.op, before, phases) ? waitingSeal(before) : undefined;
+		for (const seal of handedOff ? [handedOff] : grantedSeals(before, phases)) {
 			log(run.key, "✠ SEAL", `${seal.id} granted`, "seal");
 			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.id} granted`, ctx);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");

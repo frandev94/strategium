@@ -365,6 +365,7 @@ describe("the /strategium command", () => {
 		expect(status).toContain("add-a-dark-mode 0 min (no booking) running");
 		expect(sent[0]).toContain("Strategium run add-a-dark-mode has begun, untimed");
 		expect(sent[0]).toContain("todo init the skeleton todo");
+		expect(sent[0]).toContain("--to Scriptorium");
 		start();
 		expect(shown()).toContain("strategium: add-a-dark-mode");
 		setSystemTime(new Date(2026, 10, 16, 9, 5, 0));
@@ -1486,59 +1487,80 @@ describe("the run follows an approved plan", () => {
 		expect(t).toContain("Squads: a, b");
 	});
 
+	const planStations = () => [
+		phase("Muster", ["[captain] Objective", "completed"], ["[captain] Orders", "completed"]),
+		phase("Auspex", ["[scout] Map", "completed"]),
+		phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "in_progress"]),
+	];
+	// The hand-off: only the stations the approval starts; omp starts the first task by itself.
+	const handOff = (at: "Deployment" | "Skirmish" = "Deployment") => [
+		phase("Deployment", ["[captain] Branch and squads", at === "Deployment" ? "in_progress" : "completed"]),
+		phase("Skirmish", ["[battle-brother] Squads", at === "Skirmish" ? "in_progress" : "pending"]),
+		phase("Inquisition", ["[inquisitor] Review", "pending"]),
+		phase("Extraction", ["[captain] Extract", "pending"]),
+		phase("Debrief", ["[captain] Debrief", "pending"]),
+	];
+	const chronicleOf = (dir: string) =>
+		(JSON.parse(readFileSync(join(dir, "runs", "sess-B.cockpit"), "utf8")).chronicle as { text: string }[]).map(e => e.text);
+
 	test("the fresh session never shows a plan-mode station or Muster", async () => {
 		const { s, sm, ctx } = await owner();
-		await todoResult(s, ctx, "start", [
-			phase("Muster", ["[captain] Objective", "completed"], ["[captain] Orders", "completed"]),
-			phase("Auspex", ["[scout] Map", "completed"]),
-			phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "in_progress"]),
-		]);
+		await todoResult(s, ctx, "start", [phase("Muster", ["[captain] Objective", "in_progress"])]);
+		expect(s.shown()).toContain("Muster › Objective");
+		await todoResult(s, ctx, "done", [phase("Muster", ["[captain] Objective", "completed"]), phase("Auspex", ["[scout] Map", "in_progress"])]);
+		await todoResult(s, ctx, "done", planStations());
 		expect(s.shown()).toContain("seal Plan");
+		expect(s.shown()).not.toContain("Deployment");
 		await approve(s, sm, ctx);
 		for (const word of ["seal Plan", "Scriptorium", "Muster"]) expect(s.shown()).not.toContain(word);
-		// The rebuild: omp starts the first task of the new todo by itself.
-		const stations = (rest: "pending" | "completed") => [
-			phase("Muster", ["[captain] Objective", rest], ["[captain] Orders", rest]),
-			phase("Auspex", ["[scout] Map", rest]),
-			phase("Scriptorium", ["[librarian] Plan", rest], ["[seal] Plan", rest]),
-			phase("Deployment", ["[captain] Branch and squads", "pending"]),
-		];
-		const init = stations("pending");
-		init[0].tasks[0].status = "in_progress";
-		await todoResult(s, ctx, "init", init);
-		expect(s.shown()).not.toContain("Muster");
-		const done = stations("completed");
-		done[3].tasks[0].status = "in_progress";
-		await todoResult(s, ctx, "done", done);
+		await todoResult(s, ctx, "init", handOff());
 		expect(s.shown()).toContain("Deployment › Branch and squads");
+		for (const word of ["Scriptorium", "Muster"]) expect(s.shown()).not.toContain(word);
 	});
 
-	test("a rebuild init logs no station in the chronicle", async () => {
+	test("a hand-off init logs station Deployment once, and a compaction re-init moves nothing", async () => {
 		const { s, sm, ctx } = await owner();
-		await todoResult(s, ctx, "start", [
-			phase("Muster", ["[captain] Objective", "completed"], ["[captain] Orders", "completed"]),
-			phase("Auspex", ["[scout] Map", "completed"]),
-			phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "in_progress"]),
-		]);
+		await todoResult(s, ctx, "start", planStations());
 		await approve(s, sm, ctx);
-		const stations = (rest: "pending" | "completed") => [
-			phase("Muster", ["[captain] Objective", rest], ["[captain] Orders", rest]),
-			phase("Auspex", ["[scout] Map", rest]),
-			phase("Scriptorium", ["[librarian] Plan", rest], ["[seal] Plan", rest]),
-			phase("Deployment", ["[captain] Branch and squads", "pending"]),
-		];
-		const chronicle = () =>
-			(JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.cockpit"), "utf8")).chronicle as { text: string }[]).map(e => e.text);
-		const init = stations("pending");
-		init[0].tasks[0].status = "in_progress";
-		await todoResult(s, ctx, "init", init);
-		expect(chronicle()).not.toContain("station Muster");
-		expect(movedRun(s.dir).phases).toEqual(init);
-		const done = stations("completed");
-		done[3].tasks[0].status = "in_progress";
-		await todoResult(s, ctx, "done", done);
-		expect(chronicle()).toContain("station Deployment");
-		expect(chronicle()).not.toContain("station Muster");
+		await todoResult(s, ctx, "init", handOff());
+		const count = (text: string) => chronicleOf(s.dir).filter(t => t === text).length;
+		expect(count("station Deployment")).toBe(1);
+		expect(count("station Muster")).toBe(0);
+		await todoResult(s, ctx, "done", handOff("Skirmish"));
+		expect(s.shown()).toContain("Skirmish");
+		// A compaction rebuild shares stations with the current phases: no footer move, no second station entry.
+		await todoResult(s, ctx, "init", handOff("Deployment"));
+		expect(s.shown()).toContain("Skirmish");
+		expect(count("station Deployment")).toBe(1);
+	});
+
+	test("a hand-off init logs the Plan grant once and no seal-waiting entry", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", planStations());
+		await approve(s, sm, ctx);
+		const count = (text: string) => chronicleOf(s.dir).filter(t => t.includes(text)).length;
+		const waiting = count("seal Plan awaits");
+		await todoResult(s, ctx, "init", handOff());
+		expect(count("Plan granted")).toBe(1);
+		expect(count("seal Plan awaits")).toBe(waiting);
+		await todoResult(s, ctx, "done", handOff("Skirmish"));
+		expect(count("Plan granted")).toBe(1);
+	});
+
+	test("a rebuild init while the Plan seal waits (plan-mode compaction) logs no grant", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", planStations());
+		await approve(s, sm, ctx);
+		await todoResult(s, ctx, "init", planStations());
+		expect(chronicleOf(s.dir).filter(t => t.includes("Plan granted"))).toEqual([]);
+	});
+
+	test("an empty init while the Plan seal waits is no hand-off: no grant logged", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", planStations());
+		await approve(s, sm, ctx);
+		await todoResult(s, ctx, "init", []);
+		expect(chronicleOf(s.dir).filter(t => t.includes("Plan granted"))).toEqual([]);
 	});
 
 	test("a rebuild init still logs the seal grant once, and never a seal-waiting entry", async () => {
