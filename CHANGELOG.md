@@ -1,3 +1,17 @@
+## [0.2.26] - 2026-11-21
+
+### 🚀 Features
+
+- *(skills)* Run rules as plugin rules that omp loads
+
+### 🐛 Bug Fixes
+
+- *(skills)* Tighter plan-copy condition, no rule repeated in SKILL.md
+- *(skills)* Plan-copy condition without exponential backtracking
+
+### 📚 Documentation
+
+- *(skills)* SKILL.md links the run rules; rules/ ships with the plugin
 ## [0.2.25] - 2026-11-21
 
 ### 🚀 Features
