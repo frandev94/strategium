@@ -111,12 +111,38 @@ afterEach(() => {
 // The alert events recorded in the day file of the fake clock.
 const alertEvents = (dir: string) => load(join(dir, "2026-11-16.jsonl")).filter(e => e.event === "alert");
 
+type Spawned = { cmd: string[]; env: Record<string, string> };
+type Child = { exited: Promise<number>; unref(): void };
+// The alarm spy the extension spawns through: records each call and answers with `impl` (default: a child that exits 0).
+const alarm = {
+	calls: [] as Spawned[],
+	impl: (): Child => ({ exited: Promise.resolve(0), unref() {} }),
+	spawn(o: Spawned) {
+		alarm.calls.push({ cmd: o.cmd, env: o.env });
+		return alarm.impl();
+	},
+	reset() {
+		alarm.calls = [];
+		alarm.impl = () => ({ exited: Promise.resolve(0), unref() {} });
+	},
+};
+const alarmLines = () => alarm.calls.map(c => `${c.env.STRATEGIUM_P}|${c.env.STRATEGIUM_MSG}`);
+const alarmFull = () => alarm.calls.map(c => `${c.env.STRATEGIUM_P}|${c.env.STRATEGIUM_SOUND}|${c.env.STRATEGIUM_MSG}|${c.env.STRATEGIUM_VOLUME}`);
+const failAlarm = () => {
+	alarm.impl = () => {
+		throw new Error("spawn failed: missing alarm");
+	};
+};
+const exitAlarm = (code: number) => {
+	alarm.impl = () => ({ exited: Promise.resolve(code), unref() {} });
+};
+
 function setup(sid = "sess-0001", shared?: string) {
 	const dir = shared ?? mkdtempSync(join(tmpdir(), "st-index-"));
 	if (!shared) dirs.push(dir);
 	process.env.STRATEGIUM_STATE_DIR = dir;
-	// No test sounds the user's real alarm.
-	delete process.env.STRATEGIUM_ALARM;
+	// No test sounds the real alarm: the extension spawns through the spy.
+	alarm.reset();
 	delete process.env.STRATEGIUM_GLYPHS;
 	// The alarm tests need notifications on; the tests of the default turn them off again.
 	process.env.STRATEGIUM_NOTIFY = "1";
@@ -128,7 +154,7 @@ function setup(sid = "sess-0001", shared?: string) {
 		seen.push({ via: "sendMessage", footer: footer.at(-1) ?? "", events: alertEvents(dir).length });
 		return sendMessage(m, o);
 	};
-	extension(pi as never);
+	extension(pi as never, { spawn: alarm.spawn });
 	const tool = tools.find(t => t.name === "strategium")!;
 	const notes: string[] = [];
 	const footer: string[] = [];
@@ -423,14 +449,12 @@ describe("the /strategium command", () => {
 // Sounds and desktop notifications: off unless STRATEGIUM_NOTIFY or the session turns them on.
 // A missing alarm binary makes the call fail at once, so a note "the alarm failed" proves the alarm ran, with no waiting.
 describe("notifications", () => {
-	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
 	const ran = (notes: string[]) => notes.some(n => n.includes("the alarm failed"));
-	afterEach(() => delete process.env.STRATEGIUM_ALARM);
 
 	test("off by default: an unset STRATEGIUM_NOTIFY runs no alarm and says attention was silent", async () => {
 		const s = setup();
 		delete process.env.STRATEGIUM_NOTIFY;
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		expect(await s.call({ action: "attention", message: "seal ready" })).toBe(
 			"ATTENTION seal ready (silent: notifications are off; /strategium-config notify on)",
 		);
@@ -442,7 +466,7 @@ describe("notifications", () => {
 	test("/strategium-config notify on wins over STRATEGIUM_NOTIFY=0, for this session only", async () => {
 		const s = setup();
 		process.env.STRATEGIUM_NOTIFY = "0";
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		await s.sub("config", "notify on");
 		expect(s.notes.at(-1)).toContain("notify: on (this session)");
 		await s.call({ action: "begin", key: "K-1" });
@@ -455,7 +479,7 @@ describe("notifications", () => {
 
 	test("notify off from the tool silences the session even with STRATEGIUM_NOTIFY=1", async () => {
 		const s = setup();
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		expect(await s.call({ action: "notify", on: false })).toBe("NOTIFY off (this session)");
 		await s.call({ action: "begin", key: "K-1" });
 		await s.call({ action: "end" });
@@ -469,17 +493,6 @@ describe("notifications", () => {
 		expect(s.notes[0]).toContain("config takes notify on|off");
 	});
 
-	// The alarm command appends "<level>|<STRATEGIUM_SOUND>|<STRATEGIUM_MSG>|<STRATEGIUM_VOLUME>" to a file; the spawn is asynchronous, so poll.
-	const recorder = (dir: string) => {
-		const out = join(dir, "alarm.log");
-		const script = join(dir, "rec.ts");
-		writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_SOUND}|${process.env.STRATEGIUM_MSG}|${process.env.STRATEGIUM_VOLUME}\\n`);\n');
-		process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
-		return async () => {
-			for (let i = 0; i < 100 && !existsSync(out); i++) await Bun.sleep(50);
-			return existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
-		};
-	};
 
 	test.each([
 		["defaults", [], "attention|1|seal ready|undefined"],
@@ -488,19 +501,17 @@ describe("notifications", () => {
 	])("the alarm gets STRATEGIUM_SOUND and STRATEGIUM_MSG by channel: %s", async (_n, cmds, want) => {
 		const s = setup();
 		process.env.STRATEGIUM_NOTIFY = "1";
-		const lines = recorder(s.dir);
 		for (const c of cmds) await s.sub("config", c);
 		await s.call({ action: "attention", message: "seal ready" });
-		expect(await lines()).toEqual([want]);
+		expect(alarmFull()).toEqual([want]);
 	});
 
 	test.each([["30", "30"], ["33.6", "34"], ["-5", "0"]])("the alarm gets STRATEGIUM_VOLUME=%p as vox reads it: %p", async (env, want) => {
 		const s = setup();
 		process.env.STRATEGIUM_NOTIFY = "1";
 		process.env.STRATEGIUM_VOLUME = env;
-		const lines = recorder(s.dir);
 		await s.call({ action: "attention", message: "seal ready" });
-		expect(await lines()).toEqual([`attention|1|seal ready|${want}`]);
+		expect(alarmFull()).toEqual([`attention|1|seal ready|${want}`]);
 	});
 
 	test("/strategium-config volume wins over STRATEGIUM_VOLUME for this session", async () => {
@@ -509,16 +520,23 @@ describe("notifications", () => {
 		process.env.STRATEGIUM_VOLUME = "30";
 		await s.sub("config", "volume 70");
 		expect(s.notes.at(-1)).toContain("volume: 70 (this session)");
-		const lines = recorder(s.dir);
 		await s.call({ action: "attention", message: "seal ready" });
-		expect(await lines()).toEqual(["attention|1|seal ready|70"]);
+		expect(alarmFull()).toEqual(["attention|1|seal ready|70"]);
 	});
 
 	test("config volume <n> preview plays done at that volume even with notify off", async () => {
 		const s = setup();
-		const lines = recorder(s.dir);
 		await s.sub("config", "volume 35 preview");
-		expect(await lines()).toEqual(["done|1|undefined|35"]);
+		expect(alarmFull()).toEqual(["done|1|undefined|35"]);
+	});
+
+	test("a preview whose vox exits non-zero says so once", async () => {
+		const s = setup();
+		exitAlarm(1);
+		await s.sub("config", "volume 35 preview");
+		await s.sub("config", "volume 35 preview");
+		await Bun.sleep(20);
+		expect(s.notes.filter(n => n.includes("exited with code 1"))).toHaveLength(1);
 	});
 
 	test("config volume refuses more than 100 and shows the default 20 when unset", async () => {
@@ -532,7 +550,7 @@ describe("notifications", () => {
 	test("sound off and toast off run no alarm and attention says silent", async () => {
 		const s = setup();
 		process.env.STRATEGIUM_NOTIFY = "1";
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		await s.sub("config", "sound off");
 		await s.sub("config", "toast off");
 		expect(await s.call({ action: "attention", message: "seal ready" })).toBe(
@@ -544,7 +562,7 @@ describe("notifications", () => {
 	test("notify off runs nothing whatever sound and toast say", async () => {
 		const s = setup();
 		process.env.STRATEGIUM_NOTIFY = "0";
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		await s.sub("config", "sound on");
 		await s.sub("config", "toast on");
 		expect(await s.call({ action: "attention", message: "seal ready" })).toBe(
@@ -556,7 +574,6 @@ describe("notifications", () => {
 	test("attention names the channels that fired", async () => {
 		const s = setup();
 		process.env.STRATEGIUM_NOTIFY = "1";
-		process.env.STRATEGIUM_ALARM = `"${process.execPath}" -e ""`;
 		expect(await s.call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready (sound, toast)");
 		await s.sub("config", "toast off");
 		expect(await s.call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready (sound)");
@@ -1281,46 +1298,27 @@ describe("the Captain's limits", () => {
 	});
 
 	describe("the theme when the run ends", () => {
-		// The alarm command appends "<level>|<message>" to a file; the spawn is asynchronous, so poll.
-		const recorder = (dir: string) => {
-			const out = join(dir, "alarm.log");
-			const script = join(dir, "rec.ts");
-			writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_MSG}\\n`);\n');
-			process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
-			return async (want: number) => {
-				for (let i = 0; i < 100; i++) {
-					const lines = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
-					if (lines.length >= want) return lines;
-					await Bun.sleep(50);
-				}
-				return existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
-			};
-		};
-		afterEach(() => delete process.env.STRATEGIUM_ALARM);
 
 		test("the tool's end plays it once", async () => {
 			const s = setup();
-			const lines = recorder(s.dir);
 			await s.call({ action: "begin", key: "K-1" });
 			await s.call({ action: "end" });
-			expect(await lines(1)).toEqual(["theme|K-1: run ended"]);
+			expect(alarmLines()).toEqual(["theme|K-1: run ended"]);
 		});
 
 		test("/strategium-end plays it too", async () => {
 			const s = setup();
-			const lines = recorder(s.dir);
 			await s.call({ action: "begin", key: "K-1" });
 			await s.sub("end");
-			expect(await lines(1)).toEqual(["theme|K-1: run ended"]);
+			expect(alarmLines()).toEqual(["theme|K-1: run ended"]);
 			expect(s.activeTools()).toContain("edit");
 		});
 
 		test("an end that fails plays nothing", async () => {
 			const s = setup();
-			const lines = recorder(s.dir);
 			expect(await s.call({ action: "end" })).toContain("ERROR");
 			await Bun.sleep(300);
-			expect(await lines(0)).toEqual([]);
+			expect(alarmLines()).toEqual([]);
 		});
 	});
 });
@@ -1750,22 +1748,74 @@ describe("the run follows an approved plan", () => {
 	});
 });
 
-describe("attention without an alarm", () => {
-	test("says it was silent and points at the setup skill", async () => {
+describe("the bundled alarm", () => {
+	test("attention with channels on names them and spawns the bundled vox with the current bun", async () => {
 		const { call } = setup();
-		expect(await call({ action: "attention", message: "seal ready" })).toBe(
-			"ATTENTION seal ready (silent: STRATEGIUM_ALARM is not set; see /skill:strategium-setup)",
-		);
+		expect(await call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready (sound, toast)");
+		const vox = join(import.meta.dir, "../../alarm/vox.ts");
+		expect(alarm.calls.map(c => c.cmd)).toEqual([[process.execPath, vox]]);
+		expect(existsSync(vox)).toBe(true);
+		// omp.exe is a compiled Bun binary: without BUN_BE_BUN it would run the omp CLI instead of vox.ts.
+		expect(alarm.calls[0].env.BUN_BE_BUN).toBe("1");
 	});
 
-	test("with an alarm set, it is not called silent", async () => {
-		const { call } = setup();
-		process.env.STRATEGIUM_ALARM = `"${process.execPath}" -e ""`;
+	test("a rejecting exited or a throwing notify never escapes as an unhandled rejection", async () => {
+		const seen: unknown[] = [];
+		const on = (e: unknown) => seen.push(e);
+		process.on("unhandledRejection", on);
 		try {
-			expect(await call({ action: "attention", message: "seal ready" })).toBe("ATTENTION seal ready (sound, toast)");
+			const s = setup();
+			alarm.impl = () => ({ exited: Promise.reject(new Error("boom")), unref() {} });
+			await s.call({ action: "attention", message: "one" });
+			exitAlarm(1);
+			(s.ctx as unknown as { ui: { notify: () => void } }).ui.notify = () => {
+				throw new Error("stale ctx");
+			};
+			await s.call({ action: "attention", message: "two" });
+			await Bun.sleep(30);
 		} finally {
-			delete process.env.STRATEGIUM_ALARM;
+			process.off("unhandledRejection", on);
 		}
+		expect(seen).toEqual([]);
+	});
+
+	test("a vox that exits non-zero is reported once per session, each session in turn", async () => {
+		const a = setup("sess-0001");
+		exitAlarm(1);
+		await a.call({ action: "attention", message: "one" });
+		await a.call({ action: "attention", message: "two" });
+		await Bun.sleep(20);
+		expect(a.notes.filter(n => n.includes("exited with code 1"))).toHaveLength(1);
+		// The same extension instance, another session id: the warned set is per session, not global.
+		a.ctx.sessionManager = { getSessionId: () => "sess-0002" };
+		exitAlarm(1);
+		await a.call({ action: "attention", message: "three" });
+		await Bun.sleep(20);
+		expect(a.notes.filter(n => n.includes("exited with code 1"))).toHaveLength(2);
+	});
+
+	test("a vox that exits 0 reports nothing", async () => {
+		const s = setup();
+		await s.call({ action: "attention", message: "one" });
+		await Bun.sleep(20);
+		expect(s.notes).toEqual([]);
+	});
+
+	test("notify off, or sound and toast off, spawn nothing", async () => {
+		const s = setup();
+		await s.call({ action: "notify", on: false });
+		await s.call({ action: "attention", message: "one" });
+		await s.call({ action: "notify", on: true });
+		await s.sub("config", "sound off");
+		await s.sub("config", "toast off");
+		await s.call({ action: "attention", message: "two" });
+		expect(alarm.calls).toEqual([]);
+	});
+
+	test("the config output has no alarm-command line", async () => {
+		const s = setup();
+		await s.sub("config");
+		expect(s.notes.join("\n")).not.toMatch(/\balarm:|_ALARM/);
 	});
 });
 
@@ -1955,9 +2005,7 @@ describe("resume after a reload", () => {
 // What the first version of S1 left unproven: each test below was seen red against the bug or a mutant of it.
 describe("tools, begin and end", () => {
 	const FULL = ["read", "bash", "edit", "write", "task"];
-	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
 	const sorted = (a: string[]) => [...a].sort();
-	afterEach(() => delete process.env.STRATEGIUM_ALARM);
 
 	test("end restores exactly the hidden tools and keeps the others", async () => {
 		const s = setup();
@@ -2011,7 +2059,7 @@ describe("tools, begin and end", () => {
 		await a.call({ action: "begin", key: "K-1" });
 		const b = setup("sess-0002", a.dir);
 		await b.call({ action: "begin", key: "K-2" });
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		expect(await b.call({ action: "end", key: "K-1" })).toBe("ERROR K-1 belongs to session ess-0001; end it there, or take it over with that id");
 		expect(b.activeTools()).toEqual(["read", "bash", "write", "task"]);
 		expect(b.notes).toEqual([]);
@@ -2021,7 +2069,7 @@ describe("tools, begin and end", () => {
 		const a = setup("sess-0001");
 		await a.call({ action: "begin", key: "K-1" });
 		const c = setup("sess-0003", a.dir);
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		expect(await c.call({ action: "end", key: "K-1", takeover: "sess-0001" })).toBe("ENDED K-1");
 		expect(c.activeTools()).toEqual(FULL);
 		expect(c.notes).toEqual([]);
@@ -2029,7 +2077,7 @@ describe("tools, begin and end", () => {
 
 	test("an end without a run says so and plays nothing", async () => {
 		const s = setup();
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		expect(await s.call({ action: "end" })).toBe("ERROR no run to end in this session");
 		expect(s.notes).toEqual([]);
 	});
@@ -2037,7 +2085,7 @@ describe("tools, begin and end", () => {
 	test("a theme that cannot start is reported, and the run is still ended", async () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1" });
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		expect(await s.call({ action: "end" })).toBe("ENDED K-1");
 		expect(s.notes).toEqual([expect.stringMatching(/^Strategium: the alarm failed: /)]);
 	});
@@ -2680,24 +2728,7 @@ describe("the idle pause", () => {
 		setSystemTime(T(h, m, sec));
 		await s.sub("status");
 	};
-	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
 	const ran = (notes: string[]) => notes.some(n => n.includes("the alarm failed"));
-	// The alarm command appends "<level>|<message>" to a file; the spawn is asynchronous, so poll.
-	const recorder = (dir: string) => {
-		const out = join(dir, "alarm.log");
-		const script = join(dir, "rec.ts");
-		writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_MSG}\\n`);\n');
-		process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
-		return async (want: number) => {
-			for (let i = 0; i < 100; i++) {
-				const lines = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
-				if (lines.length >= want) return lines;
-				await Bun.sleep(50);
-			}
-			return existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
-		};
-	};
-	afterEach(() => delete process.env.STRATEGIUM_ALARM);
 
 	test("idle for the threshold pauses the clock with reason idle and marks the run", async () => {
 		const s = await idler();
@@ -2772,18 +2803,17 @@ describe("the idle pause", () => {
 
 	test("the idle pause notifies and sounds the idle alarm only with notifications on", async () => {
 		const on = await idler();
-		const lines = recorder(on.dir);
 		await at(on, 9, 2);
 		await at(on, 9, 3);
 		expect(on.notes.filter(n => n.includes("paused after 3 min idle")).length).toBe(1);
 		expect(on.notes.find(n => n.includes("paused after"))).toContain("K-1");
-		expect(await lines(1)).toEqual(["idle|K-1: paused, idle 3 min"]);
+		expect(alarmLines()).toEqual(["idle|K-1: paused, idle 3 min"]);
 		// Nothing is posted into the session: a triggered turn would resume the clock at once.
 		expect(on.calls).toEqual([]);
 		expect(on.sent).toEqual([]);
 
 		const off = await idler();
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		await off.sub("config", "notify off");
 		await at(off, 9, 2);
 		await at(off, 9, 3);
@@ -2794,20 +2824,28 @@ describe("the idle pause", () => {
 
 	test("the idle notification and alarm name the configured minutes", async () => {
 		const s = await idler();
-		const lines = recorder(s.dir);
 		await s.sub("config", "idle 5");
 		await at(s, 9, 2);
 		await at(s, 9, 4);
 		await at(s, 9, 5);
 		expect(s.notes.some(n => n.includes("paused after 5 min idle"))).toBe(true);
-		expect(await lines(1)).toEqual(["idle|K-1: paused, idle 5 min"]);
+		expect(alarmLines()).toEqual(["idle|K-1: paused, idle 5 min"]);
 	});
 
 	test("a failing idle alarm is reported", async () => {
 		const s = await idler();
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		await at(s, 9, 2);
 		await at(s, 9, 3);
+		expect(ran(s.notes)).toBe(true);
+	});
+
+	test("a failing alarm on the silent-gap pause is reported", async () => {
+		const s = await idler();
+		s.ctx.host.idle = false;
+		failAlarm();
+		// A jump past the 3-minute heartbeat gap reads as a frozen machine.
+		await at(s, 9, 10);
 		expect(ran(s.notes)).toBe(true);
 	});
 
@@ -3044,7 +3082,7 @@ describe("the idle pause", () => {
 	});
 
 	test("no idle pause without a running clock; a session closed while idle-paused resumes on its first turn", async () => {
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		// No run at all.
 		const bare = setup();
 		setSystemTime(T(9, 0));
@@ -3079,15 +3117,14 @@ describe("the idle pause", () => {
 
 	test("an open plan review calls the user once with the attention alarm, only with notifications on", async () => {
 		const on = setup();
-		const lines = recorder(on.dir);
 		await on.call({ action: "begin", key: "K-1" });
 		await on.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, on.ctx);
-		expect(await lines(1)).toEqual(["attention|K-1: your plan review is waiting"]);
+		expect(alarmLines()).toEqual(["attention|K-1: your plan review is waiting"]);
 		await Bun.sleep(300);
-		expect(await lines(0)).toEqual(["attention|K-1: your plan review is waiting"]);
+		expect(alarmLines()).toEqual(["attention|K-1: your plan review is waiting"]);
 
 		const off = setup();
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		await off.call({ action: "begin", key: "K-1" });
 		await off.sub("config", "notify off");
 		await off.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, off.ctx);
@@ -3102,7 +3139,7 @@ describe("the idle pause", () => {
 	test("a failing plan-review alarm is reported", async () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1" });
-		process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+		failAlarm();
 		await s.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, s.ctx);
 		expect(ran(s.notes)).toBe(true);
 	});
@@ -3245,7 +3282,6 @@ describe("the cockpit key", () => {
 });
 
 describe("cockpit", () => {
-	const FAIL_ALARM = "Z:/missing/strategium-alarm-bin";
 	type Tui = { requestRender(): void; terminal: { rows: number } };
 	type Comp = { render(w: number): string[]; handleInput?(d: string): void; dispose?(): void };
 	// A UI context: the overlay calls are recorded; `hasUI` false leaves the same functions in place but unused.
@@ -3264,22 +3300,6 @@ describe("cockpit", () => {
 		return { opened, draws, tui };
 	}
 	const sealTodo = (status: string) => [{ name: "Plan", tasks: [{ content: "[seal] Plan", status }] }];
-	// The alarm command appends "<level>|<message>" to a file; the spawn is asynchronous, so poll.
-	const recorder = (dir: string) => {
-		const out = join(dir, "alarm.log");
-		const script = join(dir, "rec.ts");
-		writeFileSync(script, 'import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], `${process.env.STRATEGIUM_P}|${process.env.STRATEGIUM_MSG}\\n`);\n');
-		process.env.STRATEGIUM_ALARM = `"${process.execPath}" "${script}" "${out}"`;
-		return async (want: number) => {
-			for (let i = 0; i < 100; i++) {
-				const lines = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
-				if (lines.length >= want) return lines;
-				await Bun.sleep(50);
-			}
-			return existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean) : [];
-		};
-	};
-	afterEach(() => delete process.env.STRATEGIUM_ALARM);
 	// A run with the UI on, started like a session does.
 	async function running(hasUI = true) {
 		const s = setup();
@@ -3485,7 +3505,7 @@ describe("cockpit", () => {
 		describe("a decision closes the cockpit before its dialog opens", () => {
 			const call = (s: ReturnType<typeof setup>, event: string, e: object, ctx: unknown = s.ctx) => s.handlers[event].forEach(h => h(e, ctx));
 			const open = async () => {
-				process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+				failAlarm();
 				const r = await running();
 				await r.s.sub("cockpit");
 				expect(r.ui.opened.length).toBe(1);
@@ -3516,11 +3536,10 @@ describe("cockpit", () => {
 
 			test("the ask call still raises the attention alarm", async () => {
 				const { s, ui } = await running();
-				const lines = recorder(s.dir);
 				await s.sub("cockpit");
 				call(s, "tool_call", { toolName: "ask", input: {} });
 				expect(ui.draws.closed).toBe(1);
-				expect((await lines(1))[0]).toContain("attention|");
+				expect(alarmLines()[0]).toContain("attention|");
 			});
 
 			test.each(["tool_approval_requested", "plan_review_requested"])("%s closes it", async event => {
@@ -3547,7 +3566,7 @@ describe("cockpit", () => {
 			});
 
 			test("with no cockpit open the three events change nothing and do not throw", async () => {
-				process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+				failAlarm();
 				const { s, ui } = await running();
 				expect(() => {
 					call(s, "tool_call", { toolName: "ask", input: {} });
@@ -3755,62 +3774,57 @@ describe("cockpit", () => {
 	describe("seals", () => {
 		test("a granted seal sounds the done fanfare once and the todo is kept on the run", async () => {
 			const { s } = await running();
-			const lines = recorder(s.dir);
 			s.todo(sealTodo("in_progress"));
 			s.todo(sealTodo("completed"));
-			expect(await lines(1)).toEqual(["done|K-1: seal Plan granted"]);
+			expect(alarmLines()).toEqual(["done|K-1: seal Plan granted"]);
 			s.todo(sealTodo("completed"));
 			await Bun.sleep(300);
-			expect(await lines(0)).toEqual(["done|K-1: seal Plan granted"]);
+			expect(alarmLines()).toEqual(["done|K-1: seal Plan granted"]);
 			expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")).phases).toEqual(sealTodo("completed"));
 		});
 
 		// A second seal, granted the normal way, proves the recorder is live: only its line may be in the file.
 		const other = (status: string) => [{ name: "Other", tasks: [{ content: "[seal] Other", status }] }];
-		async function control(s: ReturnType<typeof setup>, lines: (want: number) => Promise<string[]>) {
+		async function control(s: ReturnType<typeof setup>) {
 			s.todo(other("in_progress"));
 			s.todo(other("completed"));
-			expect(await lines(1)).toEqual(["done|K-1: seal Other granted"]);
+			expect(alarmLines()).toEqual(["done|K-1: seal Other granted"]);
 			await Bun.sleep(300);
-			expect(await lines(0)).toEqual(["done|K-1: seal Other granted"]);
+			expect(alarmLines()).toEqual(["done|K-1: seal Other granted"]);
 		}
 
 		test("a seal first seen granted does not sound", async () => {
 			const { s } = await running();
-			const lines = recorder(s.dir);
 			s.todo(sealTodo("completed"));
-			await control(s, lines);
+			await control(s);
 		});
 
 		test("with notifications off it stays silent", async () => {
 			const { s } = await running();
-			const lines = recorder(s.dir);
 			await s.sub("config", "notify off");
 			s.todo(sealTodo("in_progress"));
 			s.todo(sealTodo("completed"));
 			await s.sub("config", "notify on");
-			await control(s, lines);
+			await control(s);
 		});
 
 		test("a failing alarm is reported", async () => {
 			const { s } = await running();
 			s.todo(sealTodo("in_progress"));
-			process.env.STRATEGIUM_ALARM = FAIL_ALARM;
+			failAlarm();
 			s.todo(sealTodo("completed"));
 			expect(s.notes.some(n => n.includes("the alarm failed"))).toBe(true);
 		});
 
 		test("without a UI a granted seal still sounds and nothing is drawn", async () => {
 			const { s } = await running(false);
-			const lines = recorder(s.dir);
 			s.todo(sealTodo("in_progress"));
 			s.todo(sealTodo("completed"));
-			expect(await lines(1)).toEqual(["done|K-1: seal Plan granted"]);
+			expect(alarmLines()).toEqual(["done|K-1: seal Plan granted"]);
 		});
 
 		test("a granted seal reaches the overlay", async () => {
 			const { s, ui } = await running();
-			recorder(s.dir);
 			s.todo(sealTodo("in_progress"));
 			s.todo(sealTodo("completed"));
 			expect(await peek(s, ui)).toContain("granted");
@@ -3818,11 +3832,10 @@ describe("cockpit", () => {
 
 		test("the Muster Orders task is no seal", async () => {
 			const { s, ui } = await running();
-			const lines = recorder(s.dir);
 			const orders = (status: string) => [{ name: "Muster", tasks: [{ content: "[captain] Orders", status }] }];
 			s.todo(orders("in_progress"));
 			s.todo(orders("completed"));
-			await control(s, lines);
+			await control(s);
 			const t = await peek(s, ui);
 			expect(t).not.toContain("Orders granted");
 			expect(t).not.toContain("seal Orders");

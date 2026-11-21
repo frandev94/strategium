@@ -75,7 +75,6 @@ The recommended config and its reasons are in `<R>/docs/models.md`; read it befo
 | Key | Need | Default / how to fill |
 |---|---|---|
 | `STRATEGIUM_THEATRE` | optional | Name `<t>` of an installed `strategium-<t>` skill (list them from `omp skill list --json`); empty → the GitHub theatre when the run's repo is on GitHub, else none |
-| `STRATEGIUM_ALARM` | recommended | `bun <R>/alarm/vox.ts` (forward slashes). The level arrives in env `STRATEGIUM_P` |
 | `STRATEGIUM_STATE_DIR` | optional | leave unset (default `~/.omp/agent/state/strategium`) |
 | `STRATEGIUM_GLYPHS` | optional | `1` only if the user's terminal font is a Nerd Font (ask; show one glyph, e.g. U+F05DA, and ask whether it renders as a book); else leave unset and todo tags stay `[name]` |
 | `STRATEGIUM_NOTIFY` | recommended | `0` (off; sounds and desktop notifications on with `1`; per session `/strategium-config notify on` or `off`) |
@@ -90,11 +89,12 @@ The recommended config and its reasons are in `<R>/docs/models.md`; read it befo
 | `STRATEGIUM_TIERS` | optional | leave unset (defaults `light=@smol:medium;standard=@task:medium;heavy=@slow:high`; `;`-separated `tier=selector` entries override one tier each, e.g. `light=anthropic/claude-haiku-5-5:low;heavy=@task:high`; `light` needs the `smol` role set, see `docs/models.md`) |
 | `OBSIDIAN_VAULT_PATH` | only with obsidian-second-brain | absolute path of the vault; check the folder exists and contains `.obsidian/` |
 
+- If `STRATEGIUM_ALARM` is in `~/.omp/agent/.env` or the OS environment (check with `grep -c`/`printenv`, never show its value), tell the user it is ignored since this version (the alarm always plays the bundled `alarm/vox.ts`) and can be deleted; offer to delete that one line with their OK and touch no other line.
 - Ask the user for the values in one `ask` form (text inputs prefilled with the defaults; the vault path has no default).
 - Append each missing key as `KEY=value` on its own line; create the file if absent. Never rewrite other lines.
 - A key also set in the process environment (`printenv KEY` non-empty) wins over `.env`: report "set in the OS environment, `.env` ignored" without showing either value.
 
 ## 6. Smoke check
 - `bun test` in `<R>` → all pass, 0 fail (timer, parallel tickets, claim races, alarm WAVs).
-- Offer to play `bun <R>/alarm/vox.ts done` once so the user hears the alarm.
+- Offer to play `bun <R>/alarm/vox.ts done` once so the user hears the alarm; a non-zero exit means no audio player worked.
 - Final table and "start a new omp session to load the changes".

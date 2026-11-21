@@ -406,26 +406,26 @@ function report(date?: string): string {
 	].join("\n");
 }
 
-/** The alarm command split into arguments: quotes keep a path with spaces in one piece. */
-function alarmCmd(cmd: string): string[] {
-	return (cmd.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map(t => t.replace(/^["']|["']$/g, ""));
-}
+/** The slice of `Bun.spawn` the alarm uses; tests pass a spy as the factory's second argument. */
+type Spawn = (o: { cmd: string[]; env: Record<string, string>; stdout: "ignore"; stderr: "ignore" }) => { exited: Promise<number>; unref(): void };
+
+// The bundled vox, resolved from this file so a plugin upgrade moves the path with the code.
+const VOX = path.join(import.meta.dir, "../../alarm/vox.ts");
 
 /**
- * Run STRATEGIUM_ALARM with the level in STRATEGIUM_P, STRATEGIUM_SOUND=1|0, STRATEGIUM_VOLUME when the user set one and,
- * only when toasts are on, a desktop-notification text in STRATEGIUM_MSG.
+ * Run the bundled vox (`alarm/vox.ts`, with the current bun) with the level in STRATEGIUM_P, STRATEGIUM_SOUND=1|0,
+ * STRATEGIUM_VOLUME when the user set one and, only when toasts are on, a desktop-notification text in STRATEGIUM_MSG.
  * Levels: 50 | 80 | 100 for the booking timer, "attention" when the user is needed, "theme" when the session's run ends,
- * "idle" when the clock pauses after idle minutes.
- * Unset → silent.
- * Returns the reason when the alarm could not be started, so it is not a silent no-sound.
+ * "idle" when the clock pauses after idle minutes, "done" when a seal is granted.
+ * Returns the reason when the alarm could not be started, so it is not a silent no-sound; `onFail` gets a non-zero exit code later.
  */
-function signal(level: string, msg: string | undefined, sound: boolean, volume?: number): string | undefined {
-	const alarm = process.env.STRATEGIUM_ALARM?.trim();
-	if (!alarm) return undefined;
+function signal(spawn: Spawn, level: string, msg: string | undefined, sound: boolean, volume?: number, onFail?: (code: number) => void): string | undefined {
 	try {
-		const child = Bun.spawn({
-			cmd: alarmCmd(alarm),
+		const child = spawn({
+			cmd: [process.execPath, VOX],
 			env: childEnv({
+				// omp.exe is a compiled Bun binary: without this it runs the omp CLI with vox.ts as a message.
+				BUN_BE_BUN: "1",
 				STRATEGIUM_P: level,
 				STRATEGIUM_SOUND: sound ? "1" : "0",
 				...(volume !== undefined ? { STRATEGIUM_VOLUME: String(volume) } : {}),
@@ -436,6 +436,7 @@ function signal(level: string, msg: string | undefined, sound: boolean, volume?:
 		});
 		// The alarm must not keep the session alive.
 		child.unref();
+		void child.exited.then(code => code && onFail?.(code)).catch(() => {});
 		return undefined;
 	} catch (err) {
 		return `the alarm failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -748,7 +749,8 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 	return pad >= 2 ? `${line}${"\u00a0".repeat(pad)}\x1b[2m${hint}\x1b[22m` : line;
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
+	const spawn: Spawn = deps.spawn ?? Bun.spawn;
 	const z = pi.zod;
 	// Set by the session handler; tool and command actions call it so the footer updates at once, not on the
 	// next minute. It belongs to this instance: a module loaded twice would cross the sessions.
@@ -826,10 +828,17 @@ export default function (pi: ExtensionAPI) {
 			);
 		}
 	};
+	// The sessions already told that vox exited non-zero: one note each, not one per alarm.
+	const alarmWarned = new Set<string>();
+	const alarmExit = (sid: string, ctx: SessionCtx) => (code: number) => {
+		if (alarmWarned.has(sid)) return;
+		alarmWarned.add(sid);
+		ctx.ui.notify(`Strategium: the alarm exited with code ${code}; vox could not play (check the audio player)`, "warning");
+	};
 	/** The alarm, only when notifications are on and sound or toast is: the message goes only with toasts, the sound flag always. */
-	const alert = (sid: string, level: string, msg: string) => {
+	const alert = (sid: string, level: string, msg: string, ctx: SessionCtx) => {
 		const ch = channels(sid);
-		return ch.length ? signal(level, ch.includes("toast") ? msg : undefined, ch.includes("sound"), volumeOf(sid)) : undefined;
+		return ch.length ? signal(spawn, level, ch.includes("toast") ? msg : undefined, ch.includes("sound"), volumeOf(sid), alarmExit(sid, ctx)) : undefined;
 	};
 
 	// The cockpit theme: /strategium-config cockpit-theme saves one in the state dir, which wins over STRATEGIUM_COCKPIT_THEME;
@@ -1028,7 +1037,7 @@ export default function (pi: ExtensionAPI) {
 		const result = endRun(sid, key, takeover);
 		if (mine && result === `ENDED ${mine.key}`) {
 			await restoreTools(mine.hidden);
-			const err = alert(sid, "theme", `${mine.key}: run ended`);
+			const err = alert(sid, "theme", `${mine.key}: run ended`, ctx);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 		}
 		return result;
@@ -1040,7 +1049,7 @@ export default function (pi: ExtensionAPI) {
 		if (p === undefined) return;
 		append(file, { ts: nowIso(), event: "alert", key, p });
 		ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}`, p === 100 ? "warning" : "info");
-		const alarmError = alert(sid, String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`);
+		const alarmError = alert(sid, String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`, ctx);
 		if (alarmError) ctx.ui.notify(`Strategium: ${alarmError}`, "warning");
 		log(key, "TIMER", `⧗ ${p}% of the booking`);
 		pi.sendMessage(
@@ -1069,7 +1078,8 @@ export default function (pi: ExtensionAPI) {
 					`Strategium: ${found.key} paused at ${at}; this session was silent since then (sleep or freeze). ${counting ? "Your next prompt resumes it." : "/strategium-resume to continue."}`,
 					"warning",
 				);
-				alert(sid, "attention", `${found.key}: paused at ${at} after a silent gap; resume when you are back`);
+				const alarmErr = alert(sid, "attention", `${found.key}: paused at ${at} after a silent gap; resume when you are back`, ctx);
+				if (alarmErr) ctx.ui.notify(`Strategium: ${alarmErr}`, "warning");
 			}
 			beat(sid);
 			// Busy: the model is streaming (an `ask` waits for the user inside a stream), messages are queued, a background
@@ -1092,7 +1102,7 @@ export default function (pi: ExtensionAPI) {
 				running = false;
 				// No message into the session: a triggered turn would resume the clock at once.
 				ctx.ui.notify(`Strategium: ${found.key} paused after ${limitMin} min idle; your next prompt resumes it`, "info");
-				const err = alert(sid, "idle", `${found.key}: paused, idle ${limitMin} min`);
+				const err = alert(sid, "idle", `${found.key}: paused, idle ${limitMin} min`, ctx);
 				if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 			}
 			// A block still open at midnight goes on in the new day: yesterday's ends at 00:00 and today's starts there. Without a
@@ -1190,7 +1200,7 @@ export default function (pi: ExtensionAPI) {
 					case "attention": {
 						const key = ownRun(sid)?.key;
 						const msg = params.message?.trim() || "Your attention is needed";
-						const err = alert(sid, "attention", key ? `${key}: ${msg}` : msg);
+						const err = alert(sid, "attention", key ? `${key}: ${msg}` : msg, ctx);
 						if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 						// A silent call makes no sound; say so, so the Captain does not count on it.
 						const ch = channels(sid);
@@ -1198,7 +1208,7 @@ export default function (pi: ExtensionAPI) {
 							? " (silent: notifications are off; /strategium-config notify on)"
 							: !ch.length
 								? " (silent: sound and toast are off; /strategium-config sound on or toast on)"
-								: process.env.STRATEGIUM_ALARM?.trim() ? ` (${ch.join(", ")})` : " (silent: STRATEGIUM_ALARM is not set; see /skill:strategium-setup)";
+								: ` (${ch.join(", ")})`;
 						return text(err ? `ERROR ${err}` : `ATTENTION ${msg}${silent}`);
 					}
 					case "notify": {
@@ -1407,7 +1417,6 @@ export default function (pi: ExtensionAPI) {
 				`cockpit-key: ${cockpitKey.key} (${cockpitKey.from})${next.key !== cockpitKey.key || next.from !== cockpitKey.from ? `; next omp start: ${next.key} (${next.from})` : ""}`,
 				`cockpit-theme: ${theme.name} (${theme.from})`,
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
-				`alarm: ${env("STRATEGIUM_ALARM")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
 				`state: ${stateDir()}`,
 			].join("\n"),
@@ -1416,7 +1425,7 @@ export default function (pi: ExtensionAPI) {
 		if (conflict) ctx.ui.notify(keyConflict(conflict.key, conflict.c), "warning");
 		// The preview plays the alarm at this volume even with notify or sound off: the user asked to hear it.
 		if (preview) {
-			const err = process.env.STRATEGIUM_ALARM?.trim() ? signal("done", undefined, true, volumeOf(sid)) : "STRATEGIUM_ALARM is not set (/skill:strategium-setup)";
+			const err = signal(spawn, "done", undefined, true, volumeOf(sid), alarmExit(sid, ctx));
 			if (err) ctx.ui.notify(`Strategium: no preview: ${err}`, "warning");
 		}
 	});
@@ -1544,7 +1553,7 @@ export default function (pi: ExtensionAPI) {
 		reviewSid = run ? e.sessionId : undefined;
 		// The user is called now: the review keeps the clock counting (it is busy), so the attention alarm replaces the idle one.
 		if (!run) return;
-		const err = alert(e.sessionId, "attention", `${run.key}: your plan review is waiting`);
+		const err = alert(e.sessionId, "attention", `${run.key}: your plan review is waiting`, ctx);
 		if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 	});
 	pi.on("tool_approval_requested", (_e, ctx) => {
@@ -1748,7 +1757,7 @@ export default function (pi: ExtensionAPI) {
 		if (name === "ask") cockpit.close?.();
 		// A question to the user during a run needs them at the keyboard, wherever they are.
 		if (name === "ask" && run) {
-			const err = alert(sidOf(ctx), "attention", `${run.key}: your answer is needed`);
+			const err = alert(sidOf(ctx), "attention", `${run.key}: your answer is needed`, ctx);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 		}
 		if (!run?.repo) return;
@@ -1842,7 +1851,7 @@ export default function (pi: ExtensionAPI) {
 		if (now?.seal && now.seal !== was?.seal) log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
 		for (const seal of grantedSeals(before, phases)) {
 			log(run.key, "✠ SEAL", `${seal.id} granted`, "seal");
-			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.id} granted`);
+			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.id} granted`, ctx);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 		}
 		// Prepared lines live only while their seal waits: any other state of the todo drops them.

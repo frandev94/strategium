@@ -321,18 +321,20 @@ export function synth(level: Level, vol = 20): Buffer {
 	return Buffer.concat([h, pcm]);
 }
 
-function play(file: string) {
+const ok = (r: { error?: Error; status: number | null }) => !r.error && r.status === 0;
+
+/** True when a player ran and succeeded. */
+function play(file: string): boolean {
 	const run = (cmd: string, args: string[], env?: Record<string, string>) =>
 		spawnSync(cmd, args, { stdio: "ignore", env: { ...childEnv(), ...env } });
 	if (process.platform === "win32")
 		// The path travels in an env var: a quote in it would break the script.
-		return run("powershell", ["-NoProfile", "-Command", "(New-Object Media.SoundPlayer $env:VOX_FILE).PlaySync()"], {
-			VOX_FILE: file,
-		});
-	if (process.platform === "darwin") return run("afplay", [file]);
+		return ok(run("powershell", ["-NoProfile", "-Command", "(New-Object Media.SoundPlayer $env:VOX_FILE).PlaySync()"], { VOX_FILE: file }));
+	if (process.platform === "darwin") return ok(run("afplay", [file]));
 	const players: [string, string[]][] = [["paplay", [file]], ["aplay", ["-q", file]], ["ffplay", ["-nodisp", "-autoexit", "-loglevel", "quiet", file]]];
-	for (const [cmd, args] of players) if (!run(cmd, args).error) return;
-	console.error("vox: no audio player found (paplay, aplay, ffplay)");
+	for (const [cmd, args] of players) if (ok(run(cmd, args))) return true;
+	console.error("vox: no audio player worked (paplay, aplay, ffplay)");
+	return false;
 }
 
 /** Desktop notification so the user sees it with the terminal hidden; best effort, never throws. */
@@ -389,9 +391,10 @@ if (import.meta.main) {
 					// Another process wrote it first: use what is there.
 				}
 			}
-			play(file);
+			if (!play(file)) process.exitCode = 1;
 		}
 	} catch (e) {
 		console.error(`vox: ${(e as Error).message}`);
+		process.exitCode = 1;
 	}
 }
