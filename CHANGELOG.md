@@ -1,3 +1,20 @@
+## [0.2.21] - 2026-11-21
+
+### 🚀 Features
+
+- *(cockpit)* Seal panel instead of the SEAL box, SEALS row as a chain
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Bound loaded seal lines and the footer seal name
+
+### 📚 Documentation
+
+- *(cockpit)* Describe the seal panel, the seal action and the SEALS chain
+
+### 🧪 Testing
+
+- *(tui-shot)* Seal-row follows the chain contract, new seal-panel replay
 ## [0.2.20] - 2026-11-21
 
 ### 🐛 Bug Fixes
