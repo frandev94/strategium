@@ -21,7 +21,7 @@ import {
 } from "./timer";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -874,12 +874,12 @@ export default function (pi: ExtensionAPI) {
 			const jobs: unknown = saved.deployed;
 			const shaped =
 				saved.key === key &&
-				Array.isArray(saved.chronicle) &&
+				Array.isArray(saved.chronicle) && saved.chronicle.every((e: unknown) => e && typeof e === "object" && typeof (e as Entry).text === "string") &&
 				saved.notes && typeof saved.notes === "object" && !Array.isArray(saved.notes) &&
 				Array.isArray(jobs) && jobs.every(d => Array.isArray(d) && typeof d[0] === "string" && d[1] && typeof d[1] === "object");
 			if (!shaped) throw new Error("another run's or a malformed state");
 			resetCockpit(key);
-			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-200);
+			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP);
 			cockpit.notes = saved.notes;
 			for (const [id, job] of saved.deployed as [string, Deployed][]) cockpit.deployed.set(id, job);
 			cockpit.dirty = false;
@@ -1014,8 +1014,6 @@ export default function (pi: ExtensionAPI) {
 		const mine = ownRun(sid);
 		const result = endRun(sid, key, takeover);
 		if (mine && result === `ENDED ${mine.key}`) {
-			cockpit.close?.();
-			resetCockpit();
 			await restoreTools(mine.hidden);
 			const err = alert(sid, "theme", `${mine.key}: run ended`);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");

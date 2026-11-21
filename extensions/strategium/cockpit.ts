@@ -65,7 +65,8 @@ export function grantedSeals(before: Phase[] | undefined, after: Phase[]): Seal[
 	return sealsFrom(after).filter(s => s.state === "granted" && was.has(s.id) && was.get(s.id) !== "granted");
 }
 
-export const pushEntry = (list: Entry[], e: Entry, cap = 200): Entry[] => [...list, e].slice(-cap);
+export const CHRONICLE_CAP = 200;
+export const pushEntry = (list: Entry[], e: Entry, cap = CHRONICLE_CAP): Entry[] => [...list, e].slice(-cap);
 
 // Esc as omp's matchesKey("escape") takes it: a bare ESC or kitty CSI-u for 27 (optional shifted/base keys, either may be empty, and trailing text) whose modifier is 1 plus any Caps/Num Lock bits (64, 128), not a release (event 3).
 // Not imported from pi-tui: extensions load with no runtime dependency on omp's packages.

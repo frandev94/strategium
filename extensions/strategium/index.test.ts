@@ -3952,12 +3952,24 @@ describe("cockpit", () => {
 				expect(saved(s.dir).chronicle.map((e: { text: string }) => e.text).join()).not.toContain("granted");
 			});
 
-			test("ending the run closes the open cockpit", async () => {
-				const { s, ui } = await running();
-				await s.sub("cockpit");
-				expect(ui.opened).toHaveLength(1);
-				await s.sub("end");
-				expect(ui.draws.closed).toBe(1);
+			test("a failed write keeps the state dirty and the next draw writes it", async () => {
+				const { s } = await running();
+				const f = cockpitFile(s.dir);
+				rmSync(f, { force: true });
+				mkdirSync(f); // the rename onto a directory fails
+				const todo = [{ name: "Plan", tasks: [{ content: "[captain] Go", status: "in_progress" }] }];
+				s.todo(todo);
+				rmSync(f, { recursive: true });
+				s.todo(todo); // nothing new to log: only dirty makes this draw write
+				expect(saved(s.dir).chronicle.map((e: { text: string }) => e.text)).toContain("station Plan");
+			});
+
+			test("an entry that is no chronicle entry makes the file malformed", async () => {
+				const { s } = await midRun();
+				writeFileSync(cockpitFile(s.dir), JSON.stringify({ ...saved(s.dir), chronicle: [null] }));
+				const again = await restart(s, true);
+				again.s.todo([{ name: "Debrief", tasks: [{ content: "[captain] Report", status: "in_progress" }] }]);
+				expect(saved(s.dir).chronicle.map((e: { text: string }) => e.text)).toEqual(["station Debrief"]);
 			});
 
 			test.each([
