@@ -1,3 +1,12 @@
+## [0.2.11] - 2026-11-21
+
+### 🚀 Features
+
+- *(alarm)* Metal kit with guitar, bass and double kick, and a configurable volume
+
+### 🐛 Bug Fixes
+
+- *(alarm)* Read STRATEGIUM_VOLUME with vox's own parser in the extension
 ## [0.2.10] - 2026-11-20
 
 ### 🚀 Features
