@@ -309,6 +309,8 @@ bun run check                     # strict TypeScript over the extension
 bun test                          # timer, claims across processes, the extension through a fake host, alarm WAVs
 ```
 
+On pull requests that touch `extensions/`, `tools/tui-shot/`, `skills/strategium/todo.ts` and `alarm/` (both imported by the cockpit), `package.json`/`bun.lock` (the omp pin) or the workflow itself, `.github/workflows/tui-shot.yml` also runs the real-omp tui-shot replays on Windows (`python tools/tui-shot/shot.py --all --no-png`), with omp from the pinned devDependency.
+
 ```
 extensions/strategium/            the extension (tool, command, timer, edit guard)
 extensions/strategium/timer.ts    day files, claims, elapsed time

@@ -15,7 +15,7 @@ python tools/tui-shot/shot.py --seed=scriptorium --ponytail   # also load ponyta
 python tools/tui-shot/shot.py --replay=NAME | --all     # regression replays, see below
 ```
 
-Output goes to `%TEMP%\strategium-tui-shot\` (`<name>.png`, `.html`, `.raw`), never into the repo. It takes about 15-40 s. Options: `--suffix=-x` names the outputs, `--plugin=DIR` another checkout, worktree or export (default: this repo), `--ponytail=DIR`, `--omp=EXE`, `--edge=EXE`, `--out=DIR`, `--no-png` (keep only `.html`/`.raw`), `--keep-work` (replays: keep the work dir). Edge, omp and ponytail are discovered; the script exits with the flag to pass if one is missing. Different `--suffix` values can run in parallel.
+Output goes to `%TEMP%\strategium-tui-shot\` (`<name>.png`, `.html`, `.raw`), never into the repo. It takes about 15-40 s. Options: `--suffix=-x` names the outputs, `--plugin=DIR` another checkout, worktree or export (default: this repo), `--ponytail=DIR`, `--omp=EXE`, `--edge=EXE`, `--out=DIR`, `--no-png` (keep only `.html`/`.raw`), `--all-png` (replays: PNG of every snapshot, not only the `png=True` ones), `--keep-work` (replays: keep the work dir). Edge, omp and ponytail are discovered; the script exits with the flag to pass if one is missing. Different `--suffix` values can run in parallel.
 
 Read the PNG with `read` (it decodes images inline) and describe what you see: footer text, overlay layout, truncation, colors, glyph vs emoji. Check the `.png` exists before claiming anything.
 
@@ -40,6 +40,8 @@ python tools/tui-shot/shot.py --all --plugin=%TEMP%\strategium-tui-shot\plugin-h
 
 Each scenario starts its own omp in the ConPTY (work dir `work<suffix>-<name>`), sends keys (win32-input-mode records, the `KEYS` table), resizes the console (`ResizePseudoConsole`, logged by byte offset), waits, and takes named snapshots. A snapshot is the screen xterm.js holds after the stream up to that byte (the page replays the resizes at their offsets, so the size is right), read as text: one string per cell, wide cells and their continuation cells, the active buffer (`normal`/`alternate`). The checks read that text, never the PNG. It prints one line per check (`ok`/`FAIL`, with got/expected and the screen on failure), then `PASS NAME (R..)` or `FAIL NAME (R..)`. Outputs in `%TEMP%\strategium-tui-shot\`: `<scenario>-<checkpoint>.raw` (the stream up to there), `.html`, and `.png` for the checkpoints marked png (`--no-png` skips only the PNGs; Edge is always needed for the text). `--keep-work` keeps the work dir (state, `replay.log`). A scenario takes about 10-20 s, `run-end-closes` up to 70 s (it waits for the 60 s tick).
 
+A failed check that has an expected value also prints a unified diff (expected → got) under its `FAIL` line, before the screen; checks without an expected value print the screen only.
+
 Run against an **export** of a commit, never against a worktree that is changing. Put the short sha next to it as `<dir>.sha`; the table header prints it:
 
 ```
@@ -50,6 +52,8 @@ git -C <repo> rev-parse --short <rev> > %TEMP%\strategium-tui-shot\plugin-head.s
 `skills/` is needed: `index.ts` imports `skills/strategium/todo`; `alarm/` too (`../../alarm/vox`): without it the extension never ticks.
 
 Kinds: `FIXED` (PASS = the fix holds), `KNOWN` (PASS = an omp limit shows up exactly as documented), `OPEN` (no fix yet: shown, never changes the exit code). The "before" proof of a fix is the same scenario against an export from before it (`plugin-a184d43` for R9/R10: `fullscreen-height` and `ask-behind-cockpit` must FAIL there).
+
+A scenario that needs ponytail (`ponytail-notice`) prints `SKIP <name> (R..): ponytail plugin not found` when ponytail is not installed. It is OPEN, so the exit code does not change.
 
 | scenario | R | kind | PASS means |
 |---|---|---|---|
@@ -76,6 +80,12 @@ Kinds: `FIXED` (PASS = the fix holds), `KNOWN` (PASS = an omp limit shows up exa
 
 Not replayable on screen: R11 (the code path is gone; `no-widget` covers its replacement), R15 (xterm.js DOM renderer artifact in the PNG; the text checks read the border cell itself), R17 (no expected value until the same screen is captured in Windows Terminal; `footer-hint` prints the last rows for that), R18 (subagent isolation, nothing on screen). Also not replayed: F9 on `tool_approval_requested`/`plan_review_requested` (needs approval or plan-mode settings; the index tests cover it) and F11 `AGENT AT WORK`/`PLAN REVIEW PENDING` (only the idle state).
 
+### In CI
+
+`.github/workflows/tui-shot.yml` runs `python tools/tui-shot/shot.py --all --no-png` on `windows-latest` for pull requests that touch `extensions/`, `tools/tui-shot/`, `skills/strategium/todo.ts`, `alarm/` (the two files outside `extensions/` that the cockpit imports), `package.json`, `bun.lock` or the workflow itself (and by hand with `workflow_dispatch`); a newer push to the same ref cancels the run in progress. omp is the devDependency's `node_modules\.bin\omp.exe`: bump the pin on purpose, the replays run on the bump. When the Replays step fails, a step reruns each `FAIL` scenario (at most 5, 5 minutes) with `--all-png` (a PNG of every snapshot) into `rerun/`, so the main run's `.raw`/`.html` stay intact. Pass or fail, the job summary shows the `--all` table (scenario, R, kind, result, first failing check). The artifact `tui-shot` holds the `.raw`/`.html`/PNGs and the log. No model is called.
+
+When the omp pin is bumped, a KNOWN scenario that turns red may mean upstream fixed the limit it pins: update its kind instead of weakening the check.
+
 ### Add a scenario
 
 1. A `steps_<name>(R)` function drives the run: `R.open()` (Alt+C, then quiet), `R.key("esc"|"q"|"down"|"enter"|…)` (add a record to `KEYS`), `R.type_text(s)`, `R.send(raw)`, `R.resize(c, r)`, `R.wait_quiet(quiet, timeout)`, `R.wait_for(b"word", timeout)` (a word without spaces: ConPTY may paint a gap as a cursor move), `R.alt_open()` (last `?1049h`/`?1049l` in the stream), `R.sleep(s)`, `R.snap("checkpoint", png=True)`. The run is settled first (heartbeat and 2 s of quiet); `"settle": False` waits for the heartbeat only.
@@ -94,6 +104,7 @@ The script removes its work dir (state, session, edge profile) itself (unless `-
 ## Limits
 
 - Windows 10 1809+ only (ConPTY via ctypes); Python 3 stdlib only.
+- Piped output (CI, `| tee`) needs `PYTHONUTF8=1` on Windows: the default cp1252 cannot print the box glyphs of the screen dump (`UnicodeEncodeError`). The workflow sets it.
 - The picture is xterm.js, not Windows Terminal: font (`CaskaydiaCove Nerd Font Mono` if installed, else a fallback, so glyphs may show as boxes), colors, ligatures and line height differ. It is right for layout, text and truncation, not for exact pixels.
 - Emoji width: the Unicode 11 addon makes emoji 2 cells wide, as Windows Terminal does; other terminals differ.
 - No network needed: xterm.js 5.5.0 (`xterm.js`, `xterm.css`) and `@xterm/addon-unicode11` 0.8.0 are vendored under `tools/tui-shot/vendor/`, byte-identical to the npm packages, with their MIT `LICENSE` files. `shot.py` checks the three files it loads against `vendor/SHA256SUMS` before writing any page and exits naming the file on a mismatch (`git checkout -- tools/tui-shot/vendor` restores them). `.gitattributes` marks `vendor/**` `-text` so `core.autocrlf` never rewrites them. To update: copy the files from the new npm tarballs into new version folders, regenerate `SHA256SUMS` (`sha256sum` format, paths relative to `vendor/`) and update `XTERM` in `shot.py`.
