@@ -1,3 +1,17 @@
+## [0.2.12] - 2026-11-21
+
+### 🚀 Features
+
+- *(skills)* Orders replaces the Seals pseudo-seal
+
+### 🐛 Bug Fixes
+
+- *(skills)* Clarify the Orders ask and the split sizing step
+
+### 🧪 Testing
+
+- *(cockpit)* Prove the Muster Orders task is no seal
+- *(cockpit)* Drop the Muster special case from the run helper
 ## [0.2.11] - 2026-11-21
 
 ### 🚀 Features
