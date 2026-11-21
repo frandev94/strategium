@@ -111,9 +111,13 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 		return { id, a, g, wait: a !== undefined && g !== undefined ? Math.max(0, Math.round((g - a) / MIN)) : undefined };
 	});
 
-	const spawns = evs.filter(e => e.event === "spawn");
+	const sp = evs.filter(e => e.event === "spawn");
+	// After the last redraft only: an earlier build is not this plan's, so it gets its own row; the totals keep every spawn.
+	const mark = evs.map(e => e.event).lastIndexOf("redraft");
+	const before = sp.filter(e => (e.role === "battle-brother" || e.role === "veteran") && evs.indexOf(e) < mark);
+	const spawns = sp.filter(e => !before.includes(e));
 	const runs = (role: string, squad: string) => spawns.filter(e => e.role === role && e.squad === squad).length;
-	const roles = counts(spawns.map(e => e.role ?? "unknown"));
+	const roles = counts(sp.map(e => e.role ?? "unknown"));
 	const tiersOf = (squad: string, planned?: string) => {
 		const used = spawns.filter(e => e.squad === squad && e.tier).map(e => e.tier as string).filter((t, i, a) => t !== a[i - 1]);
 		return used.length ? used.join("→") : planned;
@@ -127,11 +131,16 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 		const tier = tiersOf(s.id, s.tier);
 		return [cell(s.id), tier ? cell(tier) : "—", String(built), String(Math.max(0, built - 1)), String(runs("veteran", s.id)), last, s.state];
 	});
+	if (before.length) {
+		const built = before.filter(e => e.role === "battle-brother").length;
+		const tiers = before.map(e => e.tier).filter((t, i, a): t is string => !!t && t !== a[i - 1]);
+		squadRows.push(["(before redraft)", tiers.length ? cell(tiers.join("→")) : "—", String(built), String(Math.max(0, built - 1)), String(before.length - built), "—", "—"]);
+	}
 	if (unmatched.length) {
 		const tiers = unmatched.map(e => e.tier).filter((t, i, a): t is string => !!t && t !== a[i - 1]);
 		squadRows.push(["(unmatched)", tiers.length ? cell(tiers.join("→")) : "—", String(unmatchedBuilt), String(Math.max(0, unmatchedBuilt - 1)), String(unmatched.length - unmatchedBuilt), "—", "—"]);
 	}
-	const models = counts(spawns.map(e => e.model ?? "default"));
+	const models = counts(sp.map(e => e.model ?? "default"));
 	const total = (c: [string, number][]) => String(sum(c.map(x => x[1])));
 
 	const { apothecary: ap, review: rv } = input.reported ?? {};

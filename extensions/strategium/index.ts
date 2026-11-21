@@ -472,13 +472,10 @@ function savedNotes(sid: string): Record<string, { failed?: true; veteran?: true
 /** Build the run's debrief and save it under <state>/debriefs (kept after the run): the result lines for `end`. A failure never stops the end. */
 function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note> } | undefined, clamp: boolean): string[] {
 	try {
-		const raw = eventsSince(run.key, run.since);
-		// After the last redraft only: an earlier build of a reused squad id is not this plan's, but still a spawn.
-		const mark = raw.map(e => e.event).lastIndexOf("redraft");
-		const evs = raw.map((e, i) => (i < mark && e.event === "spawn" && e.squad ? { ...e, squad: undefined } : e));
+		const evs = eventsSince(run.key, run.since);
 		// A run stopped before `end` has no pause tail: its last interval closes at the stop (or at a later station entry). A takeover keeps it: the crash gap is real.
-		const lastSpan = !clamp ? undefined : raw.filter(e => e.event === "start" || e.event === "stop").at(-1);
-		const clampTo = lastSpan?.event === "stop" ? Math.max(...raw.filter(e => e === lastSpan || e.event === "station").map(e => new Date(e.ts).getTime())) : Number.NaN;
+		const lastSpan = !clamp ? undefined : evs.filter(e => e.event === "start" || e.event === "stop").at(-1);
+		const clampTo = lastSpan?.event === "stop" ? Math.max(...evs.filter(e => e === lastSpan || e.event === "station").map(e => new Date(e.ts).getTime())) : Number.NaN;
 		const now = new Date();
 		const end = Number.isFinite(clampTo) && clampTo < now.getTime() ? new Date(clampTo) : now;
 		const agents = Object.values(run.agents ?? {});

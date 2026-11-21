@@ -5899,6 +5899,8 @@ describe("the debrief at end", () => {
 		at(9, 30);
 		const out = await s.call({ action: "end" });
 		expect(mdOf(out)).toContain("| S1 | light | 1 | 0 | 0 | ok | not built |");
+		expect(mdOf(out)).toContain("| (before redraft) | light | 1 | 0 | 0 | — | — |");
+		expect(mdOf(out)).not.toContain("(unmatched)");
 		expect(summary(out).at(-1)).toBe("SPAWNS 2: battle-brother 2");
 	});
 
@@ -5915,5 +5917,23 @@ describe("the debrief at end", () => {
 		at(9, 10);
 		ended(s, "bb1", "failed");
 		expect(mdOf(await s.call({ action: "end" }))).toContain("| S1 | light | 1 | 0 | 0 | failed | stopped |");
+	});
+
+	test("a takeover end reports the saved cockpit, not the notes of the ending session's own cockpit", async () => {
+		const a = setup("sess-0001");
+		await begun(a);
+		await a.call({ action: "slices", slices: squads });
+		spawn(a, { agent: "battle-brother", spawnKey: "S1" });
+		launched(a, "bb1");
+		at(9, 10);
+		ended(a, "bb1", "failed");
+		// Session B runs another key with its own cockpit, then takes K-1 over.
+		const b = setup("sess-0002", a.dir);
+		await b.call({ action: "begin", key: "K-2", theatre: "github" });
+		await b.call({ action: "slices", slices: squads });
+		spawn(b, { agent: "battle-brother", spawnKey: "S1" });
+		launched(b, "bb9");
+		ended(b, "bb9", "completed");
+		expect(mdOf(await b.call({ action: "end", key: "K-1", takeover: "sess-0001" }))).toContain("| S1 | light | 1 | 0 | 0 | failed | stopped |");
 	});
 });
