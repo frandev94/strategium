@@ -6,7 +6,7 @@ export type Phase = { name: string; tasks: { content: string; status: string }[]
 export type Seal = { id: string; state: "granted" | "waiting" | "pending" };
 export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" | "warn" };
 export type Note = { veteran?: true; failed?: true };
-export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; stalled?: number }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. stalled: the `at` of the live entry that stalled
+export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; stalled?: number }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. stalled: the idle start (later of `at` and the live entry's `at`) the reader marked stalled
 /** What a child writes about itself, already validated by the reader (contract v1): ms timestamps, its todo counts and its last tool call. */
 export type Live = { since: number; at: number; tool?: string; intent?: string; done?: number; total?: number; current?: string };
 export type Depth = "truecolor" | "256";
@@ -39,7 +39,7 @@ const oneLine = (s: unknown) => (typeof s === "string" ? clean(Bun.stripANSI(s))
 const span = (min: number) => (min < 1 ? "<1m" : min < 60 ? `${min}m` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}m`);
 const minutes = (ms: number) => Math.floor(Math.max(0, ms) / 60_000);
 
-/** The row under an active agent's line: elapsed, then its todo (`done/total · ~eta · current`) or its last intent (else tool); `stalled Nm · ` first when the reader marked this live entry stalled. */
+/** The row under an active agent's line: elapsed, then its todo (`done/total · ~eta · current`) or its last intent (else tool); `stalled Nm · ` first when the reader marked this idle start (the later of deploy and live entry) stalled. */
 function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): Pick<Line, "detail" | "stalled"> {
 	const from = d.at ?? live?.since;
 	if (d.state !== "active" || from === undefined || now === undefined) return {};
@@ -51,8 +51,9 @@ function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): 
 		if (done > 0 && done < total) parts.push(`~${span(Math.max(1, Math.ceil((ms * (total - done)) / done / 60_000)))}`);
 		parts.push(oneLine(live?.current));
 	} else parts.push(oneLine(live?.intent) || oneLine(live?.tool));
-	const stalled = !!live && d.stalled === live.at;
-	return { detail: `${stalled ? `stalled ${minutes(now - live.at)}m · ` : ""}${parts.filter(Boolean).join(" · ")}`, ...(stalled ? { stalled: true as const } : {}) };
+	const start = Math.max(d.at ?? 0, live?.at ?? 0); // the same idle start index.ts marks
+	const stalled = start > 0 && d.stalled === start;
+	return { detail: `${stalled ? `stalled ${minutes(now - start)}m · ` : ""}${parts.filter(Boolean).join(" · ")}`, ...(stalled ? { stalled: true as const } : {}) };
 }
 
 const BG_RESET = "\x1b[49m";

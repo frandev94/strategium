@@ -157,8 +157,35 @@ const liveDir = (sid: string) => path.join(runsDir(), `${sid}.live`);
 const pidFile = () => path.join(runsDir(), `${process.pid}.pid`);
 /** Remove everything a session left for its run. */
 const dropFiles = (sid: string) => {
-	for (const f of [runFile(sid), beatFile(sid), cockpitFile(sid)]) rmSync(f, { force: true });
-	rmSync(liveDir(sid), { recursive: true, force: true });
+	// A file that cannot go (Windows holds one while a scanner reads it) must not keep the others, nor throw: leftovers without a run file are inert.
+	const drop = (f: string, opts?: { recursive: true; maxRetries: number }) => {
+		try {
+			rmSync(f, { force: true, ...opts });
+		} catch {
+			// Left behind.
+		}
+	};
+	for (const f of [runFile(sid), beatFile(sid), cockpitFile(sid)]) drop(f);
+	drop(liveDir(sid), { recursive: true, maxRetries: 3 });
+};
+/** Remove this process's pointer: always, or only when it names `only`. */
+const dropPointer = (only?: string) => {
+	try {
+		if (only === undefined || readFileSync(pidFile(), "utf8").trim() === only) rmSync(pidFile(), { force: true });
+	} catch {
+		// No pointer.
+	}
+};
+/** Remove the pointers (of any process) that name a session with no run file: a crash left them. */
+const sweepPointers = () => {
+	try {
+		for (const f of readdirSync(runsDir()).filter(f => f.endsWith(".pid"))) {
+			const sid = readFileSync(path.join(runsDir(), f), "utf8").trim();
+			if (!existsSync(runFile(sid))) rmSync(path.join(runsDir(), f), { force: true });
+		}
+	} catch {
+		// Stale pointers are inert anyway.
+	}
 };
 /** A live row's file in a session's `.live` dir; the agent id is encoded, it is not a path. */
 const liveFile = (sid: string, id: string) => path.join(liveDir(sid), `${encodeURIComponent(id)}.json`);
@@ -372,6 +399,7 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	// A run begun under another key still hands its hidden tools on, or end could never restore them.
 	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: keep ? keep.repo : other?.repo, ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
+	sweepPointers();
 	startKey(key, booked, spent, untimed);
 }
 
@@ -415,6 +443,7 @@ function endRun(sid: string, key?: string, takeover?: string): string {
 	stopKey(run.key);
 	release(stateDir(), run.key, sid);
 	dropFiles(run.sid);
+	dropPointer(sid);
 	return `ENDED ${run.key}`;
 }
 
@@ -939,7 +968,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			resetCockpit(key);
 			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP);
 			cockpit.notes = saved.notes;
-			for (const [id, job] of saved.deployed as [string, Deployed][]) cockpit.deployed.set(id, job);
+			for (const [id, job] of saved.deployed as [string, Deployed][]) {
+				// Hand-edited or damaged numbers are read as absent.
+				for (const k of ["at", "stalled"] as const) if (typeof job[k] !== "number") delete job[k];
+				cockpit.deployed.set(id, job);
+			}
 			cockpit.seal = saved.seal && { id: saved.seal.id, lines: saved.seal.lines.slice(0, SEAL_LINES).map((l: string) => l.slice(0, SEAL_LINE_CHARS)) };
 			cockpit.dirty = false;
 		} catch {
@@ -976,12 +1009,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const now = Date.now();
 		const rows = new Map<string, Live>();
 		for (const [id, job] of cockpit.deployed) {
-			const row = job.state === "active" ? readLive(run.sid, id) : undefined;
-			if (!row) continue;
-			rows.set(id, row);
-			if (row.busy || now - row.at < STALL_MS || job.stalled === row.at) continue;
-			job.stalled = row.at;
-			log(run.key, job.who, `stalled ${Math.floor((now - row.at) / 60_000)}m`, "warn");
+			if (job.state !== "active") continue;
+			const row = readLive(run.sid, id);
+			if (row) rows.set(id, row);
+			// The idle period starts at the later of the deploy and the last tool call; with neither on record there is nothing to count from.
+			const start = Math.max(job.at ?? 0, row?.at ?? 0);
+			if (!start || row?.busy || now - start < STALL_MS || job.stalled === start) continue;
+			job.stalled = start;
+			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
 		}
 		cockpit.view = cockpitView({
 			live: rows,
@@ -1028,12 +1063,16 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				(tui, _theme, _keys, done) => {
 					let frame = 0;
 					const timer = setInterval(() => {
-						frame++;
-						if (live) setAgentStatus(live); // the host's idle flag lags agent_end, and the last job ending sends no event
-						// Every second frame the children's files are read again: at most once a second.
-						const own = frame % 2 === 0 ? ownRun(sidOf(ctx)) : undefined;
-						if (own) drawCockpit(own);
-						tui.requestRender();
+						try {
+							frame++;
+							if (live) setAgentStatus(live); // the host's idle flag lags agent_end, and the last job ending sends no event
+							// Every second frame the children's files are read again: at most once a second.
+							const own = frame % 2 === 0 ? ownRun(sidOf(ctx)) : undefined;
+							if (own) drawCockpit(own);
+							tui.requestRender();
+						} catch {
+							// A timer never throws; the next frame tries again.
+						}
 					}, 500);
 					const close = () => {
 						clearInterval(timer);
@@ -1977,7 +2016,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	pi.on("before_subagent_spawn", (_e, ctx) => {
 		if (ctx?.agent?.kind === "sub" || !ctx?.sessionManager) return;
 		const sid = sidOf(ctx);
-		if (!ownRun(sid)) return;
+		if (!ownRun(sid)) return dropPointer(); // a pointer left for another session must not send our agents' rows there
 		try {
 			writeAtomic(pidFile(), sid);
 		} catch {
@@ -2001,6 +2040,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			mine.at = now;
 			mine.busy = Math.max(0, mine.busy + busy);
 			Object.assign(mine.row, row);
+			// A write is pending and carries the latest state: no pointer read, no stat.
+			if (mine.timer) return;
 			const sid = readFileSync(pidFile(), "utf8").trim();
 			// A pointer to a run that is gone is inert.
 			if (!/^[\w.-]+$/.test(sid) || !existsSync(runFile(sid))) return;
@@ -2015,7 +2056,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				}
 			};
 			if (now - mine.wrote >= LIVE_MS) write();
-			else if (!mine.timer) {
+			else {
 				mine.timer = setTimeout(write, LIVE_MS - (now - mine.wrote));
 				mine.timer.unref();
 			}
@@ -2040,10 +2081,6 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		if (ctx?.agent?.kind === "sub") return;
 		cockpit.close?.();
 		resetCockpit();
-		try {
-			if (ctx?.sessionManager && readFileSync(pidFile(), "utf8").trim() === sidOf(ctx)) rmSync(pidFile(), { force: true });
-		} catch {
-			// No pointer.
-		}
+		if (ctx?.sessionManager) dropPointer(sidOf(ctx));
 	});
 }

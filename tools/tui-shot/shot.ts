@@ -877,12 +877,16 @@ const liveRowOf = (s: Snap, squad: string) => {
 	return y < 0 ? "" : s.row(y + 1);
 };
 function checksAgentLive(C: Ctx) {
-	const o = snapOf(C, "open"), a = snapOf(C, "after");
+	const o = snapOf(C, "open"), a = snapOf(C, "after"), W = a.cols;
 	C.ck("open: alpha row is elapsed · done/total · ~ETA · current", /10m · 2\/5 · ~\d+m · Wire the live rows/.test(liveRowOf(o, "alpha")), liveRowOf(o, "alpha"), "10m · 2/5 · ~16m · Wire the live rows", o);
 	C.ck("open: delta row is elapsed · intent (no todo)", /3m · Reading the writer/.test(liveRowOf(o, "delta")) && !/\d\/\d/.test(liveRowOf(o, "delta")), liveRowOf(o, "delta"), "3m · Reading the writer", o);
 	C.ck("open: gamma row starts with stalled 8m", /stalled 8m · 20m · Running the tests/.test(liveRowOf(o, "gamma")), liveRowOf(o, "gamma"), "stalled 8m · 20m · Running the tests", o);
 	C.ck("after: alpha row moved to 3/5 without reopening", /3\/5 · ~\d+m · Cover it with tests/.test(liveRowOf(a, "alpha")), liveRowOf(a, "alpha"), "3/5 · ~… · Cover it with tests", a);
 	C.ck("after: delta row shows its new intent", /Searching the reader/.test(liveRowOf(a, "delta")), liveRowOf(a, "delta"), "Searching the reader", a);
+	const stalls = chronicleRows(a).filter(r => /stalled 8m/.test(r));
+	C.ck("after: exactly one 'stalled 8m' row in the CHRONICLE", stalls.length === 1, stalls, "1 row", a);
+	const bad = range(0, a.rows).filter(i => oneOf(a.at(i, 0), "╔║╟╚") && !oneOf(a.at(i, W - 1), "╗║╢╝"));
+	C.ck(`after: every framed row ends at col ${W - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, a);
 }
 
 // name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, settle (false: wait only for the first heartbeat), steps, checks

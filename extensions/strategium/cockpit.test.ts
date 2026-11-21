@@ -1044,6 +1044,21 @@ describe("live agent lines", () => {
 		expect(draw(scout(l, { stalled: NOW - 8 * MIN })).join("\n")).not.toContain(`${GOLD}▶`);
 	});
 
+	test("an agent with no live entry marked stalled at its deploy draws gold with minutes and elapsed", () => {
+		const at = NOW - 10 * MIN;
+		expect(rows(scout(undefined, { stalled: at })).join("\n")).toContain("stalled 10m · 10m");
+		const raw = draw(scout(undefined, { stalled: at })).join("\n");
+		expect(raw).toContain(`${GOLD}▶\x1b[39m ${GOLD}A\x1b[39m`);
+		expect(raw).toContain(`${GOLD}stalled 10m`);
+	});
+
+	test("an agent with no live entry and no stall mark draws elapsed only, not gold", () => {
+		const out = rows(scout(undefined)).join("\n");
+		expect(out).not.toContain("stalled");
+		expect(draw(scout(undefined)).join("\n")).not.toContain(`${GOLD}▶`);
+		expect(rows(scout(undefined, { stalled: NOW - 3 * MIN })).join("\n")).not.toContain("stalled");
+	});
+
 	test("a warn chronicle entry is gold", () => {
 		const raw = draw(input({ chronicle: [{ at: "10:00", who: "A", text: "stalled 6m", tone: "warn" }] })).join("\n");
 		expect(raw).toContain(`${GOLD}stalled 6m`);

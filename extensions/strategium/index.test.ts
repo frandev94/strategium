@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, setSystemTime, test, vi } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { keyOf, parseTiers, whereFrom } from "./index";
@@ -92,6 +92,7 @@ delete process.env.STRATEGIUM_THEATRE;
 
 const dirs: string[] = [];
 afterEach(() => {
+	vi.useRealTimers();
 	setSystemTime();
 	delete process.env.STRATEGIUM_STATE_DIR;
 	delete process.env.STRATEGIUM_COCKPIT_KEY;
@@ -4729,6 +4730,7 @@ describe("cockpit", () => {
 		});
 
 		test("a second update within a second reaches the file after the trailing write, and the parent shows it with only a redraw", async () => {
+			vi.useFakeTimers();
 			const { s, ui } = await squad();
 			const c = child(s);
 			at(1000);
@@ -4736,13 +4738,13 @@ describe("cockpit", () => {
 			at(1400);
 			c.todo(3, 5, "Run mutants");
 			expect(readLive(s)).toMatchObject({ done: 2 });
-			at(2600);
-			await Bun.sleep(700); // the trailing write is a real timer set for the rest of the second
+			vi.advanceTimersByTime(600);
 			expect(readLive(s)).toMatchObject({ done: 3, current: "Run mutants" });
 			expect(await peek(s, ui)).toContain("3/5");
 		});
 
 		test("an open overlay redraws from the child's file on its own, every second frame", async () => {
+			vi.useFakeTimers();
 			const { s, ui } = await squad();
 			const c = child(s);
 			c.todo(2, 5, "Write tests");
@@ -4751,9 +4753,132 @@ describe("cockpit", () => {
 			expect(plain(comp.render(100).join("\n"))).toContain("2/5");
 			at(5000);
 			c.todo(3, 5, "Run mutants");
-			await Bun.sleep(1100);
+			vi.advanceTimersByTime(500); // frame 1: no read of the files
+			expect(plain(comp.render(100).join("\n"))).not.toContain("3/5");
+			vi.advanceTimersByTime(500); // frame 2
 			expect(plain(comp.render(100).join("\n"))).toContain("3/5");
 			comp.handleInput!("q");
+		});
+
+		test("a deferred write after end does not bring the live dir back", async () => {
+			vi.useFakeTimers();
+			const { s } = await squad();
+			const c = child(s);
+			at(1000);
+			c.todo(2, 5, "Write tests");
+			at(1400);
+			c.todo(3, 5, "Run mutants");
+			await s.call({ action: "end" });
+			vi.advanceTimersByTime(1000);
+			expect(existsSync(join(s.dir, "runs", "sess-0001.live"))).toBe(false);
+		});
+
+		test("an agent id with slashes maps to one file inside the live dir", async () => {
+			const { s } = await squad();
+			child(s, "a/b\\c").start("read");
+			const dir = join(s.dir, "runs", "sess-0001.live");
+			expect(readdirSync(dir)).toEqual([`${encodeURIComponent("a/b\\c")}.json`]);
+		});
+
+		test("a pointer whose session id climbs out of runs/ writes nothing", async () => {
+			const { s } = await squad();
+			writeFileSync(join(s.dir, "evil.json"), "{}");
+			writeFileSync(join(s.dir, "runs", `${process.pid}.pid`), "../evil");
+			child(s).start("read");
+			expect(existsSync(join(s.dir, "evil.live"))).toBe(false);
+		});
+
+		test("shutdown leaves a pointer that names another session", async () => {
+			const { s } = await squad();
+			writeFileSync(join(s.dir, "runs", `${process.pid}.pid`), "other-sid");
+			shutdown(s);
+			expect(readFileSync(join(s.dir, "runs", `${process.pid}.pid`), "utf8")).toBe("other-sid");
+		});
+
+		test("a session with no run removes the pointer before it spawns", async () => {
+			const s = setup();
+			mkdirSync(join(s.dir, "runs"), { recursive: true });
+			writeFileSync(join(s.dir, "runs", `${process.pid}.pid`), "other-sid");
+			s.handlers.before_subagent_spawn.forEach(h => h({ agent: "scout", spawnKey: "A" }, s.ctx));
+			expect(existsSync(join(s.dir, "runs", `${process.pid}.pid`))).toBe(false);
+		});
+
+		test("end removes the pointer that names its session", async () => {
+			const { s } = await squad();
+			expect(existsSync(join(s.dir, "runs", `${process.pid}.pid`))).toBe(true);
+			await s.call({ action: "end" });
+			expect(existsSync(join(s.dir, "runs", `${process.pid}.pid`))).toBe(false);
+		});
+
+		test("begin sweeps the pointers of sessions that have no run", async () => {
+			const { s } = await squad();
+			writeFileSync(join(s.dir, "runs", "4242.pid"), "ghost-sid");
+			writeFileSync(join(s.dir, "runs", "4343.pid"), "sess-0001");
+			const other = setup("sess-0002", s.dir);
+			await other.call({ action: "begin", key: "K-2" });
+			expect(existsSync(join(s.dir, "runs", "4242.pid"))).toBe(false);
+			expect(existsSync(join(s.dir, "runs", "4343.pid"))).toBe(true);
+		});
+
+		test("end never throws when a file of the run cannot be removed", async () => {
+			const { s } = await squad();
+			const stuck = join(s.dir, "runs", "sess-0001.cockpit");
+			rmSync(stuck, { force: true });
+			mkdirSync(join(stuck, "inner"), { recursive: true });
+			expect(await s.call({ action: "end" })).toBe("ENDED K-1");
+		});
+
+		test("a saved agent with a non-numeric at or stalled is read as having none", async () => {
+			const { s } = await running();
+			const file = join(s.dir, "runs", "sess-0001.cockpit");
+			writeFileSync(file, JSON.stringify({ key: "K-1", chronicle: [], notes: {}, deployed: [["A", { who: "SCOUT", role: "scout", state: "active", at: "soon", stalled: "x" }]] }));
+			const again = setup("sess-0001", s.dir);
+			const ui = uiCtx(again);
+			await again.start();
+			expect(await chron(again, ui)).not.toContain("stalled");
+		});
+
+		describe("an agent with no live row", () => {
+			async function scout() {
+				at(0);
+				const { s, ui } = await running();
+				s.todo([{ name: "Auspex", tasks: [{ content: "[scout] Map the code", status: "in_progress" }] }]);
+				s.handlers.before_subagent_spawn.forEach(h => h({ agent: "scout", spawnKey: "A" }, s.ctx));
+				s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "scout", name: "A", task: "look" }] }, details: { progress: [{ index: 0, id: "A", status: "running" }] }, isError: false }, s.ctx));
+				return { s, ui };
+			}
+
+			test("is stalled 5 min after it was deployed, logged once", async () => {
+				const { s, ui } = await scout();
+				at(4 * MIN);
+				expect(await chron(s, ui)).not.toContain("stalled");
+				at(6 * MIN);
+				expect(await chron(s, ui)).toContain("stalled 6m");
+				await peek(s, ui);
+				expect((await chron(s, ui)).match(/stalled/g)).toHaveLength(1);
+			});
+
+			test("the 5 minutes count from its last live row once it has one", async () => {
+				const { s, ui } = await scout();
+				const c = child(s);
+				at(10 * MIN);
+				c.start("read");
+				c.end("read");
+				at(14 * MIN);
+				expect(await chron(s, ui)).not.toContain("stalled");
+			});
+		});
+
+		test("a returned agent is never stalled, however old its live file", async () => {
+			const { s, ui } = await squad();
+			const c = child(s);
+			c.start("read");
+			c.end("read");
+			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A")] }, details: { progress: [{ index: 0, id: "A", status: "completed" }] }, isError: false }, s.ctx));
+			at(6 * MIN);
+			const t = await chron(s, ui);
+			expect(t).toContain("returned");
+			expect(t).not.toContain("stalled");
 		});
 
 		describe("stalled", () => {
@@ -4847,9 +4972,9 @@ describe("cockpit", () => {
 			const { s, ui } = await squad();
 			mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
 			writeFileSync(liveFile(s), body);
-			at(10 * MIN);
+			at(4 * MIN); // before the 5 minutes a deployed agent with no valid row may idle
 			const t = await peek(s, ui);
-			expect(t).toContain("10m");
+			expect(t).toContain("4m");
 			expect(t).not.toContain("stalled");
 		});
 
