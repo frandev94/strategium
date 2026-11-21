@@ -471,7 +471,7 @@ export function parseTiers(env: string | undefined): { selectors: Record<Tier, s
 		const at = entry.indexOf("=");
 		const name = entry.slice(0, Math.max(at, 0)).trim();
 		const selector = entry.slice(at + 1).trim();
-		if (at < 0 || !selector || !LADDER.includes(name as Tier)) ignored.push(entry);
+		if (!selector || !LADDER.includes(name as Tier)) ignored.push(entry);
 		else selectors[name as Tier] = selector;
 	}
 	return { selectors, ignored };
@@ -505,7 +505,7 @@ function tierFor(run: Run, spawnKey: string, named: Map<string, string>): Tier |
 	slice ??= known.find(s => fold(s.id) === fold(stripped)) ?? known.find(s => fold(s.id) === fold(spawnKey));
 	if (!slice) return undefined;
 	// `builds` counts at the hook, before the dispatch is known to succeed, like archmagosSpawned.
-	const n = run.builds?.[slice.id] ?? 0;
+	const n = run.builds && Object.hasOwn(run.builds, slice.id) ? run.builds[slice.id] : 0;
 	writeRun({ ...run, builds: { ...run.builds, [slice.id]: n + 1 } });
 	return LADDER[Math.min(LADDER.indexOf(slice.tier ?? "standard") + (n ? 1 : 0), LADDER.length - 1)];
 }

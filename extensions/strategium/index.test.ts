@@ -3984,11 +3984,21 @@ describe("cost tiers", () => {
 	});
 
 	test("an item named X whose brief says build squad S1 gets S1's tier", async () => {
-		const s = await begin([{ id: "S1", parallel: false, files: ["a.ts"], tier: "light" }]);
+		const s = await begin([{ id: "S1", parallel: false, files: ["a.ts"], tier: "standard" }]);
 		const input = { tasks: [{ agent: "battle-brother", name: "X", isolated: true, task: "Read local://K-1-plan.md; build squad S1." }] };
 		expect(s.handlers.tool_call[0]({ toolName: "task", input }, s.ctx)).toBeUndefined();
-		expect(spawn(s, "battle-brother", "X")?.model).toBe(DEFAULT.light);
-		expect(spawn(s, "battle-brother", "X-2")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother", "X")?.model).toBe(DEFAULT.standard);
+		expect(spawn(s, "battle-brother", "X-2")?.model).toBe(DEFAULT.heavy);
+	});
+
+	test("a squad id that is an Object.prototype key still gets its planned tier on the first builder", async () => {
+		const s = await begin([
+			{ id: "S1", parallel: true, files: ["a.ts"] },
+			{ id: "constructor", parallel: true, files: ["b.ts"], tier: "light" },
+		]);
+		spawn(s, "battle-brother", "S1");
+		expect(spawn(s, "battle-brother", "constructor")?.model).toBe(DEFAULT.light);
+		expect(spawn(s, "battle-brother", "constructor-2")?.model).toBe(DEFAULT.standard);
 	});
 
 	const brotherItem = (name: string, slice: string) => ({ agent: "battle-brother", name, isolated: true, task: `Read local://K-1-plan.md; build squad ${slice}.` });
