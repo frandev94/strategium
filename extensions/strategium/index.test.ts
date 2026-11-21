@@ -1435,6 +1435,23 @@ describe("the run follows an approved plan", () => {
 	};
 	const movedRun = (dir: string) => JSON.parse(readFileSync(join(dir, "runs", "sess-B.json"), "utf8"));
 
+	test("the move carries the cockpit state to the new session and drops the old file", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", [phase("Plan", ["[seal] Plan", "in_progress"])]);
+		const cockpitFile = (sid: string) => join(s.dir, "runs", `${sid}.cockpit`);
+		expect(existsSync(cockpitFile("sess-A"))).toBe(true);
+		const before = JSON.parse(readFileSync(cockpitFile("sess-A"), "utf8"));
+		expect(before.chronicle.map((e: { text: string }) => e.text)).toContain("station Plan");
+		await approve(s, sm, ctx);
+		expect(existsSync(cockpitFile("sess-A"))).toBe(false);
+		expect(existsSync(cockpitFile("sess-B"))).toBe(true);
+		expect(JSON.parse(readFileSync(cockpitFile("sess-B"), "utf8")).chronicle).toEqual(before.chronicle);
+		// A restart of sess-B still has it.
+		const again = setup("sess-B", s.dir);
+		await again.start();
+		expect(JSON.parse(readFileSync(cockpitFile("sess-B"), "utf8")).chronicle).toEqual(before.chronicle);
+	});
+
 	test("the fresh session never shows a plan-mode station or Muster", async () => {
 		const { s, sm, ctx } = await owner();
 		await todoResult(s, ctx, "start", [
@@ -3741,7 +3758,7 @@ describe("cockpit", () => {
 			expect(text.match(/station Plan/g)?.length).toBe(1);
 		});
 
-		test("closing the session forgets the chronicle", async () => {
+		test("closing the session empties the memory, and the saved state brings it back on the next start", async () => {
 			const { s, ui } = await running();
 			s.todo(sealTodo("in_progress"));
 			expect(await chron(s, ui)).toContain("station Plan");
@@ -3749,7 +3766,7 @@ describe("cockpit", () => {
 			await s.start();
 			const text = await peek(s, ui);
 			expect(text).toContain("K-1");
-			expect(text).not.toContain("station Plan");
+			expect(text).toContain("station Plan");
 		});
 
 		test("a run with a new key starts a clean chronicle", async () => {
@@ -3762,6 +3779,252 @@ describe("cockpit", () => {
 			const text = await peek(s, ui);
 			expect(text).toContain("K-2");
 			expect(text).not.toContain("station Plan");
+		});
+
+		describe("the cockpit after a restart", () => {
+			const cockpitFile = (dir: string, sid = "sess-0001") => join(dir, "runs", `${sid}.cockpit`);
+			const saved = (dir: string, sid?: string) => JSON.parse(readFileSync(cockpitFile(dir, sid), "utf8"));
+			const squads = ["a", "b", "c", "d"].map(id => ({ id, parallel: true, files: [`${id}.ts`] }));
+			const items = ["a", "b", "c", "d"].map(id => ({ agent: "battle-brother", name: id, isolated: true, task: `build squad ${id}.` }));
+			// Agent ids are the squad ids; squad d is first built by a battle-brother, then escalated to a veteran.
+			const deploy = (s: ReturnType<typeof setup>, statuses: Record<string, string>, agent?: string) =>
+				s.handlers.tool_result.forEach(h =>
+					h(
+						{
+							toolName: "task",
+							input: { tasks: items.map(i => (agent ? { ...i, agent } : i)) },
+							details: { progress: Object.entries(statuses).map(([id, status]) => ({ index: "abcd".indexOf(id[0]), id, status })) },
+							isError: false,
+						},
+						s.ctx,
+					),
+				);
+			const ends = (s: ReturnType<typeof setup>, ...jobs: [string, string][]) =>
+				s.handlers.context.forEach(h => h({ type: "context", messages: [{ role: "custom", details: { jobs: jobs.map(([label, status]) => ({ jobId: `j${label}`, type: "task", status, label })) } }] }, s.ctx));
+			// A run mid-Skirmish: a running, b returned, c failed, d escalated to a veteran, and a seal granted.
+			async function midRun() {
+				const { s, ui } = await running();
+				await s.call({ action: "slices", slices: squads });
+				s.todo([{ name: "Plan", tasks: [{ content: "[seal] Plan", status: "in_progress" }] }]);
+				s.todo([{ name: "Plan", tasks: [{ content: "[seal] Plan", status: "completed" }] }, { name: "Skirmish", tasks: [{ content: "[battle-brother] Build squads", status: "in_progress" }] }]);
+				deploy(s, { a: "running", b: "running", c: "running", d: "running" });
+				ends(s, ["b", "completed"], ["c", "failed"]);
+				deploy(s, { d2: "running" }, "veteran");
+				return { s, ui };
+			}
+			// What the user sees, minus the clock row.
+			const view = async (s: ReturnType<typeof setup>, ui: ReturnType<typeof uiCtx>) =>
+				(await peek(s, ui)).split("\n").filter(l => !l.includes("⧗")).join("\n");
+			// A new process on the same state dir. A shutdown first, unless it crashed.
+			async function restart(s: ReturnType<typeof setup>, crash = false) {
+				if (!crash) shutdown(s);
+				const again = setup("sess-0001", s.dir);
+				const ui = uiCtx(again);
+				await again.start();
+				return { s: again, ui };
+			}
+
+			test("write, reload, same view: chronicle, agents and marks", async () => {
+				const { s, ui } = await midRun();
+				const before = await view(s, ui);
+				expect(before).toMatch(/▶ † squad a/);
+				expect(before).toContain("✠ SEAL");
+				expect(before).toContain("✓");
+				expect(before).toContain("✗");
+				expect(before).toContain("‡");
+				const again = await restart(s);
+				expect(await view(again.s, again.ui)).toBe(before);
+			});
+
+			test("the same after a crash, with no session_shutdown", async () => {
+				const { s, ui } = await midRun();
+				const before = await view(s, ui);
+				const again = await restart(s, true);
+				expect(await view(again.s, again.ui)).toBe(before);
+			});
+
+			test("three restarts leave no duplicates, and a replayed job end logs nothing", async () => {
+				const { s, ui } = await midRun();
+				const before = await view(s, ui);
+				const count = () => saved(s.dir);
+				const n = count().chronicle.length;
+				let cur = { s, ui };
+				for (let i = 0; i < 3; i++) {
+					cur = await restart(cur.s, i === 1);
+					ends(cur.s, ["b", "completed"], ["c", "failed"]);
+					deploy(cur.s, { a: "running", b: "completed", c: "failed" });
+				}
+				expect(count().chronicle).toHaveLength(n);
+				expect(count().deployed).toHaveLength(5);
+				expect(await view(cur.s, cur.ui)).toBe(before);
+			});
+
+			test("end then begin of the same key starts clean, and so does a restart", async () => {
+				const { s, ui } = await midRun();
+				expect(existsSync(cockpitFile(s.dir))).toBe(true);
+				await s.sub("end");
+				expect(existsSync(cockpitFile(s.dir))).toBe(false);
+				await s.call({ action: "begin", key: "K-1" });
+				await s.sub("status");
+				const fresh = await peek(s, ui);
+				expect(fresh).toContain("K-1");
+				for (const old of ["granted", "returned", "failed", "escalated"]) expect(fresh).not.toContain(old);
+				const again = await restart(s);
+				const text = await peek(again.s, again.ui);
+				for (const old of ["granted", "returned", "failed", "escalated"]) expect(text).not.toContain(old);
+			});
+
+			test("a new key starts clean and ignores a file saved under another key", async () => {
+				const { s, ui } = await midRun();
+				await s.sub("end");
+				writeFileSync(cockpitFile(s.dir), JSON.stringify({ key: "K-1", chronicle: [{ at: "10:00", who: "OLD", text: "stale entry" }], notes: {}, deployed: [] }));
+				await s.call({ action: "begin", key: "K-2" });
+				await s.sub("status");
+				expect(await peek(s, ui)).not.toContain("stale entry");
+				const again = await restart(s);
+				const text = await peek(again.s, again.ui);
+				expect(text).toContain("K-2");
+				expect(text).not.toContain("stale entry");
+				expect(saved(s.dir).key).toBe("K-2");
+			});
+
+			test("the chronicle keeps 200 entries on disk, the newest, and the overlay shows the newest first", async () => {
+				const { s, ui } = await running();
+				for (let i = 0; i < 205; i++) s.todo([{ name: `St${i}`, tasks: [{ content: "[captain] Go", status: "in_progress" }] }]);
+				const file = saved(s.dir);
+				expect(file.chronicle).toHaveLength(200);
+				expect(file.chronicle.at(-1).text).toBe("station St204");
+				expect(file.chronicle[0].text).toBe("station St5");
+				const again = await restart(s);
+				const text = await chron(again.s, again.ui);
+				expect(text.indexOf("station St204")).toBeLessThan(text.indexOf("station St203"));
+				expect(text).not.toContain("station St4 ");
+			});
+
+			test("an untouched tick writes nothing", async () => {
+				const { s } = await midRun();
+				const f = cockpitFile(s.dir);
+				const before = readFileSync(f, "utf8");
+				rmSync(f);
+				// The same todo again: a redraw with nothing new to log.
+				s.todo([{ name: "Plan", tasks: [{ content: "[seal] Plan", status: "completed" }] }, { name: "Skirmish", tasks: [{ content: "[battle-brother] Build squads", status: "in_progress" }] }]);
+				expect(existsSync(f)).toBe(false);
+				expect(before).toContain("station Skirmish");
+			});
+
+			test("a begin of another key starts clean when the restart comes before any draw", async () => {
+				const { s } = await running();
+				await s.call({ action: "begin", key: "K-2" });
+				writeFileSync(cockpitFile(s.dir), JSON.stringify({ key: "K-1", chronicle: [{ at: "10:00", who: "OLD", text: "stale entry" }], notes: {}, deployed: [] }));
+				const again = await restart(s, true);
+				const text = await peek(again.s, again.ui);
+				expect(text).toContain("K-2");
+				expect(text).not.toContain("stale entry");
+			});
+
+			test("a saved file of 250 entries comes back as the newest 200", async () => {
+				const { s } = await running();
+				const chronicle = Array.from({ length: 250 }, (_, i) => ({ at: "10:00", who: "CAPTAIN", text: `entry-${String(i).padStart(3, "0")}` }));
+				writeFileSync(cockpitFile(s.dir), JSON.stringify({ key: "K-1", chronicle, notes: {}, deployed: [] }));
+				const again = await restart(s, true);
+				again.ui.tui.terminal.rows = 1000;
+				const shown = (await peek(again.s, again.ui)).match(/entry-\d{3}/g)!;
+				expect(shown).toHaveLength(200);
+				expect(shown).toContain("entry-249");
+				expect(shown).not.toContain("entry-049");
+			});
+
+			test("a restart with nothing new does not rewrite the file", async () => {
+				const { s } = await midRun();
+				const pretty = JSON.stringify(saved(s.dir), null, 1);
+				writeFileSync(cockpitFile(s.dir), pretty);
+				await restart(s, true);
+				expect(readFileSync(cockpitFile(s.dir), "utf8")).toBe(pretty);
+			});
+
+			test("a corrupt file starts the cockpit clean and the next draw replaces it with valid JSON", async () => {
+				const { s, ui } = await midRun();
+				writeFileSync(cockpitFile(s.dir), "{not json");
+				await s.start();
+				const text = await chron(s, ui);
+				for (const old of ["granted", "returned", "failed", "escalated"]) expect(text).not.toContain(old);
+				expect(saved(s.dir).key).toBe("K-1");
+				expect(saved(s.dir).chronicle.map((e: { text: string }) => e.text).join()).not.toContain("granted");
+			});
+
+			test("ending the run closes the open cockpit", async () => {
+				const { s, ui } = await running();
+				await s.sub("cockpit");
+				expect(ui.opened).toHaveLength(1);
+				await s.sub("end");
+				expect(ui.draws.closed).toBe(1);
+			});
+
+			test.each([
+				["notes null", { notes: null }],
+				["chronicle a string", { chronicle: "oops" }],
+				["deployed not an array", { deployed: "x" }],
+				["a deployed entry that is no [id, job]", { deployed: [["a", "x"]] }],
+				["notes an array", { notes: [] }],
+				["a numeric deployed id", { deployed: [[1, {}]] }],
+			])("a saved file with %s starts clean", async (_n, bad) => {
+				const { s } = await midRun();
+				writeFileSync(cockpitFile(s.dir), JSON.stringify({ ...saved(s.dir), ...bad }));
+				const again = await restart(s, true);
+				again.s.todo([{ name: "Debrief", tasks: [{ content: "[captain] Report", status: "in_progress" }] }]);
+				const file = saved(s.dir);
+				expect(file.notes).toEqual({});
+				expect(file.deployed).toEqual([]);
+				expect(file.chronicle.map((e: { text: string }) => e.text)).toEqual(["station Debrief"]);
+			});
+
+			test("a plan-review move of a run the cockpit never drew loads the new session's file instead of carrying stale memory", async () => {
+				// This process saw no run at start (cockpit memory has no key); another one then began K-1 under the same session id.
+				const s = setup("sess-0001");
+				const ui = uiCtx(s);
+				await s.start();
+				await setup("sess-0001", s.dir).call({ action: "begin", key: "K-1" });
+				writeFileSync(cockpitFile(s.dir, "sess-0002"), JSON.stringify({ key: "K-1", chronicle: [{ at: "10:00", who: "DISK", text: "from disk" }], notes: {}, deployed: [] }));
+				await s.handlers.plan_review_requested[0]({ sessionId: "sess-0001" }, s.ctx);
+				s.ctx.sessionManager.getSessionId = () => "sess-0002";
+				await s.handlers.session_switch[0]({ reason: "new" }, s.ctx);
+				expect(await peek(s, ui)).toContain("from disk");
+			});
+
+			describe("another session takes the ticket", () => {
+				const second = (s: ReturnType<typeof setup>) => setup("sess-0002", s.dir);
+
+				test("a begin that takes another session's key removes its cockpit file", async () => {
+					const { s } = await midRun();
+					expect(existsSync(cockpitFile(s.dir))).toBe(true);
+					await second(s).call({ action: "begin", key: "K-1", takeover: "sess-0001" });
+					expect(existsSync(cockpitFile(s.dir))).toBe(false);
+				});
+
+				test("a session that finds its lock lost drops its cockpit file", async () => {
+					const { s } = await midRun();
+					writeFileSync(lockPath(s.dir, "K-1"), "sess-0002");
+					expect(await s.call({ action: "repo", repo: s.dir })).toContain("ERROR");
+					expect(existsSync(cockpitFile(s.dir))).toBe(false);
+				});
+
+				test("a session whose claim fails at start keeps no cockpit file", async () => {
+					const { s } = await midRun();
+					writeFileSync(lockPath(s.dir, "K-1"), "sess-0002");
+					await restart(s, true);
+					expect(existsSync(cockpitFile(s.dir))).toBe(false);
+				});
+
+				test("a later begin of the same key does not bring the lost run's cockpit back", async () => {
+					const { s, ui } = await midRun();
+					writeFileSync(lockPath(s.dir, "K-1"), "sess-0002");
+					await s.call({ action: "repo", repo: s.dir });
+					await s.call({ action: "begin", key: "K-1", takeover: "sess-0002" });
+					const text = await peek(s, ui);
+					for (const old of ["granted", "returned", "failed", "escalated"]) expect(text).not.toContain(old);
+					expect(saved(s.dir).chronicle.map((e: { text: string }) => e.text).join()).not.toContain("granted");
+				});
+			});
 		});
 	});
 
