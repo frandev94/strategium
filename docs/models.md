@@ -69,7 +69,7 @@ The plan gives every squad a cost tier, and the plugin sets each `battle-brother
 | `standard` | `@task:medium` | Sonnet 5.5 | medium |
 | `heavy` | `@slow:high` | Opus 5.5 | high |
 
-`light` uses `medium`, not `low`, for the reason in the Haiku note above. `light` needs the `smol` role: with `smol` unset it inherits `default`, with its suffix, and runs on your main model.
+`light` uses `medium`, not `low`, for the reason in the Haiku note above. `light` needs the `smol` role: with `smol` unset it inherits `default` and runs on your main model.
 
 **Effort.** omp takes, in order, a per-call `effort`, then an explicit `:level` on the model, then the agent's `thinkingLevel`. So the tier's level beats `battle-brother`'s own `medium`, and `task.maxEffort` does not cap it (it only bounds the per-call `effort` hint). An outer suffix such as `@slow:high` also wins over a suffix on the role itself.
 
