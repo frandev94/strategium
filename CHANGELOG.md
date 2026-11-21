@@ -1,3 +1,14 @@
+## [0.2.25] - 2026-11-21
+
+### 🚀 Features
+
+- *(skills)* Check tiers, a timed baseline and flaky failures marked as known
+
+### 📚 Documentation
+
+- Check tiers, the timed baseline and deleted tests in the READMEs
+- *(skills)* When the sonic runs, the single-command case, and a new flaky test still opens a penance
+- *(skills)* A new flaky failure gets a finding ID and a fair reproduction
 ## [0.2.24] - 2026-11-21
 
 ### 🚀 Features
