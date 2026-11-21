@@ -1,3 +1,16 @@
+## [0.2.16] - 2026-11-21
+
+### 🚀 Features
+
+- *(cockpit)* Keep the cockpit state across an omp restart
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Validate saved chronicle entries and share the cap
+
+### 🧪 Testing
+
+- *(tooling)* Tui-shot replay that restarts omp with the cockpit open
 ## [0.2.15] - 2026-11-21
 
 ### 🚀 Features
