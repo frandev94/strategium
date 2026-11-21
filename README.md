@@ -35,7 +35,7 @@ The main session is the **Captain**: it never edits product code. It plans, dele
 Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition → Extraction
 ```
 
-1. **Muster** — the objective, the seals and, with ticketing, the booking.
+1. **Muster** — the objective and the orders: Plan by default, UI and MR when they apply, and with ticketing the booking. You are asked only when there is a choice (a booking, a UI or MR toggle, `Review & merge`, a theatre field or the Archmagos box); otherwise the run takes the defaults and goes straight to Auspex.
 2. **Auspex** — scouts map the code the objective touches.
 3. **Scriptorium** — one librarian writes a spec, 1–5 squads and a Merge bar; when the objective splits into areas, one librarian per area, then a lead merges the parts (with the Archmagos Dominus marked in Muster, an `archmagos` integrates the parts instead of the lead).
 4. **Deployment** — one branch for the run, the squads declared with their files; each isolated agent works in its own omp checkout.
@@ -50,7 +50,7 @@ flowchart TB
 
   subgraph muster["I · MUSTER"]
     direction LR
-    M["Captain<br/>objective · booking"] --> S0{"you pick<br/>the seals"}
+    M["Captain<br/>objective · booking"] --> S0["Orders<br/>asked only when there is a choice"]
   end
   subgraph auspex["II · AUSPEX"]
     direction LR
@@ -100,8 +100,8 @@ flowchart TB
   classDef seal fill:#791E29,stroke:#C5A15A,stroke-width:2px,color:#E8DDC5
   classDef you fill:#C5A15A,stroke:#791E29,stroke-width:2px,color:#180D10
   classDef station fill:#281216,stroke:#C5A15A,color:#C5A15A
-  class M,A1,A2,L1,L2,D,B1,B2,B3,Q1,Q2,Q3,Q4,X,F agent
-  class S0,SP,SU,SM seal
+  class M,S0,A1,A2,L1,L2,D,B1,B2,B3,Q1,Q2,Q3,Q4,X,F agent
+  class SP,SU,SM seal
   class BF,QF,QS agent
   class U,E,Y you
   class muster,auspex,scriptorium,deployment,skirmish,inquisition,extraction,debrief station
@@ -236,7 +236,7 @@ Every session owns one run, claimed atomically, so several omp sessions can work
 
 Idle pause: when no agent works and nothing waits to run, the run's clock pauses after `STRATEGIUM_IDLE_MIN` idle minutes (default 3), the `idle` sound plays (with notifications on) and the footer shows it paused. The next turn resumes it on its own; the Captain does not call `start`. A run you paused by hand (`/strategium-pause`, action `stop`, the stand down) never resumes by itself. A question or a plan review waiting for you counts as busy: the clock keeps running and the `attention` alarm calls you (with notifications on). A timed run on a new day stays paused until today's booking is given.
 
-Footer: the station shows as `<station> › <task>`, where `<task>` is the active todo task without its agent tag, cut to 32 characters with `…`. A seal keeps `⏳ seal <name>`; a return shows `↩ <station> › <task>`. The footer appears as soon as `/strategium` begins the run (`strategium: <KEY> · <elapsed> min`); once the skeleton's first task is started it shows e.g. `Muster › Objective`, then `⏳ seal Seals`. When the terminal is wide enough (the footer text plus two spaces and the hint fit the width) the line ends, flush right, with the hint that names the cockpit key (`ALT + C to enter cockpit` by default); narrower, or with an unknown width, there is no hint. The width is read on each footer draw (every minute and on each status change), not on resize.
+Footer: the station shows as `<station> › <task>`, where `<task>` is the active todo task without its agent tag, cut to 32 characters with `…`. A seal keeps `⏳ seal <name>`; a return shows `↩ <station> › <task>`. The footer appears as soon as `/strategium` begins the run (`strategium: <KEY> · <elapsed> min`); once the skeleton's first task is started it shows e.g. `Muster › Objective`, then `Muster › Orders`. When the terminal is wide enough (the footer text plus two spaces and the hint fit the width) the line ends, flush right, with the hint that names the cockpit key (`ALT + C to enter cockpit` by default); narrower, or with an unknown width, there is no hint. The width is read on each footer draw (every minute and on each status change), not on resize.
 
 Cockpit: `/strategium-cockpit` (or Alt+C, or your cockpit key) opens the full-screen overlay (it covers the prompt, the todo list and the transcript until Esc or `q` closes it; it also closes by itself when the agent asks you something, asks to approve a tool or opens a plan review) while this session has a run open: the key, the clock and the seals on top, under them a status line (`▶ AGENT AT WORK` while a turn runs or a background job such as an async subagent, a bash job or an eval job is still running, `○ VOX OPEN · esc to give orders` in gold when the agent has stopped, no job is running and the prompt is free for your orders; a dialog from another extension has no event, so it is not announced), then only the active station (the first phase with a running todo task; else the first with a waiting one) as a title (`▶` running, `↶` after a return, `○` waiting; a waiting seal adds `· seal <name> awaits you`), one box per agent type present in it, and the latest chronicle entries. The boxes, in this order, take the todo tasks with that tag and the agents deployed in that station: CAPTAIN, SCOUTS, LIBRARIANS (also `[archmagos]`), BATTLE-BROTHERS (also `[veteran]`), APOTHECARIES, INQUISITOR, SECURITY-REVIEWER, SONIC, ADEPTS (`[task]`) and SEAL. A box shows only when the station has a task or an agent of its type. Each line has its state mark: `▶` running, `✓` done, `○` waiting, `✗` failed; BATTLE-BROTHERS lines carry `†` (or `‡` for a veteran), and add one `squad <id> …` line per declared squad. Lines run `▶`, `✗`, `○`, then `✓`; a box shows at most 8 lines (fewer in a short window, so the chronicle keeps 5 rows) and its last line counts the rest, e.g. `+5 more (3 done, 2 idle)`. A granted seal turns ✠ and, with notifications on, plays the `done` sound. The chronicle and the list of deployed agents are kept in memory only, so an omp restart clears them; an agent launched from eval stays `▶` until the eval cell that waits for it returns, or until omp delivers its result, then turns `✓` or `✗`. Colours are truecolor when the terminal supports it and 256-colour otherwise. The cockpit cannot show test or mutant counts: the agents' events happen inside subagents, which the parent does not see. The cockpit draws Nerd Font glyphs with `STRATEGIUM_GLYPHS=1` and plain symbols otherwise, never emoji. The colours come from a theme: `blood-angels` by default (a dark Night background that fills the overlay to its full width), `ultramarines`, `dark-angels`, or `cogitator`, the previous palette on the terminal's own background. `/strategium-config cockpit-theme <name>` saves the choice and applies it at once, with no restart (`cockpit-theme default` deletes the saved choice, so the theme falls back to `STRATEGIUM_COCKPIT_THEME` if set, else `blood-angels`).
 
@@ -250,7 +250,7 @@ Cockpit: `/strategium-cockpit` (or Alt+C, or your cockpit key) opens the full-sc
 
 ### Ticketing (optional)
 
-A run is **timed** when its objective is a ticket of a theatre, or when you give it a booking in Muster. The **booking** is the time budget for today: the timer fires at 50 %, 80 % and 100 % of it — the highest threshold it crosses, so a run that starts past 50 % goes straight to the next one. At 100 % the Captain stands down: it stops starting agents and reports what is done and what is left. Each day is its own shift with its own booking.
+A run is **timed** when its objective is a ticket of a theatre, or when you give it a booking (in Muster, or later). The **booking** is the time budget for today: the timer fires at 50 %, 80 % and 100 % of it — the highest threshold it crosses, so a run that starts past 50 % goes straight to the next one. At 100 % the Captain stands down: it stops starting agents and reports what is done and what is left. Each day is its own shift with its own booking.
 
 An **untimed** run still counts its time (`status`, `report`), with no alerts, no stand down and no shifts.
 

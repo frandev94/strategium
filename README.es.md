@@ -35,7 +35,7 @@ La sesión principal es el **Capitán**: nunca edita código de producto. Planif
 Muster → Auspex → Scriptorium → Deployment → Skirmish → Inquisition → Extraction
 ```
 
-1. **Muster** — el objetivo, los sellos y, con ticketing, la reserva.
+1. **Muster** — el objetivo y las órdenes: Plan por defecto, UI y MR cuando aplican y, con ticketing, la reserva. Solo se te pregunta cuando hay elección (una reserva, activar o no UI o MR, `Review & merge`, un campo del teatro o la casilla del Archmagos); si no, la run toma los valores por defecto y pasa directa a Auspex.
 2. **Auspex** — los scouts mapean el código que toca el objetivo.
 3. **Scriptorium** — un librarian escribe una especificación, de 1 a 5 squads y una Merge bar; cuando el objetivo se divide en áreas, un librarian por área y después un líder une las partes (con el Archmagos Dominus marcado en Muster, un `archmagos` integra las partes en lugar del líder).
 4. **Deployment** — una rama para la run, los squads declarados con sus ficheros; cada agente aislado trabaja en su propio checkout de omp.
@@ -50,7 +50,7 @@ flowchart TB
 
   subgraph muster["I · MUSTER"]
     direction LR
-    M["Capitán<br/>objetivo · reserva"] --> S0{"eliges<br/>los sellos"}
+    M["Capitán<br/>objetivo · reserva"] --> S0["Órdenes<br/>solo si hay elección"]
   end
   subgraph auspex["II · AUSPEX"]
     direction LR
@@ -100,8 +100,8 @@ flowchart TB
   classDef seal fill:#791E29,stroke:#C5A15A,stroke-width:2px,color:#E8DDC5
   classDef you fill:#C5A15A,stroke:#791E29,stroke-width:2px,color:#180D10
   classDef station fill:#281216,stroke:#C5A15A,color:#C5A15A
-  class M,A1,A2,L1,L2,D,B1,B2,B3,Q1,Q2,Q3,Q4,X,F agent
-  class S0,SP,SU,SM seal
+  class M,S0,A1,A2,L1,L2,D,B1,B2,B3,Q1,Q2,Q3,Q4,X,F agent
+  class SP,SU,SM seal
   class BF,QF,QS agent
   class U,E,Y you
   class muster,auspex,scriptorium,deployment,skirmish,inquisition,extraction,debrief station
@@ -236,7 +236,7 @@ Cada sesión es dueña de una run, con una reserva atómica, así que varias ses
 
 Pausa por inactividad: cuando ningún agente trabaja y nada espera para ejecutarse, el reloj de la run se pausa tras `STRATEGIUM_IDLE_MIN` minutos de inactividad (3 por defecto), suena el sonido `idle` (con las notificaciones activas) y el pie la muestra pausada. El siguiente turno la reanuda sola; el Capitán no llama a `start`. Una run que pausaste a mano (`/strategium-pause`, acción `stop`, el stand down) nunca se reanuda sola. Una pregunta o una revisión de plan que te espera cuenta como actividad: el reloj sigue corriendo y la alarma `attention` te avisa (con las notificaciones activas). Una run con temporizador en un día nuevo sigue pausada hasta que se da la reserva de hoy.
 
-Pie: la estación se muestra como `<estación> › <tarea>`, donde `<tarea>` es la tarea activa del todo sin su etiqueta de agente, cortada a 32 caracteres con `…`. Un sello mantiene `⏳ seal <nombre>`; un retorno muestra `↩ <estación> › <tarea>`. El pie aparece en cuanto `/strategium` inicia la run (`strategium: <KEY> · <transcurrido> min`); al iniciar la primera tarea del esqueleto muestra p. ej. `Muster › Objective`, y luego `⏳ seal Seals`. Si el terminal es lo bastante ancho (cabe el texto del pie más dos espacios y la pista) la línea termina, pegada a la derecha, con la pista que nombra la tecla del cockpit (`ALT + C to enter cockpit` por defecto); más estrecho, o con ancho desconocido, no hay pista. El ancho se lee en cada dibujo del pie (cada minuto y en cada cambio de estado), no al redimensionar.
+Pie: la estación se muestra como `<estación> › <tarea>`, donde `<tarea>` es la tarea activa del todo sin su etiqueta de agente, cortada a 32 caracteres con `…`. Un sello mantiene `⏳ seal <nombre>`; un retorno muestra `↩ <estación> › <tarea>`. El pie aparece en cuanto `/strategium` inicia la run (`strategium: <KEY> · <transcurrido> min`); al iniciar la primera tarea del esqueleto muestra p. ej. `Muster › Objective`, y luego `Muster › Orders`. Si el terminal es lo bastante ancho (cabe el texto del pie más dos espacios y la pista) la línea termina, pegada a la derecha, con la pista que nombra la tecla del cockpit (`ALT + C to enter cockpit` por defecto); más estrecho, o con ancho desconocido, no hay pista. El ancho se lee en cada dibujo del pie (cada minuto y en cada cambio de estado), no al redimensionar.
 
 Cockpit: `/strategium-cockpit` (o Alt+C, o tu tecla del cockpit) abre el overlay a pantalla completa (tapa el prompt, la lista de todos y la transcripción hasta que Esc o `q` lo cierra; también se cierra solo cuando el agente te pregunta algo, pide aprobar una herramienta o abre una revisión de plan) mientras esta sesión tiene una run abierta: la clave, el reloj y los sellos arriba, debajo una línea de estado (`▶ AGENT AT WORK` mientras corre un turno o un trabajo en segundo plano, como un subagente asíncrono, un job de bash o uno de eval, sigue en marcha, `○ VOX OPEN · esc to give orders` en dorado cuando el agente se ha parado, no corre ningún trabajo y el prompt está libre para tus órdenes; un diálogo de otra extensión no tiene evento, así que no se anuncia), luego solo la estación activa (la primera fase con una tarea del todo en curso; si no, la primera con una tarea en espera) como título (`▶` en curso, `↶` tras un retorno, `○` en espera; un sello en espera añade `· seal <nombre> awaits you`), una caja por tipo de agente presente en ella, y las últimas entradas de la crónica. Las cajas, en este orden, toman las tareas del todo con esa etiqueta y los agentes lanzados en esa estación: CAPTAIN, SCOUTS, LIBRARIANS (también `[archmagos]`), BATTLE-BROTHERS (también `[veteran]`), APOTHECARIES, INQUISITOR, SECURITY-REVIEWER, SONIC, ADEPTS (`[task]`) y SEAL. Una caja solo sale si la estación tiene una tarea o un agente de su tipo. Cada línea lleva su marca de estado: `▶` en curso, `✓` hecha, `○` en espera, `✗` fallida; las líneas de BATTLE-BROTHERS llevan `†` (o `‡` si es veterano) y suman una línea `squad <id> …` por escuadrón declarado. Las líneas van `▶`, `✗`, `○` y luego `✓`; una caja muestra como mucho 8 líneas (menos en una ventana baja, para que la crónica conserve 5 filas) y su última línea cuenta el resto, p. ej. `+5 more (3 done, 2 idle)`. Un sello concedido pasa a ✠ y, con las notificaciones activas, suena el sonido `done`. La crónica y la lista de agentes lanzados viven solo en memoria, así que reiniciar omp las borra; un agente lanzado desde eval sigue en `▶` hasta que vuelve la celda de eval que lo espera, o hasta que omp entrega su resultado, y entonces pasa a `✓` o `✗`. Los colores son truecolor si el terminal lo admite y 256 colores si no. El cockpit no puede mostrar recuentos de tests ni de mutantes: los eventos de los agentes ocurren dentro de subagentes, que el padre no ve. El cockpit dibuja glifos Nerd Font con `STRATEGIUM_GLYPHS=1` y símbolos simples si no, nunca emoji. Los colores salen de un tema: `blood-angels` por defecto (un fondo oscuro Night que llena el overlay a todo el ancho), `ultramarines`, `dark-angels` o `cogitator`, la paleta anterior sobre el fondo propio del terminal. `/strategium-config cockpit-theme <name>` guarda la elección y la aplica al instante, sin reiniciar (`cockpit-theme default` borra la elección guardada, así que el tema vuelve a `STRATEGIUM_COCKPIT_THEME` si está definida, y si no a `blood-angels`).
 
@@ -250,7 +250,7 @@ Cockpit: `/strategium-cockpit` (o Alt+C, o tu tecla del cockpit) abre el overlay
 
 ### Ticketing (opcional)
 
-Una run lleva **temporizador** cuando su objetivo es un ticket de un teatro, o cuando le das una reserva en Muster. La **reserva** es el presupuesto de tiempo de hoy: el temporizador suena al 50 %, 80 % y 100 % — el umbral más alto que cruza, así que una run que empieza pasado el 50 % va directamente al siguiente. Al 100 % el Capitán hace *stand down*: deja de lanzar agentes e informa de lo que está hecho y de lo que queda. Cada día es su propio turno con su propia reserva.
+Una run lleva **temporizador** cuando su objetivo es un ticket de un teatro, o cuando le das una reserva (en Muster, o más tarde). La **reserva** es el presupuesto de tiempo de hoy: el temporizador suena al 50 %, 80 % y 100 % — el umbral más alto que cruza, así que una run que empieza pasado el 50 % va directamente al siguiente. Al 100 % el Capitán hace *stand down*: deja de lanzar agentes e informa de lo que está hecho y de lo que queda. Cada día es su propio turno con su propia reserva.
 
 Una run **sin temporizador** sigue contando su tiempo (`status`, `report`), sin avisos, sin *stand down* y sin turnos.
 

@@ -30,7 +30,7 @@ const text = (over: Partial<ViewInput> = {}, width = 100) => plain(renderCockpit
 
 // The 8 stations of SKILL.md with the agent tags each one uses, and the boxes each must show.
 const STATIONS: [string, string[], string[]][] = [
-	["Muster", ["captain", "seal"], ["CAPTAIN", "SEAL"]],
+	["Muster", ["captain"], ["CAPTAIN"]],
 	["Auspex", ["scout"], ["SCOUTS"]],
 	["Scriptorium", ["librarian", "archmagos", "seal"], ["LIBRARIANS", "SEAL"]],
 	["Deployment", ["captain"], ["CAPTAIN"]],
@@ -70,6 +70,13 @@ describe("seals", () => {
 		["first seen completed", phases(["[builder] x", "pending"]), phases(["[builder] x", "pending"], ["[seal] Plan", "completed"]), []],
 	])("grantedSeals: %s", (_n, before, after, names) => {
 		expect(grantedSeals(before, after).map(s => s.name)).toEqual(names);
+	});
+
+	test("the Muster Orders captain task is no seal", () => {
+		const orders = (status: string) => phases(["[captain] Orders", status], ["\u{f18bc} captain · Orders", status]);
+		expect(sealsFrom(orders("in_progress"))).toEqual([]);
+		expect(grantedSeals(orders("in_progress"), orders("completed"))).toEqual([]);
+		expect(grantedSeals(orders("pending"), orders("completed"))).toEqual([]);
 	});
 });
 
