@@ -80,6 +80,7 @@ The recommended config and its reasons are in `<R>/docs/models.md`; read it befo
 | `STRATEGIUM_GLYPHS` | optional | `1` only if the user's terminal font is a Nerd Font (ask; show one glyph, e.g. U+F05DA, and ask whether it renders as a book); else leave unset and todo tags stay `[name]` |
 | `STRATEGIUM_NOTIFY` | recommended | `0` (off; sounds and desktop notifications on with `1`; per session `/strategium-config notify on` or `off`) |
 | `STRATEGIUM_SOUND` | optional | `1` (the alarm's sound, on by default; `0` turns it off; per session `/strategium-config sound on` or `off`) |
+| `STRATEGIUM_VOLUME` | optional | `20` (the alarm's volume, `0` to `100`; per session `/strategium-config volume <n>`, `preview` to hear it) |
 | `STRATEGIUM_TOAST` | optional | `1` (the alarm's desktop notification, on by default; `0` turns it off; per session `/strategium-config toast on` or `off`) |
 | `STRATEGIUM_IDLE_MIN` | optional | `3` (minutes of idle before the run's clock pauses; `0` off; per session `/strategium-config idle <min>`) |
 | `STRATEGIUM_ARCHMAGOS` | optional | `0` (off; `1` lets runs mark the Archmagos Dominus in Muster; per session `/strategium-config archmagos on` or `off`) |

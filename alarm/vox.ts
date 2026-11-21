@@ -1,5 +1,5 @@
 // Strategium vox-caster: synthesizes every sound from scratch (no samples) and plays it.
-// Usage: bun vox.ts [50|80|100|done|attention|idle|theme] ["message"]  (level: argv[2], else env STRATEGIUM_P, else done); env STRATEGIUM_SOUND=0 skips the sound
+// Usage: bun vox.ts [50|80|100|done|attention|idle|theme] ["message"]  (level: argv[2], else env STRATEGIUM_P, else done); env STRATEGIUM_SOUND=0 skips the sound; env STRATEGIUM_VOLUME 0-100 (default 20)
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,7 +11,7 @@ export const RATE = 22050;
 export const LEVELS = ["50", "80", "100", "done", "attention", "idle", "theme"] as const;
 export type Level = (typeof LEVELS)[number];
 
-// Every sound plays one grimdark kit at 100 bpm in C minor: war drums, a distorted bass, a choir, brass and a bell.
+// Every sound plays one grimdark kit at 100 bpm in C minor: war drums with a double kick, a drop-C guitar and bass, a choir, brass and a bell.
 // Original material only: the chords are the stock minor-key moves (i, VI, iv, V; VI-VII-I), no melody from any record.
 type Buf = Float64Array;
 const TAU = Math.PI * 2;
@@ -80,33 +80,10 @@ function hats(b: Buf, t0: number, bars: number) {
 	}
 }
 
-/** War drums: four on the floor, snare on 2 and 4, sixteenth hats. */
-function drums(b: Buf, t0: number, bars: number) {
+/** The backbeat: sixteenth hats and the snare on 2 and 4; the kicks follow the guitar (see `riff`). */
+function backbeat(b: Buf, t0: number, bars: number) {
 	hats(b, t0, bars);
-	for (let bar = 0; bar < bars; bar++) {
-		const t = t0 + bar * BAR;
-		for (let beat = 0; beat < 4; beat++) kick(b, t + beat * BEAT, beat % 2 ? 0.7 : 0.95);
-		snare(b, t + BEAT);
-		snare(b, t + BEAT * 3);
-	}
-}
-
-// The wall: distorted bass eighths, a C pedal that climbs to G and Eb at the end of the bar.
-const BASS = [36, 36, 36, 36, 36, 36, 43, 39];
-function bass(b: Buf, t0: number, bars: number) {
-	const step = BEAT / 2;
-	for (let i = 0; i < bars * 8; i++) {
-		const f = hz(BASS[i % 8]);
-		let p1 = 0;
-		let p2 = 0;
-		let lp = 0;
-		add(b, t0 + i * step, step * 0.92, 0.3, t => {
-			p1 += f / RATE;
-			p2 += (f * 1.006) / RATE;
-			lp += 0.18 * (saw(p1) + saw(p2) + Math.sin(TAU * p1 * 0.5) - lp);
-			return Math.tanh(4 * lp) * Math.min(1, t / 0.004) * Math.exp(-t / 0.5);
-		});
-	}
+	for (let bar = 0; bar < bars; bar++) for (const beat of [1, 3]) snare(b, t0 + bar * BAR + beat * BEAT);
 }
 
 // Choir: three slightly detuned voices singing "ah" (harmonics weighted around the vowel's formants).
@@ -176,34 +153,99 @@ function drone(b: Buf, t0: number, dur: number, gain = 0.4) {
 	});
 }
 
+// Guitar: detuned saws summed per chord, driven hard through tanh, then a two-pole "cab" low-pass. Muted = palm mute: darker and choked.
+function guitar(b: Buf, t0: number, notes: number[], dur: number, muted: boolean, gain = 0.2) {
+	const fs = notes.flatMap(m => [hz(m), hz(m) * 1.004]);
+	const ph = fs.map(() => 0);
+	let pre = 0;
+	let c1 = 0;
+	let c2 = 0;
+	const cut = muted ? 0.09 : 0.22;
+	add(b, t0, dur, gain, t => {
+		let s = 0;
+		for (let k = 0; k < fs.length; k++) s += saw((ph[k] += fs[k] / RATE));
+		pre += 0.5 * (s - pre);
+		c1 += cut * (Math.tanh(5 * pre) - c1);
+		c2 += cut * (c1 - c2);
+		return c2 * (muted ? Math.min(1, t / 0.002) * Math.exp(-t / 0.09) : env(t, 0.003, 0.05, dur));
+	});
+}
+
+// Bass: an octave under the guitar, two detuned saws and a sub sine, lightly driven and low-passed so it growls without fizz.
+function bass(b: Buf, t0: number, midi: number, dur: number, muted: boolean, gain = 0.28) {
+	const f = hz(midi);
+	let p1 = 0;
+	let p2 = 0;
+	let lp = 0;
+	add(b, t0, dur, gain, t => {
+		p1 += f / RATE;
+		p2 += (f * 1.006) / RATE;
+		lp += 0.12 * (saw(p1) + saw(p2) - lp);
+		const s = Math.tanh(3 * lp) + 0.8 * Math.sin(TAU * p1);
+		return s * (muted ? Math.min(1, t / 0.003) * Math.exp(-t / 0.12) : env(t, 0.004, 0.06, dur));
+	});
+}
+
+/** A ringing power chord (root, fifth and octave) with the bass on the root below. */
+function power(b: Buf, t0: number, root: number, dur: number, gain = 0.2) {
+	guitar(b, t0, [root, root + 7, root + 12], dur, false, gain);
+	bass(b, t0, root - 12, dur, false);
+}
+
+// The riff, one bar per chord in sixteenths: x = palm-muted low C, P = power chord on the bar's root (rings through the rests), n = next lead note.
+// Bars 1-3 chug a C pedal under i, VI, iv; bar 4 turns around on V with a harmonic-minor run (G Ab G B C B Ab G) back to the top.
+const RIFF: [string, number][] = [["P-xxP-xxx-P-xPxx", 36], ["P-xxP-xxx-P-xPxx", 44], ["P-xxP-xxx-P-xPxx", 41], ["P-xxP-xxnnnnnnnn", 43]];
+const RUN = [43, 44, 43, 47, 48, 47, 44, 43];
+/** The riff with the bass and the double kick locked to every guitar hit. */
+function riff(b: Buf, t0: number, bars = RIFF) {
+	const step = BEAT / 4;
+	let lead = 0;
+	bars.forEach(([pattern, root], bar) => {
+		for (let i = 0; i < 16; i++) {
+			const c = pattern[i];
+			if (c === "-") continue;
+			const t = t0 + bar * BAR + i * step;
+			kick(b, t, i % 4 ? 0.55 : 0.9);
+			if (c === "x") { guitar(b, t, [36], step * 0.9, true); bass(b, t, 24, step * 0.9, true); }
+			else if (c === "n") { guitar(b, t, [RUN[lead++]], step * 0.95, false, 0.16); bass(b, t, root - 12, step * 0.9, true); }
+			else {
+				let n = 1;
+				while (pattern[i + n] === "-") n++;
+				power(b, t, root, step * n * 0.95);
+			}
+		}
+	});
+}
+
 const CM = [60, 63, 67]; // C minor
 const AB = [56, 60, 63]; // Ab major (VI)
 const BB = [58, 62, 65]; // Bb major (VII)
 const C = [60, 64, 67, 72]; // C major: the minor run ends bright
 
-/** The final hit: boom, snare, brass on C and G, and (unless `choir` is false) the choir on C minor. */
+/** The final hit: boom, snare, a ringing C power chord, brass on C and G, and (unless `choir` is false) the choir on C minor. */
 function hit(b: Buf, t0: number, dur: number, choir = true) {
 	boom(b, t0);
 	snare(b, t0, 0.6);
+	power(b, t0, 36, dur, 0.24);
 	for (const m of [24, 36, 43]) brass(b, t0, m, dur);
 	if (choir) chord(b, t0, CM, dur, 0.22, 0.02);
 }
 
-// Theme: four bars of drop (i, VI, iv, V), written once and wrapped so the tails of bar 4 ring into bar 1: it loops without a seam.
+// Theme: four bars of drop (i, VI, iv, V) led by the riff, written once and wrapped so the tails of bar 4 ring into bar 1: it loops without a seam.
 function theme(b: Buf) {
 	const long = new Float64Array(b.length * 2);
-	drums(long, 0, 4);
-	bass(long, 0, 4);
-	[CM, AB, [53, 56, 60], [55, 59, 62]].forEach((notes, bar) => chord(long, bar * BAR, notes, BAR, 0.16));
-	[79, 80, 77, 74].forEach((m, bar) => choir(long, bar * BAR, m, BAR, 0.12)); // the top voice holds a chord tone per bar
-	for (const t of [0, BAR * 2]) for (const m of [36, 43]) brass(long, t, m, BAR, 0.14);
+	backbeat(long, 0, 4);
+	riff(long, 0);
+	[CM, AB, [53, 56, 60], [55, 59, 62]].forEach((notes, bar) => chord(long, bar * BAR, notes, BAR, 0.1));
+	[79, 80, 77, 74].forEach((m, bar) => choir(long, bar * BAR, m, BAR, 0.08)); // the top voice holds a chord tone per bar
+	for (const t of [0, BAR * 2]) for (const m of [36, 43]) brass(long, t, m, BAR, 0.1);
 	for (let i = 0; i < long.length; i++) b[i % b.length] += long[i];
 }
 
-/** One bar of the full groove: war drums, the bass wall and a pickup snare into the next bar. */
-function groove(b: Buf, t0: number) {
-	drums(b, t0, 1);
-	bass(b, t0, 1);
+/** One bar of the groove on C: the backbeat, a riff bar (with its double kick) and a pickup snare into the next bar. */
+function groove(b: Buf, t0: number, pattern: string) {
+	backbeat(b, t0, 1);
+	riff(b, t0, [[pattern, 36]]);
 	snare(b, t0 + BAR - BEAT / 4, 0.4);
 }
 
@@ -216,29 +258,41 @@ function swell(b: Buf, t0: number, dur: number) {
 
 const DESIGN: Record<Level, (b: Buf) => void> = {
 	// Each level adds a layer to the one before: 50 the groove into a hit, 80 the swell over it, 100 the riser too.
+	// The riff tightens with each: 50 the theme's gallop, 80 denser chugs, 100 straight sixteenths.
 	// 50 %: one bar of the groove, then a hard hit with no choir
-	"50": b => { groove(b, 0); hit(b, BAR, 1.2, false); },
+	"50": b => { groove(b, 0, "P-xxP-xxx-P-xPxx"); hit(b, BAR, 1.2, false); },
 	// 80 %: the groove under the swell, then the full hit
-	"80": b => { groove(b, 0); swell(b, 0, BAR); hit(b, BAR, 1.2); },
+	"80": b => { groove(b, 0, "P-xxP-xxPxxxPxxx"); swell(b, 0, BAR); hit(b, BAR, 1.2); },
 	// time is up: the groove, the swell and a riser climbing together, then the full hit ringing longer
-	"100": b => { groove(b, 0); swell(b, 0, BAR); riser(b, 0, BAR, 0.3); hit(b, BAR, 1.4); },
-	// done: the choir climbs VI, VII to a bright I over the drums, then a dead stop at 2.25 s
+	"100": b => { groove(b, 0, "Pxxxxxxxxxxxxxxx"); swell(b, 0, BAR); riser(b, 0, BAR, 0.3); hit(b, BAR, 1.4); },
+	// done: choir and power chords climb VI, VII to a bright I over the drums, then a dead stop at 2.25 s
 	"done": b => {
-		[AB, BB, C].forEach((notes, i) => { chord(b, i * BEAT, notes, i === 2 ? 1.2 : BEAT, 0.24, 0.03); kick(b, i * BEAT); });
+		[AB, BB, C].forEach((notes, i) => {
+			const dur = i === 2 ? 1.2 : BEAT;
+			chord(b, i * BEAT, notes, dur, 0.24, 0.03);
+			power(b, i * BEAT, [44, 46, 48][i], dur, 0.22);
+			kick(b, i * BEAT);
+		});
 		snare(b, BEAT * 2, 0.5);
 		b.fill(0, Math.floor(2.25 * RATE));
 	},
-	// attention: a horn call (two stabs on C, a held G), then a short snare roll into the hit
+	// attention: a horn call (two stabs on C, a held G) doubled by the guitar, then a snare and double-kick roll into the hit
 	"attention": b => {
 		for (const t of [0, BEAT]) {
 			kick(b, t);
+			power(b, t, 36, 0.4, 0.24);
 			for (const m of [36, 48]) brass(b, t, m, 0.4, 0.3);
 			chord(b, t, CM, 0.4, 0.22, 0.02);
 		}
 		kick(b, BEAT * 2);
+		power(b, BEAT * 2, 43, 1.2, 0.24);
 		for (const m of [43, 55]) brass(b, BEAT * 2, m, 1.2, 0.3);
 		chord(b, BEAT * 2, [55, 59, 62], 1.2, 0.22, 0.02);
-		for (let t = BEAT * 3; t < BAR; t += BEAT / 8) snare(b, t, 0.15 + 0.35 * ((t - BEAT * 3) / BEAT));
+		for (let t = BEAT * 3; t < BAR; t += BEAT / 8) {
+			const x = (t - BEAT * 3) / BEAT;
+			snare(b, t, 0.15 + 0.35 * x);
+			kick(b, t, 0.3 + 0.4 * x);
+		}
 		hit(b, BAR, 0.9);
 	},
 	// idle: stand-by, quieter on purpose: a low drone, soft choir swells and one soft bell; the run's clock paused
@@ -247,8 +301,8 @@ const DESIGN: Record<Level, (b: Buf) => void> = {
 	"theme": theme,
 };
 
-/** Pure synthesis: 16-bit mono PCM WAV, soft-clipped by tanh and normalised to its peak (0.9 of full scale; idle 0.5, quieter on purpose). */
-export function synth(level: Level): Buffer {
+/** Pure synthesis: 16-bit mono PCM WAV, soft-clipped by tanh and normalised to its peak: 0.9 of full scale (idle 0.5, quieter on purpose) times `vol` %. */
+export function synth(level: Level, vol = 20): Buffer {
 	const secs = { "50": 3.6, "80": 3.6, "100": 3.9, "done": 2.7, "attention": 3.6, "idle": 3, "theme": BAR * 4 }[level];
 	const b = new Float64Array(Math.round(secs * RATE));
 	DESIGN[level](b);
@@ -256,7 +310,7 @@ export function synth(level: Level): Buffer {
 	if (level !== "theme") for (let i = 0, n = Math.floor(0.25 * RATE); i < n; i++) b[b.length - 1 - i] *= i / n;
 	let peak = 0;
 	for (let i = 0; i < b.length; i++) peak = Math.max(peak, Math.abs((b[i] = Math.tanh(b[i] * 1.3))));
-	const scale = ((level === "idle" ? 0.5 : 0.9) * 32767) / peak;
+	const scale = ((level === "idle" ? 0.5 : 0.9) * (vol / 100) * 32767) / peak;
 	const pcm = Buffer.alloc(b.length * 2);
 	b.forEach((x, i) => pcm.writeInt16LE(Math.round(x * scale), i * 2));
 	const h = Buffer.alloc(44);
@@ -307,6 +361,13 @@ export function channels(env: Record<string, string | undefined>, msg: string | 
 	return { toast: !!msg, sound: !/^(0|false|off|no)$/i.test(env.STRATEGIUM_SOUND?.trim() ?? "") };
 }
 
+/** STRATEGIUM_VOLUME as a whole percentage, clamped to 0-100; unset or not a number gives the default, 20 (an alarm should not startle). */
+export function volume(env: Record<string, string | undefined>): number {
+	const raw = env.STRATEGIUM_VOLUME?.trim();
+	const v = Number(raw);
+	return raw && Number.isFinite(v) ? Math.round(Math.min(100, Math.max(0, v))) : 20;
+}
+
 if (import.meta.main) {
 	const arg = process.argv[2] ?? process.env.STRATEGIUM_P ?? "done";
 	const level = (LEVELS as readonly string[]).includes(arg) ? (arg as Level) : "done";
@@ -316,13 +377,14 @@ if (import.meta.main) {
 		if (ch.toast) toast(msg!);
 		if (ch.sound) {
 			const dir = join(tmpdir(), "strategium-vox");
-			// The name follows the synthesizer's source, so an edited sound never plays from a stale cache. ponytail: old WAVs stay in tmp; prune them if the folder ever grows.
-			const file = join(dir, `${level}-${createHash("sha256").update(readFileSync(import.meta.path)).digest("hex").slice(0, 12)}.wav`);
+			const vol = volume(process.env);
+			// The name follows the synthesizer's source and the volume, so an edited sound never plays from a stale cache. ponytail: old WAVs stay in tmp; prune them if the folder ever grows.
+			const file = join(dir, `${level}-${vol}-${createHash("sha256").update(readFileSync(import.meta.path)).digest("hex").slice(0, 12)}.wav`);
 			mkdirSync(dir, { recursive: true, mode: 0o700 });
 			if (!existsSync(file)) {
 				try {
 					// `wx`: never write through a symlink another user planted in the cache dir.
-					writeFileSync(file, synth(level), { flag: "wx", mode: 0o600 });
+					writeFileSync(file, synth(level, vol), { flag: "wx", mode: 0o600 });
 				} catch {
 					// Another process wrote it first: use what is there.
 				}

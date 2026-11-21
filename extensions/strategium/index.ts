@@ -19,6 +19,7 @@ import {
 	release,
 	type Ev,
 } from "./timer";
+import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, cockpitView, closes, colorDepth, grantedSeals, icons, jobEnds, palette, pushEntry, renderCockpit, type Deployed, type Entry, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
@@ -401,20 +402,25 @@ function alarmCmd(cmd: string): string[] {
 }
 
 /**
- * Run STRATEGIUM_ALARM with the level in STRATEGIUM_P, STRATEGIUM_SOUND=1|0 and, only when toasts are on, a
- * desktop-notification text in STRATEGIUM_MSG.
+ * Run STRATEGIUM_ALARM with the level in STRATEGIUM_P, STRATEGIUM_SOUND=1|0, STRATEGIUM_VOLUME when the user set one and,
+ * only when toasts are on, a desktop-notification text in STRATEGIUM_MSG.
  * Levels: 50 | 80 | 100 for the booking timer, "attention" when the user is needed, "theme" when the session's run ends,
  * "idle" when the clock pauses after idle minutes.
  * Unset → silent.
  * Returns the reason when the alarm could not be started, so it is not a silent no-sound.
  */
-function signal(level: string, msg: string | undefined, sound: boolean): string | undefined {
+function signal(level: string, msg: string | undefined, sound: boolean, volume?: number): string | undefined {
 	const alarm = process.env.STRATEGIUM_ALARM?.trim();
 	if (!alarm) return undefined;
 	try {
 		const child = Bun.spawn({
 			cmd: alarmCmd(alarm),
-			env: childEnv({ STRATEGIUM_P: level, STRATEGIUM_SOUND: sound ? "1" : "0", ...(msg ? { STRATEGIUM_MSG: msg } : {}) }),
+			env: childEnv({
+				STRATEGIUM_P: level,
+				STRATEGIUM_SOUND: sound ? "1" : "0",
+				...(volume !== undefined ? { STRATEGIUM_VOLUME: String(volume) } : {}),
+				...(msg ? { STRATEGIUM_MSG: msg } : {}),
+			}),
 			stdout: "ignore",
 			stderr: "ignore",
 		});
@@ -720,6 +726,12 @@ export default function (pi: ExtensionAPI) {
 		const n = idleMin(sid);
 		return `${n > 0 ? `${n} min` : "off"} (${idleBySession.has(sid) ? "this session" : "STRATEGIUM_IDLE_MIN"})`;
 	};
+	// The alarm's volume (0-100): /strategium-config volume <n> per session wins over STRATEGIUM_VOLUME (parsed by vox, as the alarm would); neither → vox's default.
+	const volumeBySession = new Map<string, number>();
+	const volumeOf = (sid: string): number | undefined =>
+		volumeBySession.get(sid) ?? (process.env.STRATEGIUM_VOLUME?.trim() ? volume(process.env) : undefined);
+	const volumeState = (sid: string) =>
+		`${volumeOf(sid) ?? volume({})} (${volumeBySession.has(sid) ? "this session" : volumeOf(sid) !== undefined ? "STRATEGIUM_VOLUME" : "default"})`;
 	// When the main session last went idle (ms); tick counts from here. In memory only: a restart starts the count again.
 	let idleSince: number | undefined;
 	// A stop or start by hand spends the idle mark, so a later turn never resumes a run the user stopped. The idle count
@@ -744,7 +756,7 @@ export default function (pi: ExtensionAPI) {
 	/** The alarm, only when notifications are on and sound or toast is: the message goes only with toasts, the sound flag always. */
 	const alert = (sid: string, level: string, msg: string) => {
 		const ch = channels(sid);
-		return ch.length ? signal(level, ch.includes("toast") ? msg : undefined, ch.includes("sound")) : undefined;
+		return ch.length ? signal(level, ch.includes("toast") ? msg : undefined, ch.includes("sound"), volumeOf(sid)) : undefined;
 	};
 
 	// The cockpit theme: /strategium-config cockpit-theme saves one in the state dir, which wins over STRATEGIUM_COCKPIT_THEME;
@@ -1203,21 +1215,30 @@ export default function (pi: ExtensionAPI) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
+		let preview = false;
 		if (arg !== undefined) {
 			const m = arg.match(/^notify\s+(on|off)$/);
 			const so = arg.match(/^sound\s+(on|off)$/);
 			const to = arg.match(/^toast\s+(on|off)$/);
 			const i = arg.match(/^idle\s+(\d+)$/);
+			const vo = arg.match(/^volume(?:\s+(\d+))?(\s+preview)?$/);
 			const a = arg.match(/^archmagos\s+(on|off)$/);
 			const k = arg.match(/^cockpit-key\s+(\S+)$/);
 			const th = arg.match(/^cockpit-theme\s+(\S+)$/);
-			if (!m && !so && !to && !i && !a && !k && !th) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !k && !th) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
 			else if (to) toastBySession.set(sid, to[1] === "on");
-			else if (a) archmagosBySession.set(sid, a[1] === "on");
+			else if (vo) {
+				if (vo[1] !== undefined) {
+					const n = Number(vo[1]);
+					if (n > 100) throw new Error("volume takes 0 to 100");
+					volumeBySession.set(sid, n);
+				}
+				preview = !!vo[2];
+			} else if (a) archmagosBySession.set(sid, a[1] === "on");
 			else if (th) {
 				const v = th[1].toLowerCase();
 				if (v === "default") rmSync(themeFile(), { force: true });
@@ -1248,6 +1269,7 @@ export default function (pi: ExtensionAPI) {
 				"Strategium config",
 				`notify: ${notifyState(sid)}`,
 				`sound: ${soundState(sid)}`,
+				`volume: ${volumeState(sid)}`,
 				`toast: ${toastState(sid)}`,
 				`idle: ${idleState(sid)}`,
 				`archmagos: ${archmagosState(sid)}`,
@@ -1261,6 +1283,11 @@ export default function (pi: ExtensionAPI) {
 			"info",
 		);
 		if (conflict) ctx.ui.notify(keyConflict(conflict.key, conflict.c), "warning");
+		// The preview plays the alarm at this volume even with notify or sound off: the user asked to hear it.
+		if (preview) {
+			const err = process.env.STRATEGIUM_ALARM?.trim() ? signal("done", undefined, true, volumeOf(sid)) : "STRATEGIUM_ALARM is not set (/skill:strategium-setup)";
+			if (err) ctx.ui.notify(`Strategium: no preview: ${err}`, "warning");
+		}
 	});
 
 	subcommand("end", "Close this session's Strategium run", async (_arg, ctx, sid) => {
@@ -1320,6 +1347,8 @@ export default function (pi: ExtensionAPI) {
 					if (sound !== undefined) soundBySession.set(sid, sound);
 					const toast = toastBySession.get(prevSid);
 					if (toast !== undefined) toastBySession.set(sid, toast);
+					const vol = volumeBySession.get(prevSid);
+					if (vol !== undefined) volumeBySession.set(sid, vol);
 					const idle = idleBySession.get(prevSid);
 					if (idle !== undefined) idleBySession.set(sid, idle);
 					const arch = archmagosBySession.get(prevSid);

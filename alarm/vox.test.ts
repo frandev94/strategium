@@ -3,10 +3,10 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { LEVELS, RATE, type Level, channels, synth } from "./vox";
+import { LEVELS, RATE, type Level, channels, synth, volume } from "./vox";
 
-const samples = (level: Level) => {
-	const w = synth(level);
+const samples = (level: Level, vol?: number) => {
+	const w = synth(level, vol);
 	return Array.from({ length: (w.length - 44) / 2 }, (_, i) => w.readInt16LE(44 + i * 2));
 };
 const peakOf = (s: number[]) => s.reduce((p, x) => Math.max(p, Math.abs(x)), 0);
@@ -43,6 +43,16 @@ test("idle is the quietest sound", () => {
 
 test("done stops dead: silence after 2.25 s", () => {
 	expect(samples("done").slice(Math.ceil(2.25 * RATE)).every(x => x === 0)).toBe(true);
+});
+
+test("volume scales the peak: 100 is twice 50", () => {
+	expect(Math.abs(peakOf(samples("50", 100)) - 2 * peakOf(samples("50", 50)))).toBeLessThanOrEqual(2);
+});
+
+test.each([
+	[undefined, 20], ["", 20], ["loud", 20], ["30", 30], [" 80 ", 80], ["150", 100], ["-5", 0], ["33.6", 34],
+])("volume(STRATEGIUM_VOLUME=%p) is %p", (v, want) => {
+	expect(volume({ STRATEGIUM_VOLUME: v })).toBe(want);
 });
 
 test("channels: no toast without a message", () => {
