@@ -59,6 +59,12 @@ SEEDS["restart"] = {**SEEDS["skirmish"], "cockpit": {  # skirmish plus a saved c
         ["BetaBrother", {"who": "BetaBrother", "role": "battle-brother", "squad": "beta", "station": "Skirmish", "state": "done"}],
         ["DeltaBrother", {"who": "DeltaBrother", "role": "battle-brother", "squad": "delta", "station": "Skirmish", "state": "failed"}]]}}
 
+SEEDS["seal-panel"] = {**SEEDS["scriptorium"], "cockpit": {"chronicle": [], "notes": {}, "deployed": [], "seal": {"id": "Plan", "lines": [  # prepared panel lines: 14, so the cap shows 11 + "+3 more"
+    "Squads: cockpit (standard), shots (light), docs (light)", "Merge bar: AC1 no SEAL box at 140 columns", "Merge bar: AC2 SEALS chain",
+    "Merge bar: AC3 seal panel", "Merge bar: AC4 tests follow the contract", "Merge bar: bun run check clean", "Merge bar: bun test 0 fail",
+    "Merge bar: regression replays PASS", "Merge bar: docs in step", "LONG-" + "x" * 195, "Merge bar: apothecary fuzz pass",
+    "Merge bar: PR closes #82", "line 13", "line 14"]}}}
+
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
 ap.add_argument("--seed", default="scriptorium", choices=SEEDS)
 ap.add_argument("--ponytail", nargs="?", const=True, default=None)
@@ -405,13 +411,30 @@ def checks_glyph_width(C):
     C.ck("screen: no wide cell in the footer run line", y >= 0 and not C.s["screen"].wide_cells(y, y + 1), C.s["screen"].wide_cells(y, y + 1), [], C.s["screen"])
     C.ck("open: no wide cell in the cockpit", not C.s["open"].wide_cells(), C.s["open"].wide_cells(), [], C.s["open"])
 
-def steps_seal_row(R): open_snap(R)
+def steps_seal_row(R): R.snap("screen"); open_snap(R)
 def checks_seal_row(C):
-    o = C.s["open"]; y = o.where("SEALS")
-    xs = [x for x, c in enumerate(o.cells[y]) if c in ("\U000f047a", "\U000f051f")] if y >= 0 else []
-    C.ck("SEALS row has seal glyphs U+F047A/U+F051F", bool(xs), o.row(y), None, o)
-    C.ck("each seal glyph is 1 cell wide and followed by a space", all((y, x) not in o.wide and o.at(y, x + 1) == " " for x in xs), xs, None, o)
-    C.ck("no ✠ in the SEALS row", "✠" not in o.row(y), o.row(y), None, o)
+    sc, o = C.s["screen"], C.s["open"]; y = o.where("SEALS")
+    C.ck("footer has seal Plan", sc.has("seal Plan"), None, "seal Plan", sc)
+    # chain: waiting glyph (1 cell, then padding spaces) Plan, then ' → ', then '○ UI'
+    m = re.search("\U000f051f( +)Plan → ○ UI", o.row(y)) if y >= 0 else None
+    C.ck("SEALS row is '<U+F051F> Plan → ○ UI', glyph 1 cell", bool(m) and (y, m.start()) not in o.wide, o.row(y), None, o)
+    C.ck("no SEAL ─ box title", not any("SEAL ─" in r for r in o.rows_text), None, None, o)
+    C.ck("panel title SEAL PLAN · awaits you", o.has("SEAL PLAN · awaits you"), None, None, o)
+    C.ck("panel default line", o.has("the details are in the Captain's message"), None, None, o)
+    C.ck("station title has seal Plan awaits you", any("▶" in r and "seal Plan awaits you" in r for r in o.rows_text), None, None, o)
+
+def steps_seal_panel(R): open_snap(R)
+def checks_seal_panel(C):
+    o = C.s["open"]; W = o.cols; y = o.where("SEAL PLAN · awaits you"); st = o.where("seal Plan awaits you")
+    C.ck(f"panel ┌ at col 2 and ┐ at col {W - 3}", y >= 0 and o.at(y, 2) == "┌" and o.at(y, W - 3) == "┐", o.row(y), None, o)
+    C.ck("first seeded line shown", o.has("Squads: cockpit (standard)"), None, None, o)
+    long = next((r for r in o.rows_text if "LONG-" in r), "")
+    C.ck("200-char line ends in … before its │", re.search(r"…\s*│", long) is not None, long, None, o)
+    C.ck("+3 more row", o.has("+3 more"), None, None, o)
+    first = next((i for i in range(y + 1, o.rows) if "┌" in o.row(i) and i != y), -1) if y >= 0 else -1
+    C.ck("panel between station title and first agent box", 0 <= st < y < first or first == -1 and 0 <= st < y, (st, y, first), None, o)
+    bad = [i for i in range(o.rows) if one_of(o.at(i, 0), "╔║╟╚") and not one_of(o.at(i, W - 1), "╗║╢╝")]
+    C.ck(f"every framed row ends at col {W - 1}", not bad, f"rows {bad}", None, o)
 
 def steps_archmagos(R): open_snap(R, False)
 def checks_archmagos(C): C.ck("Merge the plan ([archmagos]) is in the cockpit", C.s["open"].has("Merge the plan"), None, None, C.s["open"])
@@ -580,7 +603,8 @@ REPLAYS = {
     "fullscreen-resize":  {"r": "R9/F6", "kind": "FIXED", "seed": "scriptorium", "steps": steps_fullscreen_resize, "checks": checks_fullscreen_resize},
     "frame-edges":        {"r": "R4,R5", "kind": "FIXED", "seed": "skirmish", "steps": steps_frame_edges, "checks": checks_frame_edges},
     "glyph-width":        {"r": "R2", "kind": "FIXED", "seed": "skirmish", "steps": steps_glyph_width, "checks": checks_glyph_width},
-    "seal-row":           {"r": "R3", "kind": "FIXED", "seed": "scriptorium", "steps": steps_seal_row, "checks": checks_seal_row},
+    "seal-row":           {"r": "R3,#82", "kind": "FIXED", "seed": "scriptorium", "steps": steps_seal_row, "checks": checks_seal_row},
+    "seal-panel":         {"r": "#82", "kind": "FIXED", "seed": "seal-panel", "steps": steps_seal_panel, "checks": checks_seal_panel},
     "archmagos":          {"r": "R13", "kind": "FIXED", "seed": "scriptorium", "steps": steps_archmagos, "checks": checks_archmagos},
     "agent-status":       {"r": "F11", "kind": "FIXED", "seed": "scriptorium", "steps": steps_agent_status, "checks": checks_agent_status},
     "first-tick-clock":   {"r": "R6", "kind": "FIXED", "seed": "timed", "settle": False, "steps": steps_first_tick_clock, "checks": checks_first_tick_clock},
