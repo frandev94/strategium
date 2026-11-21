@@ -100,6 +100,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
 	delete process.env.STRATEGIUM_ARCHMAGOS;
+	delete process.env.STRATEGIUM_COMMIT;
 	delete process.env.STRATEGIUM_TIERS;
 	delete process.env.STRATEGIUM_SOUND;
 	delete process.env.STRATEGIUM_VOLUME;
@@ -2125,9 +2126,9 @@ describe("the archmagos setting", () => {
 		await s.sub("config", "archmagos on");
 		expect(s.notes.at(-1)).toContain("archmagos: on (this session)");
 		expect(await s.call({ action: "status" })).toContain("ARCHMAGOS on (this session)\n");
-		const other = setup("sess-0002");
-		await other.sub("config");
-		expect(other.notes.at(-1)).toContain("archmagos: off (STRATEGIUM_ARCHMAGOS)");
+		const n: string[] = [];
+		await s.commands["strategium-config"].handler("", shared("sess-0002", s.dir, s.footer, n).ctx);
+		expect(n.at(-1)).toContain("archmagos: off (STRATEGIUM_ARCHMAGOS)");
 		// Off wins over the env too, and a bad value is refused with the full usage.
 		process.env.STRATEGIUM_ARCHMAGOS = "1";
 		await s.sub("config", "archmagos off");
@@ -2161,6 +2162,65 @@ describe("the archmagos setting", () => {
 		expect(runOf(s.dir).archmagos).toBe(true);
 		await s.call({ action: "begin", key: "K-1", archmagos: false });
 		expect(runOf(s.dir).archmagos).toBeUndefined();
+	});
+});
+
+describe("the commit setting", () => {
+	test("off by default; STRATEGIUM_COMMIT turns it on (1, true, on, yes) and status reports it", async () => {
+		const s = setup();
+		expect(await s.call({ action: "status" })).toContain("COMMIT off (STRATEGIUM_COMMIT)\n");
+		await s.call({ action: "begin", key: "K-1" });
+		expect(await s.call({ action: "status" })).toContain("COMMIT off (STRATEGIUM_COMMIT)\n");
+		for (const v of ["1", "true", "on", "YES", " 1 "]) {
+			process.env.STRATEGIUM_COMMIT = v;
+			expect(await s.call({ action: "status" })).toContain("COMMIT on (STRATEGIUM_COMMIT)\n");
+		}
+		process.env.STRATEGIUM_COMMIT = "0";
+		expect(await s.call({ action: "status" })).toContain("COMMIT off (STRATEGIUM_COMMIT)\n");
+		// Also with no run at all.
+		const bare = setup("sess-0002");
+		process.env.STRATEGIUM_COMMIT = "1";
+		expect(await bare.call({ action: "status" })).toContain("COMMIT on (STRATEGIUM_COMMIT)\n");
+	});
+
+	test("STRATEGIUM_COMMIT only turns on for a whole word, not a part of one", async () => {
+		const s = setup();
+		for (const v of ["xon", "maybe-yes", "10", "1x", "yesno"]) {
+			process.env.STRATEGIUM_COMMIT = v;
+			expect(await s.call({ action: "status" })).toContain("COMMIT off (STRATEGIUM_COMMIT)\n");
+		}
+	});
+
+	test("/strategium-config commit on wins over STRATEGIUM_COMMIT=0, for this session only", async () => {
+		process.env.STRATEGIUM_COMMIT = "0";
+		const s = setup();
+		await s.sub("config", "commit on");
+		expect(s.notes.at(-1)).toContain("commit: on (this session)");
+		expect(await s.call({ action: "status" })).toContain("COMMIT on (this session)\n");
+		const n: string[] = [];
+		await s.commands["strategium-config"].handler("", shared("sess-0002", s.dir, s.footer, n).ctx);
+		expect(n.at(-1)).toContain("commit: off (STRATEGIUM_COMMIT)");
+		// Off wins over the env too, and a bad value is refused with the full usage.
+		process.env.STRATEGIUM_COMMIT = "1";
+		await s.sub("config", "commit off");
+		expect(s.notes.at(-1)).toContain("commit: off (this session)");
+		await s.sub("config", "commit maybe");
+		expect(s.notes.at(-1)).toContain("or commit on|off");
+	});
+
+	test("the commit setting follows an approved plan to the new session", async () => {
+		const s = setup("sess-A");
+		await s.call({ action: "begin", key: "K-1" });
+		const notes: string[] = [];
+		const { sm, ctx } = shared("sess-A", s.dir, s.footer, notes);
+		await s.handlers.session_start[0]({}, ctx);
+		await s.commands["strategium-config"].handler("commit on", ctx);
+		await s.handlers.plan_review_requested[0]({ sessionId: "sess-A" }, ctx);
+		await s.handlers.plan_review_resolved[0]({ sessionId: "sess-A", choice: "execute" }, ctx);
+		sm.sid = "sess-B";
+		await s.handlers.session_switch[0]({ reason: "new" }, ctx);
+		await s.commands["strategium-config"].handler("", ctx);
+		expect(notes.at(-1)).toContain("commit: on (this session)");
 	});
 });
 
@@ -3116,7 +3176,7 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
@@ -4209,11 +4269,11 @@ describe("cost tiers", () => {
 			);
 		});
 
-		test("the line sits right after ARCHMAGOS", async () => {
+		test("the line sits right after COMMIT", async () => {
 			const s = setup();
 			await s.call({ action: "begin", key: "K-1" });
 			const lines = (await s.call({ action: "status" })).split("\n");
-			expect(lines[lines.findIndex(l => l.startsWith("ARCHMAGOS")) + 1]).toStartWith("TIERS ");
+			expect(lines[lines.findIndex(l => l.startsWith("COMMIT")) + 1]).toStartWith("TIERS ");
 		});
 	});
 
