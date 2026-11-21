@@ -1391,7 +1391,7 @@ describe("the run follows an approved plan", () => {
 		await emit(s, "session_switch", { reason: "new", previousSessionFile: "a.jsonl" }, ctx);
 		const moved = () => JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.json"), "utf8"));
 		// The move carries every field; omp cancelled the old session's agents, so none is running and S1 is stopped.
-		expect(moved()).toEqual({ ...before, sid: "sess-B", agents: {}, stopped: [...before.stopped, slice] });
+		expect(moved()).toEqual({ ...before, sid: "sess-B", agents: {}, stopped: [...before.stopped, slice], where: undefined });
 		s.setActive([...s.activeTools(), "edit"]);
 		await emit(s, "before_agent_start", { prompt: "plan approved" }, ctx);
 		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-B");
@@ -1406,6 +1406,73 @@ describe("the run follows an approved plan", () => {
 		expect(notes.at(-1)).toContain("notify: off (this session)");
 		expect(notes.at(-1)).toContain("sound: off (this session)");
 		expect(notes.at(-1)).toContain("toast: off (this session)");
+	});
+
+	// omp hands a todo result to every tool_result handler: the station one and the one that keeps run.phases.
+	const todoResult = (s: { handlers: Record<string, ((e: unknown, ctx: unknown) => unknown)[]> }, ctx: unknown, op: string, phases: unknown) =>
+		Promise.all(s.handlers.tool_result.map(h => h({ toolName: "todo", isError: false, details: { op, phases } }, ctx)));
+	const phase = (name: string, ...tasks: [string, string][]) => ({ name, tasks: tasks.map(([content, status]) => ({ content, status })) });
+	const approve = async (s: Awaited<ReturnType<typeof owner>>["s"], sm: { sid: string }, ctx: unknown) => {
+		await emit(s, "plan_review_requested", { sessionId: "sess-A" }, ctx);
+		await emit(s, "plan_review_resolved", { sessionId: "sess-A", choice: "execute" }, ctx);
+		sm.sid = "sess-B";
+		await emit(s, "session_switch", { reason: "new" }, ctx);
+	};
+	const movedRun = (dir: string) => JSON.parse(readFileSync(join(dir, "runs", "sess-B.json"), "utf8"));
+
+	test("the fresh session never shows a plan-mode station or Muster", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", [
+			phase("Muster", ["[captain] Objective", "completed"], ["[captain] Orders", "completed"]),
+			phase("Auspex", ["[scout] Map", "completed"]),
+			phase("Scriptorium", ["[librarian] Plan", "completed"], ["[seal] Plan", "in_progress"]),
+		]);
+		expect(s.shown()).toContain("seal Plan");
+		await approve(s, sm, ctx);
+		for (const word of ["seal Plan", "Scriptorium", "Muster"]) expect(s.shown()).not.toContain(word);
+		// The rebuild: omp starts the first task of the new todo by itself.
+		const stations = (rest: "pending" | "completed") => [
+			phase("Muster", ["[captain] Objective", rest], ["[captain] Orders", rest]),
+			phase("Auspex", ["[scout] Map", rest]),
+			phase("Scriptorium", ["[librarian] Plan", rest], ["[seal] Plan", rest]),
+			phase("Deployment", ["[captain] Branch and squads", "pending"]),
+		];
+		const init = stations("pending");
+		init[0].tasks[0].status = "in_progress";
+		await todoResult(s, ctx, "init", init);
+		expect(s.shown()).not.toContain("Muster");
+		const done = stations("completed");
+		done[3].tasks[0].status = "in_progress";
+		await todoResult(s, ctx, "done", done);
+		expect(s.shown()).toContain("Deployment › Branch and squads");
+	});
+
+	test("squads declared in plan mode survive approve and execute", async () => {
+		const { s, sm, ctx } = await owner();
+		const slices = [{ id: "S1", parallel: false, files: ["a.ts"] }];
+		expect(await s.call({ action: "slices", slices })).toContain("SQUADS S1");
+		await approve(s, sm, ctx);
+		expect(movedRun(s.dir).slices).toEqual(slices);
+		expect(await s.handlers.before_subagent_spawn[0]({ agent: "battle-brother" }, ctx)).toBeUndefined();
+	});
+
+	test("booking and the archmagos mark recorded in plan mode survive the switch", async () => {
+		process.env.STRATEGIUM_ARCHMAGOS = "1";
+		const { s, sm, ctx, notes } = await owner();
+		await s.call({ action: "begin", key: "K-1", booked: 60, archmagos: true });
+		await approve(s, sm, ctx);
+		expect(movedRun(s.dir).archmagos).toBe(true);
+		await s.commands["strategium-status"].handler("", ctx);
+		expect(notes.at(-1)).toContain("K-1 0/60 min");
+		expect(notes.at(-1)).toMatch(/^RUN K-1 .* \(this session\)$/m);
+	});
+
+	test("the first init of a run still shows its first station", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		s.start();
+		await todoResult(s, s.ctx, "init", [phase("Muster", ["[captain] Objective", "in_progress"], ["[captain] Orders", "pending"])]);
+		expect(s.shown()).toContain("Muster › Objective");
 	});
 
 	test.each(["resume", "fork"])("a %s with a review open moves nothing", async reason => {
