@@ -1508,6 +1508,23 @@ describe("the run follows an approved plan", () => {
 		expect(chronicle()).not.toContain("station Muster");
 	});
 
+	test("a rebuild init still logs the seal grant once, and never a seal-waiting entry", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", [phase("Plan", ["[seal] Plan", "in_progress"])]);
+		await approve(s, sm, ctx);
+		const chronicle = () =>
+			(JSON.parse(readFileSync(join(s.dir, "runs", "sess-B.cockpit"), "utf8")).chronicle as { text: string }[]).map(e => e.text);
+		const count = (text: string) => chronicle().filter(t => t.includes(text)).length;
+		const waiting = count("seal Plan awaits");
+		const init = [phase("Plan", ["[seal] Plan", "completed"]), phase("Muster", ["[captain] Objective", "in_progress"]), phase("Deployment", ["[captain] Branch and squads", "pending"])];
+		await todoResult(s, ctx, "init", init);
+		expect(count("Plan granted")).toBe(1);
+		expect(count("seal Plan awaits")).toBe(waiting);
+		const done = [phase("Plan", ["[seal] Plan", "completed"]), phase("Muster", ["[captain] Objective", "completed"]), phase("Deployment", ["[captain] Branch and squads", "in_progress"])];
+		await todoResult(s, ctx, "done", done);
+		expect(count("Plan granted")).toBe(1);
+	});
+
 	test("squads declared in plan mode survive approve and execute", async () => {
 		const { s, sm, ctx } = await owner();
 		const slices = [{ id: "S1", parallel: false, files: ["a.ts"] }];
