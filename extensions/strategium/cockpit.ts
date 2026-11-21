@@ -6,9 +6,9 @@ export type Phase = { name: string; tasks: { content: string; status: string }[]
 export type Seal = { id: string; state: "granted" | "waiting" | "pending" };
 export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" | "warn" };
 export type Note = { veteran?: true; failed?: true };
-export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; stalled?: number }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. stalled: the live entry's `at` (the idle start) the reader marked stalled
-/** What a child writes about itself, already validated by the reader (contract v1): ms timestamps, its todo counts and its last tool call. */
-export type Live = { since: number; at: number; tool?: string; intent?: string; done?: number; total?: number; current?: string };
+export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; stalled?: number; blocked?: true }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. stalled: the live entry's `at` (the idle start) the reader marked stalled. blocked: its row said so and the alarm rang for it; cleared when the row stops saying it
+/** What a child writes about itself, already validated by the reader (contract v2): ms timestamps, its todo counts, its last tool call and what it signalled (pct, eta_min, line, blocked). */
+export type Live = { since: number; at: number; tool?: string; intent?: string; done?: number; total?: number; current?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean };
 export type Depth = "truecolor" | "256";
 type Ansi = `\x1b[${string}`; // an escape sequence, not a hex: keeps a Theme out of renderCockpit
 export type Palette = Record<Tone, Ansi> & { bg?: Ansi }; // a foreground sequence per tone, bg a background one
@@ -35,25 +35,28 @@ type Kind = "active" | "done" | "failed" | "idle";
 type Line = { kind: Kind; mark: string; text: string; detail?: string; stalled?: true }; // detail: its own row under the line
 
 /** Agent text as one printable line: ANSI sequences stripped, then control and bidi characters and whitespace runs as single spaces. */
-const oneLine = (s: unknown) => (typeof s === "string" ? clean(Bun.stripANSI(s)).replace(/\s+/g, " ").trim() : "");
+export const oneLine = (s: unknown) => (typeof s === "string" ? clean(Bun.stripANSI(s)).replace(/\s+/g, " ").trim() : "");
 const span = (min: number) => (min < 1 ? "<1m" : min < 60 ? `${min}m` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}m`);
 const minutes = (ms: number) => Math.floor(Math.max(0, ms) / 60_000);
 
-/** The row under an active agent's line: elapsed, then its todo (`done/total · ~eta · current`) or its last intent (else tool); `stalled Nm · ` first when the reader marked the live entry's `at` (the idle start) stalled. */
+/** The row under an active agent's line: `[blocked · ][stalled Nm · ]elapsed[ · progress][ · eta][ · text]`. Progress is the agent's `pct%` else `done/total`; eta its `~eta_min` else the one computed from the todo; text its `line`, else the todo's current task, else the intent (else tool). `stalled` is the live entry's `at` (the idle start) the reader marked stalled. A blocked row draws gold like a stalled one. */
 function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): Pick<Line, "detail" | "stalled"> {
 	const from = d.at ?? live?.since;
 	if (d.state !== "active" || from === undefined || now === undefined) return {};
 	const ms = Math.max(0, now - from);
 	const parts = [span(minutes(ms))];
-	const { done = 0, total = 0 } = live ?? {};
-	if (Number.isInteger(done) && Number.isInteger(total) && total > 0 && done >= 0 && done <= total) {
-		parts.push(`${done}/${total}`);
-		if (done > 0 && done < total) parts.push(`~${span(Math.max(1, Math.ceil((ms * (total - done)) / done / 60_000)))}`);
-		parts.push(oneLine(live?.current));
-	} else parts.push(oneLine(live?.intent) || oneLine(live?.tool));
+	const { done = 0, total = 0, pct, eta_min } = live ?? {};
+	const todo = Number.isInteger(done) && Number.isInteger(total) && total > 0 && done >= 0 && done <= total;
+	const has = (n: number | undefined, max: number): n is number => Number.isInteger(n) && n! >= 0 && n! <= max;
+	if (has(pct, 100)) parts.push(`${pct}%`);
+	else if (todo) parts.push(`${done}/${total}`);
+	if (has(eta_min, 10080)) parts.push(`~${span(eta_min)}`);
+	else if (todo && done > 0 && done < total) parts.push(`~${span(Math.max(1, Math.ceil((ms * (total - done)) / done / 60_000)))}`);
+	parts.push(oneLine(live?.line) || (todo ? oneLine(live?.current) : oneLine(live?.intent) || oneLine(live?.tool)));
 	const start = live?.at ?? 0; // the same idle start index.ts marks
 	const stalled = start > 0 && d.stalled === start;
-	return { detail: `${stalled ? `stalled ${minutes(now - start)}m · ` : ""}${parts.filter(Boolean).join(" · ")}`, ...(stalled ? { stalled: true as const } : {}) };
+	const blocked = live?.blocked === true;
+	return { detail: `${blocked ? "blocked · " : ""}${stalled ? `stalled ${minutes(now - start)}m · ` : ""}${parts.filter(Boolean).join(" · ")}`, ...(stalled || blocked ? { stalled: true as const } : {}) };
 }
 
 const BG_RESET = "\x1b[49m";
