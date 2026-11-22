@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test, vi } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { keyOf, parseTiers, whereFrom } from "./index";
@@ -5489,21 +5489,66 @@ describe("cockpit", () => {
 					expect(await detailOf(s, ui, "scout S · returned")).toContain("cost: unknown");
 				});
 
-				// final.clear() in resetCockpit is not observable: an id only enters `final` once it is deployed and not active, deployed is cleared with it, and an agent that ends in the new run was active first (the draw drops its entry then). So this checks the reachable half: an id spawned again under the new key.
-				test("a new run key does not hand the old run's row to an agent spawned again under the same id", async () => {
+				// The same extension instance serves two sessions (omp mutates one SessionManager): the rows read for session A must not be the rows of session B.
+				test("a session switch drops the rows read for the previous session: its saved state brings the agent back with no row", async () => {
 					const { s, ui } = await squad();
 					evalSpawn(s);
 					writeRow(s, "E", { since: T0, at: T0, cost: 0.42 });
 					at(MIN);
 					evalEnd(s);
-					await s.call({ action: "end" });
-					rmSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true, force: true });
-					await s.call({ action: "begin", key: "K-2" });
-					await s.start();
-					s.todo([{ name: "Skirmish", tasks: [{ content: "[scout] Look", status: "in_progress" }] }]);
-					at(2 * MIN);
-					evalSpawn(s);
-					expect(await detailOf(s, ui, "scout E · running")).toContain("cost: unknown");
+					expect(await detailOf(s, ui, "scout E · returned")).toContain("cost: $0.42"); // read, and kept in `final`
+					await s.handlers.session_shutdown[0]({}, s.ctx);
+					const runs = join(s.dir, "runs");
+					writeFileSync(join(runs, "sess-0002.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(runs, "sess-0001.json"), "utf8")), sid: "sess-0002" }));
+					copyFileSync(join(runs, "sess-0001.cockpit"), join(runs, "sess-0002.cockpit"));
+					rmSync(join(runs, "sess-0001.live"), { recursive: true, force: true });
+					s.ctx.sessionManager = { getSessionId: () => "sess-0002" };
+					await s.handlers.session_switch[0]({}, s.ctx);
+					expect(await detailOf(s, ui, "scout E · returned")).toContain("cost: unknown");
+				});
+
+				const into = (c: { render(w: number): string[]; handleInput?(d: string): void }, title: string) => {
+					for (let i = 0; i < 20 && !show(c).includes(title); i++) {
+						c.handleInput!("\x1b[B");
+						c.handleInput!("\r");
+						if (!show(c).includes(title)) c.handleInput!("\x7f");
+					}
+					expect(show(c)).toContain(title);
+				};
+
+				test("a miss is also read again while the detail of the agent's squad is open", async () => {
+					const { s } = await squad();
+					at(MIN);
+					s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A")] }, details: { progress: [{ index: 0, id: "A", status: "completed" }] }, isError: false }, s.ctx));
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					await r.sub("cockpit");
+					const c = rui.opened.at(-1)!.component;
+					into(c, "agents (1):");
+					expect(show(c)).toContain("cost: unknown");
+					writeRow(r, "A", { since: T0, at: T0, cost: 9 });
+					evalSpawn(r); // a redraw while the squad's detail is open
+					expect(show(c)).toContain("cost: $9");
+					c.handleInput!("q");
+				});
+
+				test("a miss is not read again while no detail is open: the row that shows up later waits for the next draw after the detail opens", async () => {
+					const { s } = await squad();
+					at(MIN);
+					s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A")] }, details: { progress: [{ index: 0, id: "A", status: "completed" }] }, isError: false }, s.ctx));
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					await r.sub("cockpit");
+					const c = rui.opened.at(-1)!.component;
+					writeRow(r, "A", { since: T0, at: T0, cost: 9 });
+					evalSpawn(r); // a redraw with the detail closed: the miss stays
+					into(c, "agents (1):"); // opening a detail recomputes from the last input, reading no file
+					expect(show(c)).toContain("cost: unknown");
+					evalSpawn(r); // the first draw with the detail open reads it again
+					expect(show(c)).toContain("cost: $9");
+					c.handleInput!("q");
 				});
 			});
 

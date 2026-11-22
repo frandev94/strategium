@@ -1782,7 +1782,10 @@ describe("detail navigation", () => {
 		const open = press(base(), "down", "down", "down", "enter");
 		const scrolled = cockpitView({ ...base(), nav: navigate(open, "down") });
 		expect(scrolled.nav.tops?.detail).toBe(1);
-		const back = cockpitView({ ...base(), nav: navigate(scrolled, "back") });
+		const raw = navigate(scrolled, "back"); // cockpitView would filter a stale top away, so check navigate's own result
+		expect(raw.detail).toBeUndefined();
+		expect(raw.tops?.detail).toBeUndefined();
+		const back = cockpitView({ ...base(), nav: raw });
 		expect(back.nav.detail).toBeUndefined();
 		expect(back.nav.tops).toBeUndefined();
 		expect(back.nav.cursor).toEqual(before.nav.cursor);
@@ -2023,14 +2026,15 @@ describe("detail rendering", () => {
 					}
 				}
 	});
-	test("words of inner-1 and inner cells drop nothing and cut nothing, wide and narrow", () => {
+	test("words of width-1 and width cells drop nothing and cut nothing, wide and narrow", () => {
 		for (const width of [100, 50]) {
 			const inner = width - 2;
-			const chronicle = [{ at: "10:00", who: "CAPTAIN", text: `${"Q".repeat(inner - 1)} ${"Z".repeat(inner)} END-OF-ENTRY` }];
+			// Words of width-1 and width cells: wrapping at the full width would leave rows the frame then cuts with `…`.
+			const chronicle = [{ at: "10:00", who: "CAPTAIN", text: `${"Q".repeat(width - 1)} ${"Z".repeat(width)} END-OF-ENTRY` }];
 			const t = draw(open(cockpitView(DETAIL({ chronicle })).chronicle[0].id, { chronicle }), width).join("\n");
 			expect(t).not.toContain("…");
-			expect(t.match(/Q/g)).toHaveLength(inner - 1);
-			expect(t.match(/Z/g)).toHaveLength(inner);
+			expect(t.match(/Q/g)).toHaveLength(width - 1);
+			expect(t.match(/Z/g)).toHaveLength(width);
 			expect(t).toContain("END-OF-ENTRY");
 		}
 	});
@@ -2040,6 +2044,17 @@ describe("detail rendering", () => {
 		for (const width of [100, 50]) {
 			const title = draw(open(`agent:${id}`, { deployed }), width, 9).find(l => l.includes("APOTHECARY"))!;
 			expect(title).toMatch(/…\s?· \d+–\d+\/\d+ *(─+╢)?$/);
+		}
+	});
+	test("the scroll position stays gold after a cut title, wide and narrow", () => {
+		const id = `A${"x".repeat(150)}`;
+		const deployed = new Map<string, Deployed>([[id, dep({ role: "apothecary", station: "Skirmish", at: 120_000 })]]);
+		for (const width of [100, 50]) {
+			const row = renderCockpit(open(`agent:${id}`, { deployed }), width, 0, TRUE, 9).find(l => plain(l).includes("APOTHECARY"))!;
+			const sgr = (s: string) => s.match(/\x1b\[[0-9;]*m/g)!;
+			const at = row.search(/· \d+–\d+\/\d+/);
+			expect(at).toBeGreaterThan(0);
+			expect(sgr(row.slice(0, at)).at(-1)).toBe(sgr(row.slice(0, row.indexOf("APOTHECARY")))!.at(-1)); // the gold that opened the title
 		}
 	});
 	test("with no height every row is drawn, uncut, without a range suffix", () => {

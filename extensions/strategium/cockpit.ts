@@ -686,7 +686,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 		if (view.detail) {
 			const rows = view.detail.lines.flatMap(l => wrap(l, width - 2));
 			const sc = detailWindow(rows.length, head.length + 1, height, win);
-			return withHeight([...head, paint(pal.gold, fit(view.detail.title, width - Bun.stringWidth(sc.suffix)) + sc.suffix)], rows.slice(sc.from, sc.to).map(r => `  ${paint(pal.parchment, r)}`), "", paint(pal.iron, "esc back · q close"), height).map(l => fit(l, width));
+			return withHeight([...head, paint(pal.gold, fit(view.detail.title, width - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix))], rows.slice(sc.from, sc.to).map(r => `  ${paint(pal.parchment, r)}`), "", paint(pal.iron, "esc back · q close"), height).map(l => fit(l, width));
 		}
 		const body = [
 			...head,
@@ -715,7 +715,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	if (view.detail) {
 		const rows = view.detail.lines.flatMap(l => wrap(l, inner - 2));
 		const sc = detailWindow(rows.length, head.length + 2, height, win);
-		const dt = paint(pal.gold, fit(view.detail.title, inner - 4 - Bun.stringWidth(sc.suffix)) + sc.suffix); // the title is cut, not the scroll position; keeps at least one cell of rule
+		const dt = paint(pal.gold, fit(view.detail.title, inner - 4 - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix)); // the title is cut, not the scroll position; keeps at least one cell of rule
 		const back = "esc/bksp back · q close · ↑↓ scroll";
 		return withHeight([g(fit(top, width)), ...head, `${g("╟─ ")}${dt}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(dt))}╢`)}`], rows.slice(sc.from, sc.to).map(r => row(` ${paint(pal.parchment, r)}`)), row(""), g(`╚═ ${back} ${"═".repeat(inner - 3 - Bun.stringWidth(back))}╝`), height);
 	}

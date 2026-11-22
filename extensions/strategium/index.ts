@@ -1059,7 +1059,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		dirty: false,
 		seal: undefined as { id: string; lines: string[] } | undefined, // what the Captain prepared for the seal that waits (the `seal` action)
 		deployed: new Map<string, Deployed>(),
-		final: new Map<string, Live | undefined>(), // a finished agent's live row, read once (undefined: read, none found); memory only
+		final: new Map<string, Live | undefined>(), // a finished agent's live row: read once, a miss re-read while its agent's or squad's detail is open (undefined: none found); memory only
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
 		input: undefined as ViewInput | undefined, // the last view input, so a cursor key recomputes the view without reading files
@@ -1147,7 +1147,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		for (const [id, job] of cockpit.deployed) {
 			if (job.state !== "active") {
 				// shortcut: a valid row is read once, so what the agent wrote after it is lost; a miss (no file yet, a rename in flight, half a file) is read again only while its detail is open; upgrade if the detail of a returned agent must keep following its file.
-				if (!cockpit.final.get(id) && (!cockpit.final.has(id) || cockpit.nav.detail?.id === `agent:${id}`)) cockpit.final.set(id, ownRow(run.sid, id, job));
+				if (!cockpit.final.get(id) && (!cockpit.final.has(id) || cockpit.nav.detail?.id === `agent:${id}` || (!!job.squad && cockpit.nav.detail?.id === `squad:${job.squad}`))) cockpit.final.set(id, ownRow(run.sid, id, job));
 				const r = cockpit.final.get(id);
 				if (r) rows.set(id, r);
 				continue;
