@@ -52,7 +52,7 @@ const STATE_WORD = { active: "running", done: "returned", failed: "failed" };
 /** The facts of one agent as plain lines, for its detail: role, id, state, station, squad, elapsed (to `ended`, else `now`), the live row's progress, eta (active only), text fields, blocked and stalled (active only), cost and tokens. Live text is untrusted: every field goes through oneLine. */
 function agentFacts(id: string, d: Deployed, live: Live | undefined, now: number | undefined): string[] {
 	const from = d.at ?? live?.since;
-	const end = d.ended ?? now;
+	const end = d.state === "active" ? now : d.ended; // a finished agent with no `ended` has no known end
 	const out = [`${oneLine(d.role)} ${oneLine(id)} · ${STATE_WORD[d.state]}`, `station: ${oneLine(d.station) || "—"}`];
 	if (d.squad) out.push(`squad: ${oneLine(d.squad)}`);
 	out.push(from !== undefined && end !== undefined ? `ran ${span(minutes(end - from))}` : "elapsed unknown");
@@ -390,7 +390,7 @@ export function cockpitView(input: ViewInput) {
 					`parallel: ${slice ? (slice.parallel ? "yes" : "no") : "unknown"}`,
 					...(tier ? [`tier: ${tier}`] : []),
 					...(input.notes[rest]?.veteran ? ["escalated to veteran"] : []),
-					...(mine.length ? [`agents (${mine.length}):`, ...mine.flatMap(([aid, d], i) => [...(i ? [""] : []), ...facts(aid, d)])] : ["no agent deployed yet"]),
+					...(mine.length ? [`agents (${mine.length}):`, ...mine.flatMap(([aid, d], i) => [...(i ? [""] : []), ...facts(aid, d).map(l => `  ${l}`)])] : ["no agent deployed yet"]),
 				],
 			};
 		}
@@ -471,10 +471,9 @@ function fit(line: string, width: number): string {
 	return `${out}…${RESET}`;
 }
 
-/** `text` as rows of at most `width` cells: greedy on spaces, a word wider than the room hard-split by grapheme, so no text is dropped; the leading spaces of `text` indent its first row. Whitespace runs collapse to one space. An empty text is one blank row. */
+/** `text` as rows of at most `width` cells: greedy on spaces, a word wider than the room hard-split by grapheme, so no text is dropped; the leading spaces of `text` indent its first row. A run of whitespace inside a row stays as spaces (aligned columns); one at a break is dropped. An empty text is one blank row. */
 export function wrap(text: string, width: number): string[] {
-	const words = text.split(/\s+/).filter(Boolean);
-	if (!words.length) return [""];
+	if (!text.trim()) return [""];
 	const rows: string[] = [];
 	let cur = (/^ */.exec(text)![0]).slice(0, Math.max(0, width - 2));
 	let curW = cur.length;
@@ -490,16 +489,17 @@ export function wrap(text: string, width: number): string[] {
 		curW = 0;
 		used = false;
 	};
-	for (const word of words) {
+	for (const [, run, word] of text.matchAll(/(\s*)(\S+)/g)) {
 		const ww = Bun.stringWidth(word);
-		if (used && curW + 1 + ww <= width) add(word, ww, " ");
+		const gap = " ".repeat(run.length);
+		if (used && curW + gap.length + ww <= width) add(word, ww, gap);
 		else {
 			if (used) flush();
 			if (curW + ww <= width) add(word, ww, "");
 			else
 				for (const { segment } of GRAPHEMES.segment(word)) {
 					const sw = Bun.stringWidth(segment);
-					if (curW + sw > width && (used || curW > 0)) flush();
+					if (curW + sw > width && used) flush();
 					add(segment, sw, "");
 				}
 		}

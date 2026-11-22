@@ -1059,7 +1059,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		dirty: false,
 		seal: undefined as { id: string; lines: string[] } | undefined, // what the Captain prepared for the seal that waits (the `seal` action)
 		deployed: new Map<string, Deployed>(),
-		final: new Map<string, Live>(), // a finished agent's live row, read once when it ended; memory only
+		final: new Map<string, Live | undefined>(), // a finished agent's live row, read once (undefined: read, none found); memory only
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
 		input: undefined as ViewInput | undefined, // the last view input, so a cursor key recomputes the view without reading files
@@ -1113,15 +1113,19 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.chronicle = pushEntry(cockpit.chronicle, { at: new Date().toTimeString().slice(0, 5), who, text, ...(tone ? { tone } : {}) });
 		cockpit.dirty = true;
 	};
+	/** The live row of an agent, unless the file is older than this deploy (a previous agent's with the same id). */
+	const ownRow = (sid: string, id: string, job: Deployed) => {
+		const row = readLive(sid, id);
+		return row && row.since >= (job.at ?? 0) ? row : undefined;
+	};
 	/** A deployed agent ended: log it once, keep it in the registry as done or failed, and note its squad as failed or not. */
 	const endJob = (key: string, sid: string, id: string, ok: boolean) => {
 		const job = cockpit.deployed.get(id);
 		if (job?.state !== "active") return;
 		job.state = ok ? "done" : "failed";
 		job.ended = Date.now();
-		// shortcut: the row is read once, so what the agent wrote after this read is lost and a parent restart forgets it; upgrade if the detail of a returned agent must survive a restart.
-		const row = readLive(sid, id);
-		if (row && row.since >= (job.at ?? 0)) cockpit.final.set(id, row);
+		// shortcut: the row is read once (here or at the first draw after a restart), so what the agent wrote after this read is lost; upgrade if the detail of a returned agent must keep following its file.
+		cockpit.final.set(id, ownRow(sid, id, job));
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
 		log(key, job.who, ok ? "✓ returned" : "✗ failed", ok ? "ok" : "fail");
 	};
@@ -1143,10 +1147,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const now = Date.now();
 		const rows = new Map<string, Live>();
 		for (const [id, job] of cockpit.deployed) {
-			if (job.state !== "active") continue;
-			const raw = readLive(run.sid, id);
+			if (job.state !== "active") {
+				if (!cockpit.final.has(id)) cockpit.final.set(id, ownRow(run.sid, id, job));
+				continue;
+			}
+			cockpit.final.delete(id); // an id spawned again drops the row of the agent that ended under it
 			// A file older than this deploy is a previous agent's with the same id.
-			const row = raw && raw.since >= (job.at ?? 0) ? raw : undefined;
+			const row = ownRow(run.sid, id, job);
 			if (row) rows.set(id, row);
 			// A row that stopped saying it is blocked re-arms the alarm for the next block.
 			if (row && !row.blocked && job.blocked) {
@@ -1171,7 +1178,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
 		}
 		cockpit.input = {
-			live: new Map([...cockpit.final, ...rows]),
+			live: new Map([...[...cockpit.final].filter((e): e is [string, Live] => !!e[1]), ...rows]),
 			now,
 			key: run.key,
 			untimed: cockpit.clock?.bk ? undefined : run.untimed,

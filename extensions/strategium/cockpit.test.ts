@@ -1852,7 +1852,7 @@ describe("view.detail per kind", () => {
 	});
 	test("agent: role, id, station, elapsed, state, every live field, cost and tokens", () => {
 		const lines = open("squad:alpha").detail!.lines;
-		const brother = lines.slice(lines.indexOf("agents (3):") + 1, lines.indexOf(""));
+		const brother = lines.slice(lines.indexOf("agents (3):") + 1, lines.indexOf("")).map(l => l.replace(/^  /, "")); // each agent indented under agents (n):
 		expect(brother).toEqual([
 			"battle-brother AlphaBrother · running",
 			"station: Skirmish",
@@ -2042,5 +2042,85 @@ describe("top-level footer", () => {
 			expect(f.includes("enter open")).toBe(w >= 100);
 		}
 		expect(draw(cockpitView(NAVRUN()), 50).at(-1)).toBe("esc/q close");
+	});
+});
+
+describe("review fixes", () => {
+	const agent = (state: Deployed["state"], over: Partial<Deployed> = {}) =>
+		cockpitView({ ...DETAIL({ deployed: new Map([["Z", dep({ role: "scout", station: "Skirmish", state, at: 60_000, ...over })]]), live: new Map([["Z", { since: 60_000, at: 500_000, done: 1, total: 4, eta_min: 7, blocked: true }]]), now: 600_000 }), nav: { cursor: { id: "agent:Z", at: 0 }, detail: { id: "agent:Z" } } }).detail!.lines;
+	test("a returned or failed agent shows no eta, no blocked and no stalled line, even if its row had them", () => {
+		for (const state of ["done", "failed"] as const) {
+			const t = agent(state, { ended: 120_000, stalled: 500_000 }).join("\n");
+			expect(t).toContain("progress: 1/4");
+			expect(t).not.toMatch(/eta|stalled|blocked/);
+		}
+		expect(agent("active", { stalled: 500_000 }).join("\n")).toMatch(/eta: ~7m[\s\S]*blocked[\s\S]*stalled 1m/);
+	});
+	test("a finished agent with no `ended` says elapsed unknown, never an ever-growing ran", () => {
+		for (const state of ["done", "failed"] as const) {
+			const t = agent(state);
+			expect(t).toContain("elapsed unknown");
+			expect(t.join("\n")).not.toContain("ran ");
+		}
+		expect(agent("active")).toContain("ran 9m");
+	});
+	test("squad detail indents each agent's facts by two spaces under agents (n):", () => {
+		const lines = open("squad:alpha").detail!.lines;
+		const at = lines.indexOf("agents (3):");
+		const body = lines.slice(at + 1);
+		expect(body[0]).toBe("  battle-brother AlphaBrother · running");
+		for (const l of body) expect(l === "" || l.startsWith("  ")).toBe(true);
+		expect(body.filter(l => l === "")).toHaveLength(2);
+	});
+	describe("nav through a detail", () => {
+		const R = () => input({ phases: run(4) });
+		const detailed = (): View => {
+			let nav: Nav = {};
+			for (const k of ["left", "down", "enter"] as const) nav = navigate(cockpitView({ ...R(), nav }), k);
+			return cockpitView({ ...R(), nav });
+		};
+		test("opening a detail from a browsed station keeps the shown station through enter, scroll and back", () => {
+			let v = detailed();
+			expect(v.nav.shown).toEqual({ phase: 3, from: 4 });
+			expect(v.nav.detail).toBeDefined();
+			for (const k of ["down", "down", "up"] as const) {
+				v = cockpitView({ ...R(), nav: navigate(v, k) });
+				expect(v.nav.shown).toEqual({ phase: 3, from: 4 });
+			}
+			v = cockpitView({ ...R(), nav: navigate(v, "back") });
+			expect(v.nav.detail).toBeUndefined();
+			expect(v.nav.shown).toEqual({ phase: 3, from: 4 });
+		});
+		test("enter inside a detail leaves nav unchanged, scrolled detail and viewed station included", () => {
+			const v = cockpitView({ ...R(), nav: { ...detailed().nav, tops: { detail: 3 } } });
+			expect(v.nav.tops).toEqual({ detail: 3 });
+			expect(navigate(v, "enter")).toEqual(v.nav);
+		});
+	});
+	test("a detail of exactly the rows that fit has no a–b/n suffix, one more has it", () => {
+		const fit = (n: number) => {
+			const v = open("seal:Demo:0", { seal: { id: "Demo", lines: Array.from({ length: n }, (_, i) => `line ${i + 1}`) } });
+			return draw(v, 100, 20).find(l => /╟─.*SEAL/.test(l))!;
+		};
+		// find the room: the largest n with no suffix
+		let n = 1;
+		while (!/\d+–\d+\/\d+/.test(fit(n + 1))) n++;
+		expect(fit(n)).not.toMatch(/\d+–\d+\/\d+/);
+		expect(fit(n + 1)).toMatch(new RegExp(`· 1–${n}/${n + 1}`));
+		expect(n).toBeGreaterThan(3);
+	});
+	describe("wrap", () => {
+		test("interior runs of spaces survive when the line fits", () => {
+			expect(wrap("name    cost   tier", 30)).toEqual(["name    cost   tier"]);
+			expect(wrap("  a  b", 30)).toEqual(["  a  b"]);
+		});
+		test("a run at a break collapses and no row starts or ends with the dropped run", () => {
+			expect(wrap("aaa      bbb", 5)).toEqual(["aaa", "bbb"]);
+			expect(wrap("aa  bb    cc", 7)).toEqual(["aa  bb", "cc"]);
+		});
+		test("a word wider than the row hard-splits after an indent, and a wide grapheme in a one-cell row still moves on", () => {
+			expect(wrap("  abcdefghij", 6)).toEqual(["  abcd", "efghij"]);
+			expect(wrap("漢字", 1)).toEqual(["漢", "字"]);
+		});
 	});
 });

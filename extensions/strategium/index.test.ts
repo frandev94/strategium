@@ -5382,13 +5382,13 @@ describe("cockpit", () => {
 					at(10 * MIN);
 					await r.sub("cockpit");
 					const c = rui.opened.at(-1)!.component;
-					expect(openDetail(c, "ran ")).toBe(true);
+					expect(openDetail(c, "returned")).toBe(true);
 					const t = show(c);
 					c.handleInput!("q");
 					return t;
 				};
 				expect(await ran(T0 + MIN)).toContain("ran 1m");
-				expect(await ran("soon")).toContain("ran 10m");
+				expect(await ran("soon")).toContain("elapsed unknown");
 			});
 
 			test("a finished agent's last live row is read once, so its detail keeps the cost after the file is gone", async () => {
@@ -5404,6 +5404,124 @@ describe("cockpit", () => {
 				expect(openDetail(c, "cost: $0.42")).toBe(true);
 				expect(show(c)).toContain("ran 1m");
 				c.handleInput!("q");
+			});
+
+			describe("a finished agent's row", () => {
+				const evalSpawn = (s: S) => s.handlers.before_subagent_spawn.forEach(h => h({ invocationKind: "eval", agent: "scout", spawnKey: "E" }, s.ctx));
+				const evalEnd = (s: S) => s.handlers.context.forEach(h => h({ type: "context", messages: [{ role: "toolResult", toolName: "eval", isError: false, content: [], details: { cells: [{ statusEvents: [{ op: "agent", id: "E", status: "completed" }] }] } }] }, s.ctx));
+				const writeRow = (s: S, id: string, row: object) => {
+					mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+					writeFileSync(liveFile(s, id), JSON.stringify({ busy: 0, ...row }));
+				};
+				const detailOf = async (s: S, ui: ReturnType<typeof uiCtx>, word: string) => {
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					let found = false;
+					for (let i = 0; i < 20 && !found; i++) {
+						c.handleInput!("\x1b[B");
+						c.handleInput!("\r");
+						found = show(c).includes(word);
+						if (!found) c.handleInput!("\x7f");
+					}
+					const t = show(c);
+					c.handleInput!("q");
+					return found ? t : undefined;
+				};
+
+				test("an id spawned again does not inherit the row of the agent that ended under it; its own live row wins", async () => {
+					const { s, ui } = await squad();
+					evalSpawn(s);
+					writeRow(s, "E", { since: T0, at: T0, cost: 0.42, line: "old line" });
+					at(MIN);
+					evalEnd(s);
+					at(2 * MIN);
+					evalSpawn(s);
+					const fresh = await detailOf(s, ui, "scout E · running");
+					expect(fresh).toContain("cost: unknown");
+					expect(fresh).not.toContain("old line");
+					writeRow(s, "E", { since: T0 + 2 * MIN, at: T0 + 2 * MIN, cost: 0.99 });
+					expect(await detailOf(s, ui, "scout E · running")).toContain("cost: $0.99");
+				});
+
+				test("after a restart a returned agent's row is read once, at the first draw, if it is not older than its deploy", async () => {
+					const { s } = await squad();
+					scout(s, "running");
+					writeRow(s, "S", { since: T0, at: T0, cost: 0.42 });
+					at(MIN);
+					done(s);
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					expect(await detailOf(r, rui, "scout S · returned")).toContain("cost: $0.42");
+					writeRow(r, "S", { since: T0, at: T0, cost: 9 });
+					expect(await detailOf(r, rui, "scout S · returned")).toContain("cost: $0.42");
+				});
+
+				test("a miss at the first draw is kept: a file that shows up later is not read", async () => {
+					const { s } = await squad();
+					scout(s, "running");
+					at(MIN);
+					done(s);
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					expect(await detailOf(r, rui, "scout S · returned")).toContain("cost: unknown");
+					writeRow(r, "S", { since: T0, at: T0, cost: 9 });
+					expect(await detailOf(r, rui, "scout S · returned")).toContain("cost: unknown");
+				});
+
+				test("a row older than the deploy never enters the detail of the returned agent", async () => {
+					const { s, ui } = await squad();
+					at(MIN);
+					scout(s, "running");
+					writeRow(s, "S", { since: T0 - 5 * MIN, at: T0 - 4 * MIN, cost: 7 });
+					at(2 * MIN);
+					done(s);
+					expect(await detailOf(s, ui, "scout S · returned")).toContain("cost: unknown");
+				});
+
+				test("a new run key forgets the rows of the old run's agents", async () => {
+					const { s, ui } = await squad();
+					evalSpawn(s);
+					writeRow(s, "E", { since: T0, at: T0, cost: 0.42 });
+					at(MIN);
+					evalEnd(s);
+					await s.call({ action: "end" });
+					rmSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true, force: true });
+					await s.call({ action: "begin", key: "K-2" });
+					await s.start();
+					s.todo([{ name: "Skirmish", tasks: [{ content: "[scout] Look", status: "in_progress" }] }]);
+					at(2 * MIN);
+					evalSpawn(s);
+					expect(await detailOf(s, ui, "scout E · running")).toContain("cost: unknown");
+				});
+			});
+
+			describe("keys through handleInput", () => {
+				const DOWN = "\x1b[B";
+				test("down + enter opens the detail with its title, backspace and CSI-u backspace return with the line selected, a redraw keeps the detail, and the file saves no detail", async () => {
+					const { s, ui } = await squad();
+					scout(s, "running");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					c.handleInput!(DOWN);
+					const list = show(c);
+					const sel = list.split("\n").find(l => l.includes("▸"))!;
+					c.handleInput!("\r");
+					const opened = show(c);
+					expect(opened).toContain("back · q close");
+					for (const back of ["\b", "\x1b[127u"]) {
+						c.handleInput!(back);
+						expect(show(c).split("\n").find(l => l.includes("▸"))).toBe(sel);
+						c.handleInput!("\r");
+						expect(show(c)).toBe(opened);
+					}
+					at(MIN);
+					done(s); // a redraw while the detail is open
+					expect(show(c)).toContain("back · q close");
+					expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8"))).not.toHaveProperty("detail");
+					c.handleInput!("q");
+				});
 			});
 		});
 
