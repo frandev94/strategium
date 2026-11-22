@@ -4,6 +4,7 @@ import {
 	closes,
 	clean,
 	transcriptLines,
+	briefRow,
 	cockpitView,
 	cockpitKey,
 	detailKey,
@@ -2330,16 +2331,23 @@ describe("transcript navigation", () => {
 		expect(navigate(v, "enter")).toEqual(v.nav);
 		for (const k of ["tab", "left", "right", "home"] as const) expect(navigate(v, k)).toEqual(v.nav);
 	});
-	test("the transcript is dropped when its agent leaves deployed, or is no longer the squad's newest", () => {
+	test("the transcript is dropped when its agent leaves deployed, or belongs to another squad", () => {
 		const gone = trView(trNav("agent:ApothecaryBeta", { tops: { transcript: 4 } }, "ApothecaryBeta"), { deployed: new Map(), live: undefined });
 		expect(gone.detail).toBeUndefined();
 		expect(gone.nav.detail).toBeUndefined();
 		expect(gone.nav.tops).toBeUndefined();
-		const newer = new Map(DETAIL().deployed!).set("AlphaNew", dep({ role: "battle-brother", station: "Skirmish", squad: "alpha" }));
-		const v = trView(trNav("squad:alpha", { tops: { transcript: 4, detail: 1 } }, "AlphaVet"), { deployed: newer });
+		const other = new Map(DETAIL().deployed!).set("AlphaVet", dep({ role: "veteran", station: "Skirmish", squad: "beta" }));
+		const v = trView(trNav("squad:alpha", { tops: { transcript: 4, detail: 1 } }, "AlphaVet"), { deployed: other });
 		expect(v.nav.detail).toEqual({ id: "squad:alpha" });
 		expect(v.nav.tops).toEqual({ detail: 1 });
 		expect(v.detail!.title).toContain("SQUAD alpha");
+	});
+	test("a transcript opened from a squad stays when a penance deploys in it", () => {
+		const newer = new Map(DETAIL().deployed!).set("AlphaNew", dep({ role: "battle-brother", station: "Skirmish", squad: "alpha" }));
+		const v = trView(trNav("squad:alpha", { tops: { transcript: 4 } }, "AlphaVet"), { deployed: newer, transcript: { id: "AlphaVet", lines: ["kept"] } });
+		expect(v.nav.detail).toEqual({ id: "squad:alpha", transcript: "AlphaVet" });
+		expect(v.nav.tops).toEqual({ transcript: 4 });
+		expect(v.detail!.title).toContain("TRANSCRIPT AlphaVet");
 	});
 	test("opens at the bottom; up moves away from it, down returns and never goes below 0", () => {
 		let v = trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta"));
@@ -2483,6 +2491,35 @@ describe("transcript boundaries (#125 penance)", () => {
 		const n = navigate(v, "enter");
 		expect(n).toStrictEqual(v.nav);
 		expect(n).not.toHaveProperty("detail.transcript");
+	});
+	test("a failed agent shows its final answer, or says it has no answer file", () => {
+		expect(transcriptLines(jl(msg("user", "go")), false, "bad news")).toEqual(["user: go", "final answer:", "bad news"]);
+		expect(transcriptLines(jl(msg("user", "go")), false, null)).toEqual(["user: go", "no final answer file"]);
+	});
+	test("colour codes in a toolResult are stripped", () => {
+		expect(rowsOf(msg("toolResult", "\x1b[31mred\x1b[0m", { toolName: "bash" }))).toEqual(["← bash ok: red"]);
+	});
+	test("an emoji straddling the 400-char cut leaves no lone surrogate", () => {
+		const [row] = rowsOf(msg("toolResult", `${"a".repeat(390)}😀😀😀`, { toolName: "t" }));
+		expect(row).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/);
+		expect(row.length).toBeLessThanOrEqual(400);
+		expect(row.endsWith("…")).toBe(true);
+	});
+	test("the view keeps the notice when given 1002 or more rows", () => {
+		const lines = ["… earlier entries not shown", ...Array.from({ length: 1100 }, (_, i) => `r${i}`)];
+		const v = trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta"), { transcript: { id: "ApothecaryBeta", lines } });
+		expect(v.detail!.lines).toHaveLength(1001);
+		expect(v.detail!.lines[0]).toBe("… earlier entries not shown");
+		expect(v.detail!.lines.at(-1)).toBe("r1099");
+	});
+	test("the agent's brief leads a cut transcript, above the notice; an uncut one has no extra row", () => {
+		const head = jl(msg("assistant", "x"), msg("user", `do\nthis ${"b".repeat(500)}`));
+		const brief = briefRow(head)!;
+		expect(brief.startsWith("user: do this bbb")).toBe(true);
+		expect(brief.length).toBeLessThanOrEqual(400);
+		expect(transcriptLines("partial\n" + jl(msg("user", "tail")), true, undefined, brief)).toEqual([brief, "… earlier entries not shown", "user: tail"]);
+		expect(transcriptLines(jl(msg("user", "tail")), false, undefined, brief)).toEqual(["user: tail"]);
+		expect(briefRow("garbage\n{\"type\":\"message\",\"message\":{\"role\":\"user\"")).toBeUndefined();
 	});
 	test("the narrow footer hints enter transcript at exactly its width, not one cell less", () => {
 		const hint = "esc back · q close · enter transcript";

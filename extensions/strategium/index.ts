@@ -23,7 +23,7 @@ import {
 import { debrief, type AgentCost, type Reported } from "./debrief";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -275,9 +275,10 @@ const sidOf = (ctx: { sessionManager: { getSessionId(): string } }) => ctx.sessi
 
 const TAIL_BYTES = 512 * 1024; // the newest part of a child's .jsonl the cockpit reads
 const FINAL_BYTES = 64 * 1024; // the head of its final answer (.md)
+const HEAD_BYTES = 64 * 1024; // the head of a cut log, where the agent's brief is looked for
 type TranscriptRead = { id: string; stamp: string; lines: string[] };
 const NOT_FILE = Object.assign(new Error("not a regular file"), { code: "not a regular file" });
-/** A regular file opened for reading, with the size and mtime of the open handle (a race between a check and the open cannot swap in a link); undefined when absent. A link, directory or FIFO throws before any open. */
+/** A regular file opened for reading, with the size and mtime of the open handle; undefined when absent. A link, directory or FIFO seen by lstat throws before any open. Not race-proof: a link swapped in between the lstat and the open is followed, and the fstat only confirms that what was opened is a regular file. */
 function openRegular(file: string): { fd: number; size: number; mtimeMs: number } | undefined {
 	const l = lstatSync(file, { throwIfNoEntry: false });
 	if (!l) return undefined;
@@ -324,7 +325,8 @@ export function readTranscript(sessionFile: string | undefined, id: string, fini
 		if (prev?.id === id && prev.stamp === stamp) return prev;
 		const tail = readSlice(log.fd, Math.max(0, log.size - TAIL_BYTES), Math.min(log.size, TAIL_BYTES));
 		const final = finished ? (ans ? readSlice(ans.fd, 0, Math.min(ans.size, FINAL_BYTES)) : null) : undefined;
-		return { id, stamp, lines: transcriptLines(tail, log.size > TAIL_BYTES, final) };
+		const cut = log.size > TAIL_BYTES;
+		return { id, stamp, lines: transcriptLines(tail, cut, final, cut ? briefRow(readSlice(log.fd, 0, HEAD_BYTES)) : undefined) };
 	} catch (e) {
 		return reason(`transcript unreadable: ${(e as NodeJS.ErrnoException).code ?? "error"}`);
 	} finally {
@@ -1143,9 +1145,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.dirty = key !== undefined;
 	};
 	/** The open transcript's rows (the one nav names; undefined with none open): the files are stat'ed and read again only when their size or mtime changed. */
+	let readAt = 0;
 	const readOpen = (ctx: SessionCtx) => {
 		const id = cockpit.nav.detail?.transcript;
-		return id === undefined ? undefined : readTranscript(ctx.sessionManager.getSessionFile?.(), id, cockpit.deployed.get(id)?.state !== "active", cockpit.transcript);
+		if (id === undefined) return undefined;
+		const now = Date.now();
+		if (cockpit.transcript?.id === id && now - readAt < 1000 && now >= readAt) return cockpit.transcript; // at most one stat per second
+		readAt = now;
+		return readTranscript(ctx.sessionManager.getSessionFile?.(), id, cockpit.deployed.get(id)?.state !== "active", cockpit.transcript);
 	};
 	/** Take the saved state of this session's run, replacing memory; a missing, corrupt or other-key file is a clean start. */
 	const loadCockpit = (sid: string, key: string) => {

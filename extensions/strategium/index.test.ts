@@ -5490,6 +5490,53 @@ describe("cockpit", () => {
 					c.handleInput!("q");
 				});
 
+				test("event-driven redraws within a second reuse the transcript without a stat; a second later it is re-read", async () => {
+					vi.useFakeTimers();
+					const { s, ui } = await squad();
+					const file = join(session(s), "A.jsonl");
+					writeFileSync(file, say("ROW-AAAA") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					appendFileSync(file, say("ROW-LATE") + "\n");
+					const st = watch("lstatSync");
+					ended(s);
+					expect(st.mock.calls.filter(call => String(call[0]).endsWith("A.jsonl"))).toHaveLength(0);
+					expect(show(c)).not.toContain("ROW-LATE");
+					vi.advanceTimersByTime(1000);
+					ended(s);
+					expect(show(c)).toContain("ROW-LATE");
+					c.handleInput!("q");
+				});
+
+				test("rewriting the answer with the log unchanged is read again", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("W") + "\n");
+					writeFileSync(join(dir, "A.md"), "ANSWER-ONE\n");
+					utimesSync(join(dir, "A.md"), 1e9, 1e9);
+					const a = readTranscript(file, "A", true);
+					expect(a.lines).toContain("ANSWER-ONE");
+					writeFileSync(join(dir, "A.md"), "ANSWER-TWO\n");
+					utimesSync(join(dir, "A.md"), 2e9, 2e9);
+					const b = readTranscript(file, "A", true, a);
+					expect(b.lines).toContain("ANSWER-TWO");
+					expect(b.lines).not.toContain("ANSWER-ONE");
+				});
+
+				test("a log over 512 KiB shows the agent's brief first, read once per open, never on a redraw", () => {
+					const { dir, file } = tree();
+					const user = (text: string) => JSON.stringify({ type: "message", message: { role: "user", content: text } });
+					const pad = say("x".repeat(1000)) + "\n";
+					writeFileSync(join(dir, "A.jsonl"), user("THE-BRIEF") + "\n" + pad.repeat(600) + say("TAIL-MARK") + "\n");
+					expect(fs.statSync(join(dir, "A.jsonl")).size).toBeGreaterThan(512 * KB);
+					const a = readTranscript(file, "A", false);
+					expect(a.lines.slice(0, 2)).toEqual(["user: THE-BRIEF", "… earlier entries not shown"]);
+					expect(a.lines.at(-1)).toBe("TAIL-MARK");
+					const rd = watch("readSync");
+					expect(readTranscript(file, "A", false, a)).toBe(a);
+					expect(rd.mock.calls).toHaveLength(0);
+				});
+
 				test("with no transcript open the redraw never reads the child's file", async () => {
 					vi.useFakeTimers();
 					const { s, ui } = await squad();
@@ -5577,7 +5624,7 @@ describe("cockpit", () => {
 					spies.push(alloc);
 					const t = readTranscript(file, "A", true).lines.join("\n");
 					expect(bytes(rd)).toBeGreaterThan(0);
-					expect(bytes(rd)).toBeLessThanOrEqual(512 * KB + 64 * KB);
+					expect(bytes(rd)).toBeLessThanOrEqual(512 * KB + 64 * KB + 64 * KB); // tail, answer and the head the brief is looked for in
 					expect(Math.max(...alloc.mock.calls.map(c => c[0]))).toBeLessThanOrEqual(512 * KB); // never a buffer the size of the file
 					expect(t).toContain("TAIL-MARK");
 					expect(t).toContain("FIRST-LINE");

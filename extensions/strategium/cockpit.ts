@@ -124,6 +124,11 @@ const ROW_CAP = 400; // chars a transcript row keeps
 const TEXT_LINES = 40; // lines a text block keeps
 const KEEP_ROWS = 1000; // newest rows a transcript keeps
 /** One transcript row as printable text: ANSI stripped, controls to spaces, at most ROW_CAP chars (a cut ends in `…`, never inside a surrogate pair). */
+/** At most the newest KEEP_ROWS rows, keeping the lead the reader put there (the agent's brief and the `… earlier entries not shown` notice). */
+const keepRows = (lines: string[]) => {
+	const lead = lines.slice(0, 2).indexOf("… earlier entries not shown") + 1;
+	return lines.length > KEEP_ROWS + lead ? [...lines.slice(0, lead), ...lines.slice(-KEEP_ROWS)] : lines;
+};
 const rowOf = (s: string) => {
 	const t = clean(Bun.stripANSI(s)).trimEnd();
 	if (t.length <= ROW_CAP) return t;
@@ -139,7 +144,24 @@ const textOf = (content: unknown): string =>
 	typeof content === "string" ? content : Array.isArray(content) ? content.map(b => (obj(b).type === "text" && typeof obj(b).text === "string" ? (obj(b).text as string) : "")).filter(Boolean).join("\n") : "";
 
 /** The rows of a subagent's transcript, from the tail of its `.jsonl` (`cut`: bytes before it were skipped, so its first line is partial) and, once it finished, its final answer (`final`: the `.md` text; null: it has none; undefined: not finished). Rows come from `message` entries only: `user: …`, assistant text lines, `→ tool intent`, `← tool ok|error: first line`; thinking and every other entry are skipped. Untrusted input, never throws: each line is parsed in try/catch, every row is cleaned and capped (ROW_CAP chars, TEXT_LINES per text block, the newest KEEP_ROWS rows, plus a leading `… earlier entries not shown` when anything is dropped). Nothing at all gives `no messages yet`. Linear in the input. */
-export function transcriptLines(tail: string, cut: boolean, final?: string | null): string[] {
+export function transcriptLines(tail: string, cut: boolean, final?: string | null, brief?: string): string[] {
+	const rows = tailRows(tail, cut, final);
+	return cut && brief !== undefined ? [brief, ...rows] : rows;
+}
+/** The first `user` message of a log's head as one row (`user: <brief>`, cleaned and capped), or undefined when the head holds none (a partial last line is not parsed). */
+export function briefRow(head: string): string | undefined {
+	for (const line of head.split("\n")) {
+		if (line.charCodeAt(0) !== 123) continue;
+		try {
+			const e = obj(JSON.parse(line));
+			if (e.type === "message" && obj(e.message).role === "user") return rowOf(`user: ${textOf(obj(e.message).content)}`);
+		} catch {
+			// partial or malformed
+		}
+	}
+	return undefined;
+}
+function tailRows(tail: string, cut: boolean, final?: string | null): string[] {
 	const out: string[] = [];
 	const lines = tail.split("\n");
 	for (const line of cut ? lines.slice(1) : lines) {
@@ -437,9 +459,10 @@ export function cockpitView(input: ViewInput) {
 	const to = was && items.length ? (found >= 0 ? found : Math.min(Math.max(0, Math.trunc(was.at) || 0), items.length - 1)) : -1;
 	const want = input.nav?.detail?.id;
 	const detailId = want !== undefined && items.some(i => i.id === want) ? want : undefined;
-	// The transcript stays only while it is the one the open detail would open: that agent is still deployed, and still the squad's newest.
+	// The transcript stays while its agent is still deployed and belongs to the open detail: that agent, or any agent of that squad (a newer one deploying does not close it).
 	const target = detailId === undefined ? undefined : targetOf(detailId, input.deployed);
-	const transcript = target !== undefined && input.nav?.detail?.transcript === target ? target : undefined;
+	const open = input.nav?.detail?.transcript;
+	const transcript = target !== undefined && open !== undefined && (open === target || (detailId!.startsWith("squad:") && input.deployed?.get(open)?.squad === detailId!.slice(6))) ? open : undefined;
 	const tops = Object.fromEntries(Object.entries(input.nav?.tops ?? {}).filter(([k, n]) => (k === "seal" ? !!panel : k === "detail" ? detailId !== undefined : k === "transcript" ? transcript !== undefined : boxes.some(b => b.title === k)) && Number.isInteger(n) && n > 0));
 	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }), ...(Object.keys(tops).length ? { tops } : {}), ...(detailId === undefined ? {} : { detail: { id: detailId, ...(transcript === undefined ? {} : { transcript }) } }) };
 
@@ -476,7 +499,7 @@ export function cockpitView(input: ViewInput) {
 		return t && phase && { title: `${clean(t.role).toUpperCase()} TASK`, lines: [clean(t.text), `status: ${clean(t.status)}`, `station: ${clean(phase.name)}`] };
 	};
 	const shownDetail = detailId === undefined ? undefined : detailOf(detailId);
-	const rows = transcript !== undefined && input.transcript?.id === transcript ? input.transcript.lines.slice(-KEEP_ROWS - 1).map(rowOf) : [];
+	const rows = transcript !== undefined && input.transcript?.id === transcript ? keepRows(input.transcript.lines).map(rowOf) : [];
 	const detail: { title: string; lines: string[]; target?: string; transcript?: true } | undefined = transcript !== undefined ? { title: `TRANSCRIPT ${oneLine(transcript)}`, lines: rows, transcript: true } : shownDetail && { ...shownDetail, ...(target === undefined ? {} : { target }) };
 
 	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav, detail };
