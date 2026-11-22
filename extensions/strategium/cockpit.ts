@@ -6,22 +6,23 @@ export type Phase = { name: string; tasks: { content: string; status: string }[]
 export type Seal = { id: string; state: "granted" | "waiting" | "pending" };
 export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" | "warn" };
 export type Note = { veteran?: true; failed?: true };
-export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; stalled?: number; blocked?: true }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. stalled: the live entry's `at` (the idle start) the reader marked stalled. blocked: its row said so and the alarm rang for it; cleared when the row stops saying it
+export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; ended?: number; stalled?: number; blocked?: true }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. ended: when the host saw it end, in ms. stalled: the live entry's `at` (the idle start) the reader marked stalled. blocked: its row said so and the alarm rang for it; cleared when the row stops saying it
 /** What a child writes about itself, already validated by the reader (contract v3): ms timestamps, its todo counts, its last tool call and what it signalled (pct, eta_min, line, blocked), and its usage. Usage is optional and absent means unknown, never 0: cost is USD (finite, >= 0) as omp prices it, its own spend without nested subagents; the tokens are safe integers >= 0. */
 export type Live = { since: number; at: number; tool?: string; intent?: string; done?: number; total?: number; current?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean; cost?: number; tokens_in?: number; tokens_out?: number; cache_read?: number; cache_write?: number };
 export type Depth = "truecolor" | "256";
 type Ansi = `\x1b[${string}`; // an escape sequence, not a hex: keeps a Theme out of renderCockpit
 export type Palette = Record<Tone, Ansi> & { bg?: Ansi }; // a foreground sequence per tone, bg a background one
-export type Nav = { cursor?: { id: string; at: number }; shown?: { phase: number; from: number }; tops?: Record<string, number> }; // cursor: the selected line by identity and its position; shown: a browsed station and the active one it was taken at; tops: the first line a windowed box shows, by box title (renderCockpit writes it, as only it knows the room). In memory only (see cockpitView)
+export type Nav = { cursor?: { id: string; at: number }; shown?: { phase: number; from: number }; tops?: Record<string, number>; detail?: { id: string } }; // cursor: the selected line by identity and its position; shown: a browsed station and the active one it was taken at; tops: the first line a windowed box shows, by box title, and the first row of an open detail under `detail` (renderCockpit writes it, as only it knows the room); detail: the line whose detail is open, by identity. In memory only (see cockpitView)
+type SliceIn = { id: string; parallel?: boolean; files?: string[]; tier?: string };
 export type ViewInput = {
 	nav?: Nav;
 	key: string;
 	untimed?: true;
 	deployed?: Map<string, Deployed>; // agent id (eval-<role>-<n> for an eval spawn without spawnKey) → what the host deployed, kept by index.ts
 	phases?: Phase[];
-	slices?: { id: string }[];
-	stopped?: { id: string }[];
-	agents?: Record<string, { id: string }>;
+	slices?: SliceIn[];
+	stopped?: SliceIn[];
+	agents?: Record<string, SliceIn>;
 	notes: Record<string, Note>;
 	clock?: { running: boolean; el: number; bk?: number }; // bk undefined: untimed, or no booking today
 	chronicle: Entry[];
@@ -45,6 +46,36 @@ export const usd = (n: number) => `$${n.toFixed(2)}`;
 /** A cost worth showing: finite, not negative and under a sane cap (a huge value would break the report's bars). */
 export const isCost = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1e6;
 
+const has = (n: number | undefined, max: number): n is number => Number.isInteger(n) && n! >= 0 && n! <= max;
+const STATE_WORD = { active: "running", done: "returned", failed: "failed" };
+
+/** The facts of one agent as plain lines, for its detail: role, id, state, station, squad, elapsed (to `ended`, else `now`), the live row's progress, eta (active only), text fields, blocked and stalled (active only), cost and tokens. Live text is untrusted: every field goes through oneLine. */
+function agentFacts(id: string, d: Deployed, live: Live | undefined, now: number | undefined): string[] {
+	const from = d.at ?? live?.since;
+	const end = d.state === "active" ? now : d.ended; // a finished agent with no `ended` has no known end
+	const out = [`${oneLine(d.role)} ${oneLine(id)} · ${STATE_WORD[d.state]}`, `station: ${oneLine(d.station) || "—"}`];
+	if (d.squad) out.push(`squad: ${oneLine(d.squad)}`);
+	out.push(from !== undefined && end !== undefined ? `ran ${span(minutes(end - from))}` : "elapsed unknown");
+	if (live) {
+		const { done = 0, total = 0, pct, eta_min } = live;
+		const todo = Number.isInteger(done) && Number.isInteger(total) && total > 0 && done >= 0 && done <= total;
+		const running = d.state === "active";
+		const progress = [has(pct, 100) ? `${pct}%` : "", todo ? `${done}/${total}` : ""].filter(Boolean);
+		if (progress.length) out.push(`progress: ${progress.join(" · ")}`);
+		const ms = from !== undefined && now !== undefined ? Math.max(0, now - from) : undefined;
+		const eta = !running ? undefined : has(eta_min, 10080) ? eta_min : ms !== undefined && todo && done > 0 && done < total ? Math.max(1, Math.ceil((ms * (total - done)) / done / 60_000)) : undefined;
+		if (eta !== undefined) out.push(`eta: ~${span(eta)}`);
+		for (const [k, v] of [["current", live.current], ["intent", live.intent], ["tool", live.tool], ["signalled", live.line]] as const) if (oneLine(v)) out.push(`${k}: ${oneLine(v)}`);
+		if (running && live.blocked === true) out.push("blocked");
+		if (running && now !== undefined && live.at > 0 && d.stalled === live.at) out.push(`stalled ${minutes(now - live.at)}m`);
+	}
+	out.push(isCost(live?.cost) ? `cost: ${usd(live.cost)}` : "cost: unknown");
+	const tok = (n: number | undefined, f: (s: string) => string) => (Number.isSafeInteger(n) && n! >= 0 ? [f(n!.toLocaleString("en-US"))] : []);
+	const tokens = [...tok(live?.tokens_in, s => `${s} in`), ...tok(live?.tokens_out, s => `${s} out`), ...tok(live?.cache_read, s => `cache ${s} read`), ...tok(live?.cache_write, s => `${s} write`)];
+	if (tokens.length) out.push(`tokens: ${tokens.join(" · ")}`);
+	return out;
+}
+
 /** The row under an active agent's line: `[blocked · ][stalled Nm · ]elapsed · cost[ · progress][ · eta][ · text]`. Cost is `$x.xx`, or `$?` while the agent's usage is unknown. Progress is the agent's `pct%` else `done/total`; eta its `~eta_min` else the one computed from the todo; text its `line`, else the todo's current task, else the intent (else tool). `stalled` is the live entry's `at` (the idle start) the reader marked stalled. A blocked row draws gold like a stalled one. */
 function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): Pick<Line, "detail" | "stalled"> {
 	const from = d.at ?? live?.since;
@@ -53,7 +84,6 @@ function liveRow(d: Deployed, live: Live | undefined, now: number | undefined): 
 	const parts = [span(minutes(ms)), isCost(live?.cost) ? usd(live.cost) : "$?"];
 	const { done = 0, total = 0, pct, eta_min } = live ?? {};
 	const todo = Number.isInteger(done) && Number.isInteger(total) && total > 0 && done >= 0 && done <= total;
-	const has = (n: number | undefined, max: number): n is number => Number.isInteger(n) && n! >= 0 && n! <= max;
 	if (has(pct, 100)) parts.push(`${pct}%`);
 	else if (todo) parts.push(`${done}/${total}`);
 	if (has(eta_min, 10080)) parts.push(`~${span(eta_min)}`);
@@ -144,6 +174,29 @@ export const navKey = (data: string): NavKey | undefined => {
 	const w = NAV_WIN32.exec(data);
 	return w && w[2] === "1" && (Number(w[3] || 0) & 0x1f) === 0 ? NAV_VK[Number(w[1])] : undefined;
 };
+
+const DETAIL_CSI_U = /^\x1b\[(13|57414|127)(?::\d*)*(?:;(\d{1,3})(?::(\d))?(?:;[\d:]*)?)?u$/;
+const DETAIL_U: Record<number, "enter" | "back"> = { 13: "enter", 57414: "enter", 127: "back" };
+const DETAIL_VK: Record<number, "enter" | "back"> = { 13: "enter", 8: "back" };
+/** Enter or Back, or undefined. Enter: CR, LF, kitty CSI-u 13 and keypad 57414, win32-input-mode VK 13. Back: DEL, BS, CSI-u 127, win32 VK 8; Back also takes Ctrl (conhost rewrites BS as `CSI 127;5u`, and Ctrl+Backspace going up a level is harmless). Otherwise CSI-u and win32 follow navKey's rules (locks allowed, no other modifier, no release); every pattern is anchored with bounded numbers, so a hostile string costs linear time. Never an Esc, `q`, arrow or Tab: closes() and navKey() are false and undefined for every key this returns. */
+export const detailKey = (data: string): "enter" | "back" | undefined => {
+	if (data === "\r" || data === "\n") return "enter";
+	if (data === "\x7f" || data === "\b") return "back";
+	const u = DETAIL_CSI_U.exec(data);
+	if (u) {
+		const key = DETAIL_U[Number(u[1])];
+		// Ctrl (bit 4 of modifier-1) is the one extra modifier, and only on Back
+		return plainMod(key === "back" ? String(1 + ((Number(u[2] ?? 1) - 1) & ~4)) : u[2], u[3]) ? key : undefined;
+	}
+	const w = NAV_WIN32.exec(data);
+	if (!w || w[2] !== "1") return undefined;
+	const key = DETAIL_VK[Number(w[1])];
+	return ((Number(w[3] || 0) & (key === "back" ? 0x13 : 0x1f)) === 0 ? key : undefined);
+};
+
+/** What a key does to the cockpit: `q` closes at every level; Esc goes back inside a detail and closes at the top level (so Esc twice closes from anywhere); anything else is Enter/Back or a cursor key, or ignored. */
+export const cockpitKey = (data: string, inDetail: boolean): NavKey | "close" | undefined =>
+	data === "q" ? "close" : closes(data) ? (inDetail ? "back" : "close") : (detailKey(data) ?? navKey(data));
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
 
@@ -248,16 +301,11 @@ export function cockpitView(input: ViewInput) {
 	const ids = [...new Set([...(input.slices ?? []), ...(input.stopped ?? [])].map(s => s.id))];
 	const building = new Set(Object.values(input.agents ?? {}).map(s => s.id));
 	const returned = new Set((input.stopped ?? []).map(s => s.id));
+	const squadState = (id: string): [Kind, string] =>
+		building.has(id) ? ["active", "forging"] : input.notes[id]?.failed ? ["failed", "failed"] : returned.has(id) ? ["done", "returned"] : ["idle", "awaiting deployment"];
 	const squads = ids.map(id => {
-		const note = input.notes[id] ?? {};
-		const [kind, state]: [Kind, string] = building.has(id)
-			? ["active", "forging"]
-			: note.failed
-				? ["failed", "failed"]
-				: returned.has(id)
-					? ["done", "returned"]
-					: ["idle", "awaiting deployment"];
-		return { id, key: `squad:${id}`, kind, mark: MARK[kind], text: label(note.veteran ? ic.veteran : ic.brother, `squad ${id} ${state}`) };
+		const [kind, state] = squadState(id);
+		return { id, key: `squad:${id}`, kind, mark: MARK[kind], text: label(input.notes[id]?.veteran ? ic.veteran : ic.brother, `squad ${id} ${state}`) };
 	});
 
 	const tasks = (phase?.tasks ?? []).flatMap((t, i) => {
@@ -321,21 +369,66 @@ export function cockpitView(input: ViewInput) {
 	const was = input.nav?.cursor;
 	const found = was ? items.findIndex(i => i.id === was.id) : -1;
 	const to = was && items.length ? (found >= 0 ? found : Math.min(Math.max(0, Math.trunc(was.at) || 0), items.length - 1)) : -1;
-	const tops = Object.fromEntries(Object.entries(input.nav?.tops ?? {}).filter(([k, n]) => (k === "seal" ? !!panel : boxes.some(b => b.title === k)) && Number.isInteger(n) && n > 0));
-	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }), ...(Object.keys(tops).length ? { tops } : {}) };
+	const want = input.nav?.detail?.id;
+	const detailId = want !== undefined && items.some(i => i.id === want) ? want : undefined;
+	const tops = Object.fromEntries(Object.entries(input.nav?.tops ?? {}).filter(([k, n]) => (k === "seal" ? !!panel : k === "detail" ? detailId !== undefined : boxes.some(b => b.title === k)) && Number.isInteger(n) && n > 0));
+	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }), ...(Object.keys(tops).length ? { tops } : {}), ...(detailId === undefined ? {} : { detail: { id: detailId } }) };
 
-	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav };
+	// The second brother of a squad is its penance (the skill names it after the squad).
+	const roleOf = (id: string, d: Deployed) => (d.role === "battle-brother" && d.squad && [...(input.deployed ?? [])].find(([, x]) => x.role === d.role && x.squad === d.squad)?.[0] !== id ? "penance" : d.role);
+	const facts = (id: string, d: Deployed) => agentFacts(id, { ...d, role: roleOf(id, d) }, input.live?.get(id), input.now);
+	const detailOf = (id: string): { title: string; lines: string[] } | undefined => {
+		const rest = id.slice(id.indexOf(":") + 1);
+		if (id.startsWith("squad:")) {
+			const slice = [...(input.slices ?? []), ...(input.stopped ?? [])].find(s => s.id === rest);
+			const mine = [...(input.deployed ?? [])].filter(([, d]) => d.squad === rest);
+			const tier = oneLine(slice?.tier);
+			return {
+				title: `SQUAD ${oneLine(rest)} · ${squadState(rest)[1]}`,
+				lines: [
+					...(slice?.files?.length ? ["files:", ...slice.files.map(f => `  ${oneLine(f)}`)] : [slice?.files ? "files: none" : "files: unknown"]),
+					`parallel: ${slice ? (slice.parallel ? "yes" : "no") : "unknown"}`,
+					...(tier ? [`tier: ${tier}`] : []),
+					...(input.notes[rest]?.veteran ? ["escalated to veteran"] : []),
+					...(mine.length ? [`agents (${mine.length}):`, ...mine.flatMap(([aid, d], i) => [...(i ? [""] : []), ...facts(aid, d).map(l => `  ${l}`)])] : ["no agent deployed yet"]),
+				],
+			};
+		}
+		if (id.startsWith("agent:")) {
+			const d = input.deployed?.get(rest);
+			return d && { title: `${oneLine(roleOf(rest, d)).toUpperCase()} ${oneLine(rest)}`, lines: facts(rest, d) };
+		}
+		if (id.startsWith("seal:")) return panel && { title: panel.title, lines: panel.lines };
+		if (id.startsWith("log:")) {
+			const e = chronicle.find(c => c.id === id);
+			return e && { title: `CHRONICLE · ${clean(e.at)} · ${clean(e.who)}`, lines: [clean(e.text)] };
+		}
+		const t = tasks.find(x => x.id === id);
+		return t && phase && { title: `${clean(t.role).toUpperCase()} TASK`, lines: [clean(t.text), `status: ${clean(t.status)}`, `station: ${clean(phase.name)}`] };
+	};
+	const detail = detailId === undefined ? undefined : detailOf(detailId);
+
+	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav, detail };
 }
 
 /** A cursor move or a station browse, as `navigate` takes them. */
-export type NavKey = "up" | "down" | "left" | "right" | "home" | "tab";
+export type NavKey = "up" | "down" | "left" | "right" | "home" | "tab" | "enter" | "back";
 
-/** The next Nav after `key`, from the view's own (normalized) nav. Pure: ↑/↓ one item, clamped; Tab the first item of the next group, wrapping; ←/→ the shown station ∓1, clamped, landing on the active one clears `shown`; Home clears `shown`. The first ↑, ↓ or Tab selects the first item. */
+/** The next Nav after `key`, from the view's own (normalized) nav. Pure: ↑/↓ one item, clamped; Tab the first item of the next group, wrapping; ←/→ the shown station ∓1, clamped, landing on the active one clears `shown`; Home clears `shown`. The first ↑, ↓ or Tab selects the first item. Enter opens the detail of the selected line (one level: none with no cursor or inside a detail), Back closes it with the cursor untouched; inside a detail ↑/↓ scroll it (never below 0; renderCockpit clamps the bottom) and the other keys do nothing. */
 export function navigate(view: View, key: NavKey): Nav {
 	const { items, stations, nav } = view;
 	const from = nav.cursor?.at ?? -1;
 	const keep = nav.tops ? { tops: nav.tops } : {};
 	const go = (i: number): Nav => ({ ...nav, ...(items.length ? { cursor: { id: items[i].id, at: i } } : {}) });
+	const { detail: top = 0, ...others } = nav.tops ?? {};
+	const shape = (tops: Record<string, number>, detail?: Nav["detail"]): Nav => ({ ...(nav.cursor ? { cursor: nav.cursor } : {}), ...(nav.shown ? { shown: nav.shown } : {}), ...(Object.keys(tops).length ? { tops } : {}), ...(detail ? { detail } : {}) });
+	if (key === "enter") return nav.cursor && !nav.detail ? shape(others, { id: nav.cursor.id }) : nav;
+	if (key === "back") return nav.detail ? shape(others) : nav;
+	if (nav.detail) {
+		if (key !== "up" && key !== "down") return nav;
+		const to = Math.max(0, top + (key === "up" ? -1 : 1));
+		return shape(to > 0 ? { ...others, detail: to } : others, nav.detail);
+	}
 	switch (key) {
 		case "up":
 		case "down":
@@ -376,6 +469,56 @@ function fit(line: string, width: number): string {
 		}
 	}
 	return `${out}…${RESET}`;
+}
+
+/** `text` as rows of at most `width` cells: greedy on spaces, a word wider than the room hard-split by grapheme, so no text is dropped; the leading spaces of `text` indent every row (hanging indent, capped so 2 cells remain). A run of whitespace inside a row stays as spaces (aligned columns); one at a break is dropped. An empty text is one blank row. */
+export function wrap(text: string, width: number): string[] {
+	if (!text.trim()) return [""];
+	const rows: string[] = [];
+	const ind = (/^ */.exec(text)![0]).slice(0, Math.max(0, width - 2));
+	let cur = ind;
+	let curW = ind.length;
+	let used = false; // cur holds a word, not just the indent
+	const add = (s: string, w: number, sep: string) => {
+		cur += (used ? sep : "") + s;
+		curW += (used ? sep.length : 0) + w;
+		used = true;
+	};
+	const flush = () => {
+		rows.push(cur);
+		cur = ind;
+		curW = ind.length;
+		used = false;
+	};
+	let end = 0; // end of the previous word: the gap before the next is the text in between
+	for (const { 0: word, index } of text.matchAll(/\S+/g)) {
+		const ww = Bun.stringWidth(word);
+		const gap = " ".repeat(index - end);
+		end = index + word.length;
+		if (used && curW + gap.length + ww <= width) add(word, ww, gap);
+		else {
+			if (used) flush();
+			if (curW + ww <= width) add(word, ww, "");
+			else
+				for (const { segment } of GRAPHEMES.segment(word)) {
+					const sw = Bun.stringWidth(segment);
+					if (curW + sw > width && used) flush();
+					add(segment, sw, "");
+				}
+		}
+	}
+	if (used) flush();
+	return rows;
+}
+
+/** The rows [from, to) of an `n`-row detail that fit under `bodyRows` rows of header and the footer, from the scroll `win` holds clamped to the bottom (written back), and the ` · a–b/n` suffix the title takes when rows are hidden. No height: every row. */
+function detailWindow(n: number, bodyRows: number, height: number | undefined, win: Win): { from: number; to: number; suffix: string } {
+	if (height === undefined) return { from: 0, to: n, suffix: "" };
+	const room = Math.max(0, height - bodyRows - 1);
+	const from = Math.min(Math.max(0, win.get("detail")), Math.max(0, n - room));
+	win.set("detail", from);
+	const to = Math.min(n, from + room);
+	return { from, to, suffix: n > room && to > from ? ` · ${from + 1}–${to}/${n}` : "" };
 }
 
 const kindTone: Record<Kind, Tone> = { active: "green", done: "green", failed: "red", idle: "iron" };
@@ -533,12 +676,20 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	if (width < 72) {
 		const ind = (b: Box) => b.lines.map((l, i) => (i === b.sel ? `${paint(pal.gold, "▸")} ${selected(l, width - 2)}` : `  ${l}`));
 		const si = view.chronicle.findIndex(e => e.id === sel);
-		const body = [
+		const head = [
 			`${paint(pal.gold, "✠ STRATEGIUM")} · ${paint(pal.parchment, view.key)}`,
 			clockText(view.clock, pal, false),
 			...statusText(view.status, pal, frame),
 			...(view.seals.length ? [`${paint(pal.gold, "SEALS")} ${sealsText(view.seals, pal, view.ic)}`] : []),
 			station,
+		];
+		if (view.detail) {
+			const rows = view.detail.lines.flatMap(l => wrap(l, width - 2));
+			const sc = detailWindow(rows.length, head.length + 1, height, win);
+			return withHeight([...head, paint(pal.gold, fit(view.detail.title, width - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix))], rows.slice(sc.from, sc.to).map(r => `  ${paint(pal.parchment, r)}`), "", paint(pal.iron, "esc back · q close"), height).map(l => fit(l, width));
+		}
+		const body = [
+			...head,
 			...(box ? [paint(pal.gold, box.title), ...ind(box)] : []),
 			...boxes(boxCap(height, 5 + (view.seals.length ? 1 : 0) + (box ? box.lines.length + 1 : 0) + statusText(view.status, pal, frame).length, view.boxes.length, 1)).flatMap(b => [paint(pal.gold, b.title), ...ind(b)]),
 			paint(pal.gold, "CHRONICLE"),
@@ -561,8 +712,16 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	const title = fit(station, inner - 4); // keeps at least one cell of rule
 	const cols = Math.max(1, Math.min(view.boxes.length, Math.floor((inner - 1) / 27)));
 
+	if (view.detail) {
+		const rows = view.detail.lines.flatMap(l => wrap(l, inner - 2));
+		const sc = detailWindow(rows.length, head.length + 2, height, win);
+		const dt = paint(pal.gold, fit(view.detail.title, inner - 4 - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix)); // the title is cut, not the scroll position; keeps at least one cell of rule
+		const back = "esc/bksp back · q close · ↑↓ scroll";
+		return withHeight([g(fit(top, width)), ...head, `${g("╟─ ")}${dt}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(dt))}╢`)}`], rows.slice(sc.from, sc.to).map(r => row(` ${paint(pal.parchment, r)}`)), row(""), g(`╚═ ${back} ${"═".repeat(inner - 3 - Bun.stringWidth(back))}╝`), height);
+	}
 	const si = view.chronicle.findIndex(e => e.id === sel);
-	const hint = "esc/q close · ↑↓ line · ←→ station · tab box · home active";
+	const base = "esc/q close · ↑↓ line · ←→ station · tab box · home active";
+	const hint = inner - 3 - Bun.stringWidth(`${base} · enter open`) >= 1 ? `${base} · enter open` : base;
 	return withHeight(
 		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...(box ? grid([box], 1, inner, pal).map(row) : []), ...grid(boxes(boxCap(height, head.length + 4 + (box ? box.lines.length + 2 : 0), Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
 		view.chronicle.map((e, i) => row(i === si ? `${g("▸")}${selected(entryLine(e, pal), inner - 1)}` : ` ${entryLine(e, pal)}`)),

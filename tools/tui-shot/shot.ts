@@ -1,6 +1,6 @@
 const USAGE = `Run the real omp + this plugin in a Windows ConPTY, seed a run, and screenshot what the user sees, or replay past regressions. Windows only.
 
-  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live|signal] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
+  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live|signal|detail] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
                              [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png]
   bun tools/tui-shot/shot.ts --replay=NAME | --all  [--plugin=DIR] [--suffix=-x] [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png] [--all-png] [--keep-work]
 
@@ -27,7 +27,7 @@ type Task = { content: string; status: string };
 type Phase = { name: string; tasks: Task[] };
 type Seed = { where: Record<string, string>; extra: Record<string, unknown>; phases: Phase[]; timed?: number; cockpit?: Record<string, unknown>; live?: Record<string, LiveSeed> };
 // What a child writes in runs/<sid>.live/<agent id>.json (index.ts readLive, contract v3: pct, eta_min, line, blocked are what a child's signal writes; cost is its USD spend, absent = unknown); since/at are minutes before the seed is written, the rest goes as is.
-type LiveSeed = { since: number; at: number; busy: number; done?: number; total?: number; current?: string; intent?: string; tool?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean; cost?: number };
+type LiveSeed = { since: number; at: number; busy: number; done?: number; total?: number; current?: string; intent?: string; tool?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean; cost?: number; tokens_in?: number; tokens_out?: number; cache_read?: number; cache_write?: number };
 const t = (content: string, status: string): Task => ({ content, status });
 const sl = (id: string) => ({ id, parallel: true, files: [] });
 const MUSTER = { name: "Muster", tasks: [t("[captain] Begin run", "completed"), t("[captain] Orders", "completed")] };
@@ -73,11 +73,12 @@ SEEDS.restart = { ...SEEDS.skirmish, cockpit: { // skirmish plus a saved cockpit
 		["BetaBrother", { who: "BetaBrother", role: "battle-brother", squad: "beta", station: "Skirmish", state: "done" }],
 		["DeltaBrother", { who: "DeltaBrother", role: "battle-brother", squad: "delta", station: "Skirmish", state: "failed" }]],
 } };
-SEEDS["seal-panel"] = { ...SEEDS.scriptorium, cockpit: { chronicle: [], notes: {}, deployed: [], seal: { id: "Plan", lines: [ // prepared panel lines: 14, so the cap shows 11 + "+3 more"
+const PANEL14 = [ // prepared panel lines: 14, so the cap shows 11 + "+3 more"
 	"Squads: cockpit (standard), shots (light), docs (light)", "Merge bar: AC1 no SEAL box at 140 columns", "Merge bar: AC2 SEALS chain",
 	"Merge bar: AC3 seal panel", "Merge bar: AC4 tests follow the contract", "Merge bar: bun run check clean", "Merge bar: bun test 0 fail",
 	"Merge bar: regression replays PASS", "Merge bar: docs in step", "LONG-" + "x".repeat(195), "Merge bar: apothecary fuzz pass",
-	"Merge bar: PR closes #82", "line 13", "line 14"] } } };
+	"Merge bar: PR closes #82", "line 13", "line 14"];
+SEEDS["seal-panel"] = { ...SEEDS.scriptorium, cockpit: { chronicle: [], notes: {}, deployed: [], seal: { id: "Plan", lines: PANEL14 } } };
 
 SEEDS.live = { // skirmish with three active agents and one task line, so every live row fits the box cap (8 lines)
 	...SEEDS.skirmish, extra: { agents: { AlphaBrother: sl("alpha"), GammaVeteran: sl("gamma"), DeltaBrother: sl("delta") }, stopped: [sl("beta")] },
@@ -97,6 +98,35 @@ SEEDS.signal = { // live with signals: alpha signals pct/eta/line over its todo,
 		AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, current: "Wire the live rows", tool: "edit", pct: 40, eta_min: 12, line: "Writing the signal tests" },
 		GammaVeteran: { since: 20, at: 0, busy: 1, tool: "bash", intent: "Running the tests" },
 		DeltaBrother: { since: 3, at: 0, busy: 0, tool: "read", intent: "Reading the writer", blocked: true, line: "Waiting for a decision" } } };
+
+// #124: the cockpit's detail views. Skirmish with a waiting seal and its 14-line panel (the first in_progress task is the seal, so waitingSeal finds it), a forging squad alpha with a
+// battle-brother and a penance, a failed delta, a returned beta, an apothecary with no squad, and one chronicle entry the row must cut. Item order the replay's keys rely on:
+// 14 seal lines, BATTLE-BROTHERS (squad alpha, squad delta, task alpha, squad beta), APOTHECARIES (task beta, agent ApothecaryBeta), the chronicle.
+const ago = (min: number) => Date.now() - min * 60_000; // ms; read once when the seeds load, minutes before a run are far inside the tolerance of "ran 6m"
+const slice = (id: string, files: string[], extra: object = {}) => ({ id, parallel: true, files, ...extra });
+const alpha = slice("alpha", ["extensions/strategium/cockpit.ts", "extensions/strategium/cockpit.test.ts"], { tier: "heavy" });
+SEEDS.detail = {
+	where: { station: "Skirmish", seal: "Commit" },
+	extra: { slices: [alpha], agents: { AlphaBrother: alpha }, stopped: [slice("beta", ["tools/tui-shot/shot.ts"]), slice("delta", ["README.md"])] },
+	phases: [MUSTER, AUSPEX,
+		{ name: "Scriptorium", tasks: [t("[librarian] Plan area cockpit", "completed"), t("[archmagos] Merge the plan", "completed"), t("[seal] Plan", "completed")] },
+		{ name: "Deployment", tasks: [t("[captain] Declare the squads", "completed")] },
+		{ name: "Skirmish", tasks: [t("[battle-brother] Build squad alpha", "completed"), t("[seal] Commit", "in_progress"), t("[apothecary] Test squad beta", "in_progress")] }, INQ],
+	cockpit: {
+		chronicle: [{ at: "10:07", who: "STRATEGOS", text: "long entry ".repeat(24) + "END-OF-ENTRY" }],
+		notes: { delta: { failed: true } },
+		deployed: [
+			["AlphaBrother", { who: "AlphaBrother", role: "battle-brother", squad: "alpha", station: "Skirmish", state: "active", at: ago(10) }],
+			["AlphaPenance", { who: "AlphaPenance", role: "battle-brother", squad: "alpha", station: "Skirmish", state: "done", at: ago(10), ended: ago(4) }],
+			["DeltaBrother", { who: "DeltaBrother", role: "battle-brother", squad: "delta", station: "Skirmish", state: "failed", at: ago(8), ended: ago(5) }],
+			["ApothecaryBeta", { who: "ApothecaryBeta", role: "apothecary", station: "Skirmish", state: "active", at: ago(3) }]],
+		seal: { id: "Commit", lines: PANEL14 },
+	},
+	live: {
+		AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, pct: 40, eta_min: 12, line: "Writing the detail tests", cost: 0.42, tokens_in: 12345, tokens_out: 678, cache_read: 90000, cache_write: 4321 },
+		ApothecaryBeta: { since: 3, at: 0, busy: 1, tool: "bash", intent: "Running the tests", cost: 1.07, tokens_in: 54321, tokens_out: 987, cache_read: 123456, cache_write: 7654 },
+	},
+};
 
 // --- args: argparse semantics (--x=v and --x v; --ponytail with an optional value), no prefix abbreviations ---
 export interface Args {
@@ -171,6 +201,8 @@ export const KEYS: Record<string, string[]> = {
 	tab: [rec(9, 15, 9, 1, 0), rec(9, 15, 9, 0, 0)],
 	right: [rec(39, 77, 0, 1, 256), rec(39, 77, 0, 0, 256)],
 	enter: ["\r"],
+	ret: [rec(13, 28, 13, 1, 0), rec(13, 28, 13, 0, 0)], // Enter, win32 (enter above is a plain \r, other replays use it)
+	bksp: [rec(8, 14, 8, 1, 0), rec(8, 14, 8, 0, 0)],
 };
 
 /** Local time with its offset, as Python's datetime.astimezone().isoformat() writes it. */
@@ -1007,6 +1039,116 @@ function checksCockpitCursor(C: Ctx) {
 	C.ck("closed: Esc closes in one press (normal buffer, no frame, footer back)", c.type === "normal" && !c.framed() && c.has("strategium: demo-shot"), c.type, "normal, no frame", c);
 }
 
+// cockpit-detail: [snapshot name, bytes sent, PNG]. Item order is the seed's (see SEEDS.detail): Tab from a seal line lands on squad alpha, Tab again on the first apothecary line, Tab again on the chronicle entry.
+// win32 is Windows Terminal's real path; the rest go through conhost's own parser, so what omp saw can differ from what was sent (marked `not faithful`, and a step omp saw nothing of is skipped).
+const DETAIL: [name: string, seqs: string[], png?: boolean][] = [
+	["down", KEYS.down], ["seal", KEYS.ret, true], ["seal-scroll", Array.from({ length: 20 }, () => KEYS.down).flat()], ["seal-back", KEYS.bksp],
+	["tab-squad", KEYS.tab], ["squad", ["\r"], true], ["squad-back", ["\x7f"]],
+	["tab-apothecary", KEYS.tab], ["down-agent", KEYS.down], ["agent", ["\x1b[13u"], true], ["agent-back", ["\x1b[127u"]],
+	["tab-chronicle", KEYS.tab], ["chronicle", ["\x1b[13;1:1u"], true], ["chronicle-back", ["\b"]],
+	["enter-esc", ["\r"]], ["esc-back", KEYS.esc], ["enter-q", ["\r"]], ["q-closed", KEYS.q],
+	["down-narrow", KEYS.down], ["narrow", ["\r"], true], ["narrow-back", KEYS.esc], ["narrow-closed", KEYS.esc],
+];
+async function stepsCockpitDetail(R: Run) {
+	R.notes = {};
+	const inputs = () => R.logEvents().filter(e => e.ev === "input").map(e => e.data as string);
+	await R.open(); await R.snap("open");
+	R.notes.open = R.altOpen();
+	for (const [name, seqs, png] of DETAIL) {
+		if (name === "down-narrow") { await R.open(); await R.snap("reopen"); R.notes.reopen = R.altOpen(); await R.resize(60, R.rows); await R.sleep(1.5); }
+		const n = inputs().length;
+		for (const s of seqs) { R.send(s); await R.sleep(0.03); }
+		await R.sleep(0.7); await R.snap(name, !!png);
+		R.notes[name] = [R.altOpen(), inputs().slice(n).join(""), seqs];
+	}
+}
+/** The text of the cells from the ▸ on, when there is exactly one ▸ (the cursor's line, and whatever sits to its right). */
+const underCursor = (s: Snap) => {
+	const m = markers(s);
+	return m.length === 1 ? s.cells[m[0][0]].slice(m[0][1]).join("") : "";
+};
+const chronicleRule = (s: Snap) => s.rowsText.some(r => r.startsWith("╟─") && r.includes("CHRONICLE"));
+const lastRow = (s: Snap) => s.rowsText.findLast(r => r) ?? "";
+const footerRow = (s: Snap) => s.rowsText.findLast(r => r.startsWith("╚")) ?? "";
+function checksCockpitDetail(C: Ctx) {
+	const o = snapOf(C, "open");
+	C.ck("open: alternate buffer, framed, no ▸ (the cursor starts unset)", C.R.notes.open && o.type === "alternate" && o.framed() && markers(o).length === 0, markers(o), "none", o);
+	const seen = new Set<string>();
+	for (const [name] of DETAIL) {
+		const [open, saw, sent] = C.R.notes[name] as [boolean, string, string[]], s = snapOf(C, name);
+		if (!saw) { C.say(`${name.padEnd(15)} skip: not delivered, omp's onTerminalInput saw nothing`); continue; }
+		seen.add(name);
+		const show = (v: string) => JSON.stringify(v).replaceAll("\x7f", "\\x7f"); // JSON.stringify leaves DEL raw
+		C.say(`${name.padEnd(15)} sent=${show(sent.join(""))} onTerminalInput saw=${show(saw)}` + (!sent[0].endsWith("_") && sent.join("") !== saw ? "  not faithful: conhost rewrote it" : ""));
+		if (name !== "q-closed" && name !== "narrow-closed") C.ck(`${name}: cockpit still open (alternate buffer)`, open && s.type === "alternate", s.type, "alternate", s);
+		const bad = range(0, s.rows).filter(i => oneOf(s.at(i, 0), "╔║╟╚") && !oneOf(s.at(i, s.cols - 1), "╗║╢╝"));
+		C.ck(`${name}: every framed row ends at col ${s.cols - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, s);
+	}
+	// The ▸ a step left, the boxes and the CHRONICLE rule are back: Back (any encoding) returns to the top level with the cursor on the same cell.
+	const back = (name: string, from: string, enter: string) => {
+		if (!seen.has(name) || !seen.has(from) || !seen.has(enter)) return;
+		const s = snapOf(C, name), a = markers(snapOf(C, from)), b = markers(s);
+		C.ck(`${name}: the boxes are back (BATTLE-BROTHERS and the CHRONICLE rule)`, s.type === "alternate" && s.has("BATTLE-BROTHERS") && chronicleRule(s), s.type, null, s);
+		C.ck(`${name}: the ▸ is on the cell it was on before ${enter}`, a.length === 1 && Bun.deepEquals(a, b), b, a, s);
+	};
+	const on = (name: string, text: string) => {
+		if (!seen.has(name)) return;
+		const s = snapOf(C, name), u = underCursor(s);
+		C.ck(`${name}: one ▸, on a line with "${text}"`, markers(s).length === 1 && u.includes(text), u, text, s);
+	};
+	const detail = (name: string, title: string, shows: string[], rule = true) => {
+		if (!seen.has(name)) return;
+		const s = snapOf(C, name), rows = s.rowsText.filter(r => r.startsWith("╟─")).join("\n");
+		C.ck(`${name}: a ╟─ row names ${title}`, rows.includes(title), rows, title, s);
+		if (rule) C.ck(`${name}: no CHRONICLE rule (the detail replaces the boxes)`, !chronicleRule(s) && !s.has("BATTLE-BROTHERS"), null, null, s);
+		C.ck(`${name}: footer offers back`, footerRow(s).includes("back"), footerRow(s), "╚═ esc/bksp back …", s);
+		for (const x of shows) C.ck(`${name}: "${x}" on screen`, s.has(x), null, x, s);
+	};
+	if (seen.has("down")) {
+		on("down", "Squads:");
+		C.ck("down: seal line 14 is cut off in the box (the cap)", !snapOf(C, "down").has("line 14"), null, "not on screen", snapOf(C, "down"));
+	}
+	detail("seal", "SEAL COMMIT", ["Squads: cockpit"]);
+	detail("seal-scroll", "SEAL COMMIT", ["line 14"]);
+	back("seal-back", "down", "seal");
+	on("tab-squad", "squad alpha");
+	detail("squad", "SQUAD alpha", ["cockpit.test.ts", "penance", "parallel", "heavy"]);
+	back("squad-back", "tab-squad", "squad");
+	on("down-agent", "ApothecaryBeta");
+	detail("agent", "ApothecaryBeta", ["$1.07", "tokens"]);
+	back("agent-back", "down-agent", "agent");
+	if (seen.has("tab-chronicle")) {
+		const s = snapOf(C, "tab-chronicle"), m = markers(s);
+		C.ck("tab-chronicle: one ▸, under the CHRONICLE rule", m.length === 1 && chronicleRule(s) && m[0][0] > s.where("CHRONICLE"), m, `row > ${s.where("CHRONICLE")}`, s);
+		C.ck("tab-chronicle: the row cuts the entry (END-OF-ENTRY is not on screen)", !s.has("END-OF-ENTRY"), null, "cut", s);
+	}
+	detail("chronicle", "CHRONICLE", ["END-OF-ENTRY"], false);
+	back("chronicle-back", "tab-chronicle", "chronicle");
+	detail("enter-esc", "CHRONICLE", [], false);
+	if (seen.has("esc-back")) {
+		const s = snapOf(C, "esc-back");
+		C.ck("esc-back: one Esc goes back, the cockpit stays open (alternate, framed, boxes)", s.type === "alternate" && s.framed() && s.has("BATTLE-BROTHERS") && chronicleRule(s), s.type, "alternate, framed, boxes", s);
+		C.ck("esc-back: top-level footer", footerRow(s).startsWith("╚═ esc/q close"), footerRow(s), "╚═ esc/q close …", s);
+	}
+	detail("enter-q", "CHRONICLE", [], false);
+	if (seen.has("q-closed")) {
+		const s = snapOf(C, "q-closed");
+		C.ck("q-closed: q closes from a detail in one press (normal buffer, no frame, footer back)", s.type === "normal" && !s.framed() && s.has("strategium: demo-shot"), s.type, "normal, no frame", s);
+	}
+	if (seen.has("narrow")) {
+		const s = snapOf(C, "narrow");
+		C.ck("narrow: 60 columns, the detail's last row is esc back · q close", s.cols === 60 && lastRow(s).includes("esc back · q close"), [s.cols, lastRow(s)], "60, esc back · q close", s);
+	}
+	if (seen.has("narrow-back")) {
+		const s = snapOf(C, "narrow-back");
+		C.ck("narrow-back: one Esc goes back, last row is esc/q close", s.type === "alternate" && lastRow(s).includes("esc/q close"), lastRow(s), "esc/q close", s);
+	}
+	if (seen.has("narrow-closed")) {
+		const s = snapOf(C, "narrow-closed");
+		C.ck("narrow-closed: the second Esc closes (normal buffer, no frame, footer back)", s.type === "normal" && !s.framed() && s.has("strategium: demo-shot"), s.type, "normal, no frame", s);
+	}
+}
+
 // name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, settle (false: wait only for the first heartbeat), steps, checks
 type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
 export const REPLAYS: Record<string, Replay> = {
@@ -1034,6 +1176,7 @@ export const REPLAYS: Record<string, Replay> = {
 	"agent-cost": { r: "R22,#25", kind: "FIXED", seed: "live", steps: stepsAgentCost, checks: checksAgentCost },
 	"cockpit-restart": { r: "#19", kind: "FIXED", seed: "restart", steps: stepsCockpitRestart, checks: checksCockpitRestart },
 	"cockpit-cursor": { r: "#123", kind: "FIXED", seed: "restart", ext: true, steps: stepsCockpitCursor, checks: checksCockpitCursor },
+	"cockpit-detail": { r: "#124", kind: "FIXED", seed: "detail", ext: true, steps: stepsCockpitDetail, checks: checksCockpitDetail },
 };
 
 // shortcut: only the entities Chromium's --dump-dom writes in text (amp, lt, gt, quot, apos, nbsp, numeric); a full table if that ever changes

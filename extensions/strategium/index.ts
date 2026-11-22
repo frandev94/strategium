@@ -23,7 +23,7 @@ import {
 import { debrief, type AgentCost, type Reported } from "./debrief";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, navKey, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -1059,6 +1059,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		dirty: false,
 		seal: undefined as { id: string; lines: string[] } | undefined, // what the Captain prepared for the seal that waits (the `seal` action)
 		deployed: new Map<string, Deployed>(),
+		final: new Map<string, Live | undefined>(), // a finished agent's live row: read once, a miss re-read while its agent's or squad's detail is open (undefined: none found); memory only
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
 		input: undefined as ViewInput | undefined, // the last view input, so a cursor key recomputes the view without reading files
@@ -1074,6 +1075,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.chronicle = [];
 		cockpit.notes = {};
 		cockpit.deployed.clear();
+		cockpit.final.clear();
 		cockpit.clock = undefined;
 		cockpit.seal = undefined;
 		cockpit.nav = {};
@@ -1096,7 +1098,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			cockpit.notes = saved.notes;
 			for (const [id, job] of saved.deployed as [string, Deployed][]) {
 				// Hand-edited or damaged numbers are read as absent.
-				for (const k of ["at", "stalled"] as const) if (typeof job[k] !== "number") delete job[k];
+				for (const k of ["at", "ended", "stalled"] as const) if (typeof job[k] !== "number") delete job[k];
 				if (job.blocked !== true) delete job.blocked;
 				cockpit.deployed.set(id, job);
 			}
@@ -1111,11 +1113,17 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.chronicle = pushEntry(cockpit.chronicle, { at: new Date().toTimeString().slice(0, 5), who, text, ...(tone ? { tone } : {}) });
 		cockpit.dirty = true;
 	};
+	/** The live row of an agent, unless the file is older than this deploy (a previous agent's with the same id). */
+	const ownRow = (sid: string, id: string, job: Deployed) => {
+		const row = readLive(sid, id);
+		return row && row.since >= (job.at ?? 0) ? row : undefined;
+	};
 	/** A deployed agent ended: log it once, keep it in the registry as done or failed, and note its squad as failed or not. */
 	const endJob = (key: string, id: string, ok: boolean) => {
 		const job = cockpit.deployed.get(id);
 		if (job?.state !== "active") return;
 		job.state = ok ? "done" : "failed";
+		job.ended = Date.now();
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
 		log(key, job.who, ok ? "✓ returned" : "✗ failed", ok ? "ok" : "fail");
 	};
@@ -1137,10 +1145,16 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const now = Date.now();
 		const rows = new Map<string, Live>();
 		for (const [id, job] of cockpit.deployed) {
-			if (job.state !== "active") continue;
-			const raw = readLive(run.sid, id);
+			if (job.state !== "active") {
+				// shortcut: a valid row is read once, so what the agent wrote after it is lost; a miss (no file yet, a rename in flight, half a file) is read again only while its detail is open; upgrade if the detail of a returned agent must keep following its file.
+				if (!cockpit.final.get(id) && (!cockpit.final.has(id) || cockpit.nav.detail?.id === `agent:${id}` || (!!job.squad && cockpit.nav.detail?.id === `squad:${job.squad}`))) cockpit.final.set(id, ownRow(run.sid, id, job));
+				const r = cockpit.final.get(id);
+				if (r) rows.set(id, r);
+				continue;
+			}
+			cockpit.final.delete(id); // an id spawned again drops the row of the agent that ended under it
 			// A file older than this deploy is a previous agent's with the same id.
-			const row = raw && raw.since >= (job.at ?? 0) ? raw : undefined;
+			const row = ownRow(run.sid, id, job);
 			if (row) rows.set(id, row);
 			// A row that stopped saying it is blocked re-arms the alarm for the next block.
 			if (row && !row.blocked && job.blocked) {
@@ -1234,10 +1248,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 					return {
 						render: width => renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows),
 						handleInput: data => {
-							if (closes(data)) return close();
-							const key = navKey(data);
-							if (!key || !cockpit.view || !cockpit.input) return;
-							cockpit.nav = navigate(cockpit.view, key);
+							const act = keyAction(data, !!cockpit.nav.detail);
+							if (act === "close") return close();
+							if (!act || !cockpit.view || !cockpit.input) return;
+							cockpit.nav = navigate(cockpit.view, act);
 							cockpit.view = cockpitView({ ...cockpit.input, status: cockpit.status, nav: cockpit.nav });
 							cockpit.nav = cockpit.view.nav;
 							tui.requestRender();

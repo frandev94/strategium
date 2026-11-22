@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test, vi } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { keyOf, parseTiers, whereFrom } from "./index";
@@ -5316,6 +5316,268 @@ describe("cockpit", () => {
 			const t = await chron(s, ui);
 			expect(t).toContain("returned");
 			expect(t).not.toContain("stalled");
+		});
+
+		describe("detail", () => {
+			const scout = (s: S, status: string) => s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "scout", task: "x" }] }, details: { progress: [{ index: 0, id: "S", status }] }, isError: false }, s.ctx));
+			const done = (s: S) => scout(s, "completed");
+			const show = (c: { render(w: number): string[] }) => plain(c.render(100).join("\n"));
+			// Tab through the lines, Enter on each, until the open detail says `word`.
+			const openDetail = (c: { render(w: number): string[]; handleInput?(d: string): void }, word: string) => {
+				for (let i = 0; i < 20; i++) {
+					c.handleInput!("\t");
+					c.handleInput!("\r");
+					if (show(c).includes(word)) return true;
+					c.handleInput!("\x7f");
+				}
+				return false;
+			};
+
+			test("q closes from a detail; Esc backs out of it and the next Esc closes; Back at the top does nothing", async () => {
+				const { s, ui } = await squad();
+				await s.sub("cockpit");
+				const c = ui.opened.at(-1)!.component;
+				const top = show(c);
+				c.handleInput!("\x7f");
+				expect(show(c)).toBe(top);
+				expect(ui.draws.closed).toBe(0);
+				expect(openDetail(c, "back · q close")).toBe(true);
+				c.handleInput!("\x1b");
+				expect(ui.draws.closed).toBe(0);
+				expect(show(c)).not.toContain("back · q close");
+				expect(openDetail(c, "back · q close")).toBe(true);
+				c.handleInput!("q");
+				expect(ui.draws.closed).toBe(1);
+				await s.sub("cockpit");
+				const again = ui.opened.at(-1)!.component;
+				expect(show(again)).not.toContain("back · q close");
+				again.handleInput!("\x1b");
+				expect(ui.draws.closed).toBe(2);
+			});
+
+			test("a keypress reads no file: the detail still opens after the run's files are gone", async () => {
+				const { s, ui } = await squad();
+				await s.sub("cockpit");
+				const c = ui.opened.at(-1)!.component;
+				rmSync(join(s.dir, "runs"), { recursive: true, force: true });
+				expect(openDetail(c, "back · q close")).toBe(true);
+				c.handleInput!("q");
+			});
+
+			test("the end of an agent is stored as `ended`, and a loaded state keeps it only as a number", async () => {
+				const { s, ui } = await squad();
+				scout(s, "running");
+				at(MIN);
+				done(s);
+				await peek(s, ui);
+				const file = join(s.dir, "runs", "sess-0001.cockpit");
+				const saved = JSON.parse(readFileSync(file, "utf8"));
+				expect(saved.deployed.find((d: unknown[]) => d[0] === "S")[1].ended).toBe(T0 + MIN);
+				const ran = async (ended: unknown) => {
+					saved.deployed.find((d: unknown[]) => d[0] === "S")[1].ended = ended;
+					writeFileSync(file, JSON.stringify(saved));
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					at(10 * MIN);
+					await r.sub("cockpit");
+					const c = rui.opened.at(-1)!.component;
+					expect(openDetail(c, "returned")).toBe(true);
+					const t = show(c);
+					c.handleInput!("q");
+					return t;
+				};
+				expect(await ran(T0 + MIN)).toContain("ran 1m");
+				expect(await ran("soon")).toContain("elapsed unknown");
+			});
+
+			test("a finished agent's last live row is read once, so its detail keeps the cost after the file is gone", async () => {
+				const { s, ui } = await squad();
+				scout(s, "running");
+				mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+				writeFileSync(liveFile(s, "S"), JSON.stringify({ since: T0, at: T0, busy: 0, cost: 0.42, line: "wrapping up" }));
+				at(MIN);
+				done(s);
+				rmSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true, force: true });
+				await s.sub("cockpit");
+				const c = ui.opened.at(-1)!.component;
+				expect(openDetail(c, "cost: $0.42")).toBe(true);
+				expect(show(c)).toContain("ran 1m");
+				c.handleInput!("q");
+			});
+
+			describe("a finished agent's row", () => {
+				const evalSpawn = (s: S) => s.handlers.before_subagent_spawn.forEach(h => h({ invocationKind: "eval", agent: "scout", spawnKey: "E" }, s.ctx));
+				const evalEnd = (s: S) => s.handlers.context.forEach(h => h({ type: "context", messages: [{ role: "toolResult", toolName: "eval", isError: false, content: [], details: { cells: [{ statusEvents: [{ op: "agent", id: "E", status: "completed" }] }] } }] }, s.ctx));
+				const writeRow = (s: S, id: string, row: object) => {
+					mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+					writeFileSync(liveFile(s, id), JSON.stringify({ busy: 0, ...row }));
+				};
+				const detailOf = async (s: S, ui: ReturnType<typeof uiCtx>, word: string) => {
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					let found = false;
+					for (let i = 0; i < 20 && !found; i++) {
+						c.handleInput!("\x1b[B");
+						c.handleInput!("\r");
+						found = show(c).includes(word);
+						if (!found) c.handleInput!("\x7f");
+					}
+					const t = show(c);
+					c.handleInput!("q");
+					return found ? t : undefined;
+				};
+
+				test("an id spawned again does not inherit the row of the agent that ended under it; its own live row wins", async () => {
+					const { s, ui } = await squad();
+					evalSpawn(s);
+					writeRow(s, "E", { since: T0, at: T0, cost: 0.42, line: "old line" });
+					at(MIN);
+					evalEnd(s);
+					at(2 * MIN);
+					evalSpawn(s);
+					const fresh = await detailOf(s, ui, "scout E · running");
+					expect(fresh).toContain("cost: unknown");
+					expect(fresh).not.toContain("old line");
+					writeRow(s, "E", { since: T0 + 2 * MIN, at: T0 + 2 * MIN, cost: 0.99 });
+					expect(await detailOf(s, ui, "scout E · running")).toContain("cost: $0.99");
+				});
+
+				test("after a restart a returned agent's row is read once, at the first draw, if it is not older than its deploy", async () => {
+					const { s } = await squad();
+					scout(s, "running");
+					writeRow(s, "S", { since: T0, at: T0, cost: 0.42 });
+					at(MIN);
+					done(s);
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					expect(await detailOf(r, rui, "scout S · returned")).toContain("cost: $0.42");
+					writeRow(r, "S", { since: T0, at: T0, cost: 9 });
+					expect(await detailOf(r, rui, "scout S · returned")).toContain("cost: $0.42");
+				});
+
+				test("a miss at the first draw is read again when the detail opens: a file that shows up later shows its cost", async () => {
+					const { s } = await squad();
+					scout(s, "running");
+					at(MIN);
+					done(s);
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					await r.sub("cockpit");
+					const c = rui.opened.at(-1)!.component;
+					for (let i = 0; i < 20 && !show(c).includes("scout S · returned"); i++) {
+						c.handleInput!("\x1b[B");
+						c.handleInput!("\r");
+						if (!show(c).includes("scout S · returned")) c.handleInput!("\x7f");
+					}
+					expect(show(c)).toContain("cost: unknown");
+					writeRow(r, "S", { since: T0, at: T0, cost: 9 });
+					evalSpawn(r); // a redraw while the detail is open
+					expect(show(c)).toContain("cost: $9");
+					c.handleInput!("q");
+				});
+
+				test("a row older than the deploy never enters the detail of the returned agent", async () => {
+					const { s, ui } = await squad();
+					at(MIN);
+					scout(s, "running");
+					writeRow(s, "S", { since: T0 - 5 * MIN, at: T0 - 4 * MIN, cost: 7 });
+					at(2 * MIN);
+					done(s);
+					expect(await detailOf(s, ui, "scout S · returned")).toContain("cost: unknown");
+				});
+
+				// The same extension instance serves two sessions (omp mutates one SessionManager): the rows read for session A must not be the rows of session B.
+				test("a session switch drops the rows read for the previous session: its saved state brings the agent back with no row", async () => {
+					const { s, ui } = await squad();
+					evalSpawn(s);
+					writeRow(s, "E", { since: T0, at: T0, cost: 0.42 });
+					at(MIN);
+					evalEnd(s);
+					expect(await detailOf(s, ui, "scout E · returned")).toContain("cost: $0.42"); // read, and kept in `final`
+					await s.handlers.session_shutdown[0]({}, s.ctx);
+					const runs = join(s.dir, "runs");
+					writeFileSync(join(runs, "sess-0002.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(runs, "sess-0001.json"), "utf8")), sid: "sess-0002" }));
+					copyFileSync(join(runs, "sess-0001.cockpit"), join(runs, "sess-0002.cockpit"));
+					rmSync(join(runs, "sess-0001.live"), { recursive: true, force: true });
+					s.ctx.sessionManager = { getSessionId: () => "sess-0002" };
+					await s.handlers.session_switch[0]({}, s.ctx);
+					expect(await detailOf(s, ui, "scout E · returned")).toContain("cost: unknown");
+				});
+
+				const into = (c: { render(w: number): string[]; handleInput?(d: string): void }, title: string) => {
+					for (let i = 0; i < 20 && !show(c).includes(title); i++) {
+						c.handleInput!("\x1b[B");
+						c.handleInput!("\r");
+						if (!show(c).includes(title)) c.handleInput!("\x7f");
+					}
+					expect(show(c)).toContain(title);
+				};
+
+				test("a miss is also read again while the detail of the agent's squad is open", async () => {
+					const { s } = await squad();
+					at(MIN);
+					s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A")] }, details: { progress: [{ index: 0, id: "A", status: "completed" }] }, isError: false }, s.ctx));
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					await r.sub("cockpit");
+					const c = rui.opened.at(-1)!.component;
+					into(c, "agents (1):");
+					expect(show(c)).toContain("cost: unknown");
+					writeRow(r, "A", { since: T0, at: T0, cost: 9 });
+					evalSpawn(r); // a redraw while the squad's detail is open
+					expect(show(c)).toContain("cost: $9");
+					c.handleInput!("q");
+				});
+
+				test("a miss is not read again while no detail is open: the row that shows up later waits for the next draw after the detail opens", async () => {
+					const { s } = await squad();
+					at(MIN);
+					s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A")] }, details: { progress: [{ index: 0, id: "A", status: "completed" }] }, isError: false }, s.ctx));
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					await r.sub("cockpit");
+					const c = rui.opened.at(-1)!.component;
+					writeRow(r, "A", { since: T0, at: T0, cost: 9 });
+					evalSpawn(r); // a redraw with the detail closed: the miss stays
+					into(c, "agents (1):"); // opening a detail recomputes from the last input, reading no file
+					expect(show(c)).toContain("cost: unknown");
+					evalSpawn(r); // the first draw with the detail open reads it again
+					expect(show(c)).toContain("cost: $9");
+					c.handleInput!("q");
+				});
+			});
+
+			describe("keys through handleInput", () => {
+				const DOWN = "\x1b[B";
+				test("down + enter opens the detail with its title, backspace and CSI-u backspace return with the line selected, a redraw keeps the detail, and the file saves no detail", async () => {
+					const { s, ui } = await squad();
+					scout(s, "running");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					c.handleInput!(DOWN);
+					const list = show(c);
+					const sel = list.split("\n").find(l => l.includes("▸"))!;
+					c.handleInput!("\r");
+					const opened = show(c);
+					expect(opened).toContain("back · q close");
+					for (const back of ["\b", "\x1b[127u"]) {
+						c.handleInput!(back);
+						expect(show(c).split("\n").find(l => l.includes("▸"))).toBe(sel);
+						c.handleInput!("\r");
+						expect(show(c)).toBe(opened);
+					}
+					at(MIN);
+					done(s); // a redraw while the detail is open
+					expect(show(c)).toContain("back · q close");
+					expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8"))).not.toHaveProperty("detail");
+					c.handleInput!("q");
+				});
+			});
 		});
 
 		describe("stalled", () => {

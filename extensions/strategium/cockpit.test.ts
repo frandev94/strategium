@@ -4,6 +4,9 @@ import {
 	closes,
 	clean,
 	cockpitView,
+	cockpitKey,
+	detailKey,
+	wrap,
 	colorDepth,
 	grantedSeals,
 	waitingSeal,
@@ -1648,7 +1651,10 @@ describe("the selected line renders inside the frame", () => {
 	});
 	test("the footer lists the keys on every wide width, still starting with esc/q close", () => {
 		const last = (w: number) => draw(cockpitView(FULL()), w).at(-1)!;
-		for (const w of [72, 100, 140]) expect(last(w)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active ═+╝$/);
+		for (const w of [100, 140]) expect(last(w)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active · enter open ═+╝$/);
+		expect(last(72)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active ═+╝$/);
+		expect(last(76)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active ═+╝$/); // the widest the old hint stays, still with a rule cell
+		expect(last(77)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active · enter open ═+╝$/); // the first width where `enter open` leaves a rule cell
 		expect(draw(cockpitView(FULL()), 50).at(-1)).toBe("esc/q close");
 	});
 	test("property: every line is at most the width and exactly the width from 72 columns, with or without a selection", () => {
@@ -1700,5 +1706,475 @@ describe("selected rows are one even inverse block", () => {
 		}
 		const rows = renderCockpit(press(base, ...Array<NavKey>(6).fill("down")), 100, 0, TRUE, 12).map(plain);
 		expect(rows.find(l => l.includes("agent-5"))).toContain("▸");
+	});
+});
+
+describe("detailKey", () => {
+	const win32 = (vk: number, down: number, cs: number) => `\x1b[${vk};1;0;${down};${cs};1_`;
+	test("every Enter and Back encoding maps to its key", () => {
+		for (const d of ["\r", "\n", "\x1b[13u", "\x1b[13;1u", "\x1b[13;65u", "\x1b[13;129u", "\x1b[13;1:1u", "\x1b[13;1:2u", "\x1b[57414u", "\x1b[13;1;13u", win32(13, 1, 0)]) expect(detailKey(d)).toBe("enter");
+		for (const d of ["\x7f", "\b", "\x1b[127u", "\x1b[127;1:1u", "\x1b[127;65u", "\x1b[127;5u", "\x1b[127;5:1u", "\x1b[127;69u", "\x1b[127;133u", "\x1b[127;197u", win32(8, 1, 0), win32(8, 1, 4), win32(8, 1, 8), win32(8, 1, 12), win32(8, 1, 0x88), win32(8, 1, 0x2c)]) expect(detailKey(d)).toBe("back");
+	});
+	test("a release, a modifier, Esc, q, arrows and everything else is undefined", () => {
+		const none = ["", "\x1b[13;1:3u", "\x1b[127;1:3u", "\x1b[127;5:3u", "\x1b[13;3u", "\x1b[13;5u", "\x1b[13;2u", "\x1b[127;3u", "\x1b[127;2u", "\x1b[127;4u", "\x1b[127;6u", "\x1b[127;7u", win32(13, 0, 0), win32(13, 1, 2), win32(13, 1, 8), win32(8, 0, 0), win32(8, 0, 8), win32(8, 1, 2), win32(8, 1, 1), win32(8, 1, 16), win32(8, 1, 0x1c), win32(8, 1, 10), "\x1b", "q", "\x1b[A", "\t", "\r\r", "x", "\x1b[27u", "\x1b[13", "\x1b[14u"];
+		for (const d of none) expect(detailKey(d)).toBeUndefined();
+	});
+	test("a hostile string costs linear time and never throws", () => {
+		const n = 100_000;
+		const hostile = [`\x1b[13${":".repeat(n)}x`, `\x1b[127;${"1;".repeat(n)}u`, `\x1b[${"9".repeat(n)}`, `\x1b[13;1${":".repeat(n)}u`, `\x1b[${"1;".repeat(n)}_`, "\r".repeat(n)];
+		const t0 = performance.now();
+		for (const h of hostile) expect(detailKey(h)).toBeUndefined();
+		expect(performance.now() - t0).toBeLessThan(1000);
+	});
+	// properties: no property-test library in the repo, so a seeded random walk over the escape alphabet stands in for fast-check.
+	test("property: detailKey(x) defined implies closes(x) false and navKey(x) undefined; q closes at both levels", () => {
+		let s = 0x1234567;
+		const rnd = (n: number) => ((s = (Math.imul(s ^ (s >>> 15), 0x2c1b3c6d) + 0x297a2d39) | 0), (s >>> 0) % n);
+		const atoms = ["\x1b", "[", ";", ":", "1", "2", "3", "8", "13", "127", "65", "129", "u", "_", "~", "q", "\r", "\n", "\b", "\x7f", "57414", "27", "0", "A", "9", "\t"];
+		let keys = 0;
+		for (let i = 0; i < 30_000; i++) {
+			const x = Array.from({ length: 1 + rnd(9) }, () => atoms[rnd(atoms.length)]).join("");
+			if (detailKey(x) !== undefined) {
+				keys++;
+				expect(closes(x)).toBe(false);
+				expect(navKey(x)).toBeUndefined();
+			}
+		}
+		expect(keys).toBeGreaterThan(0);
+		expect(cockpitKey("q", true)).toBe("close");
+		expect(cockpitKey("q", false)).toBe("close");
+	});
+});
+
+describe("cockpitKey", () => {
+	test("q closes at every level; Esc backs out of a detail and closes at the top", () => {
+		for (const inDetail of [true, false]) expect(cockpitKey("q", inDetail)).toBe("close");
+		for (const esc of ["\x1b", "\x1b[27u"]) {
+			expect(cockpitKey(esc, false)).toBe("close");
+			expect(cockpitKey(esc, true)).toBe("back");
+		}
+	});
+	test("Enter, Back and the cursor keys map through; anything else is ignored", () => {
+		for (const inDetail of [true, false]) {
+			expect(cockpitKey("\r", inDetail)).toBe("enter");
+			expect(cockpitKey("\x7f", inDetail)).toBe("back");
+			expect(cockpitKey("\b", inDetail)).toBe("back");
+			expect(cockpitKey("\x1b[B", inDetail)).toBe("down");
+			expect(cockpitKey("\t", inDetail)).toBe("tab");
+			expect(cockpitKey("x", inDetail)).toBeUndefined();
+		}
+	});
+});
+
+describe("detail navigation", () => {
+	const base = () => NAVRUN();
+	const at = (n: number, ...more: NavKey[]) => press(base(), ...Array<NavKey>(n + 1).fill("down"), ...more);
+	test("enter with no cursor does nothing", () => {
+		expect(navigate(cockpitView(base()), "enter")).toEqual({});
+	});
+	test("enter opens the detail of the cursor line, one level only", () => {
+		const v = at(1, "enter");
+		expect(v.nav.detail).toEqual({ id: v.nav.cursor!.id });
+		expect(navigate(v, "enter")).toEqual(v.nav);
+	});
+	test("back drops the detail and its scroll, and the cursor is where it was", () => {
+		const before = at(2);
+		const open = press(base(), "down", "down", "down", "enter");
+		const scrolled = cockpitView({ ...base(), nav: navigate(open, "down") });
+		expect(scrolled.nav.tops?.detail).toBe(1);
+		const raw = navigate(scrolled, "back"); // cockpitView would filter a stale top away, so check navigate's own result
+		expect(raw.detail).toBeUndefined();
+		expect(raw.tops?.detail).toBeUndefined();
+		const back = cockpitView({ ...base(), nav: raw });
+		expect(back.nav.detail).toBeUndefined();
+		expect(back.nav.tops).toBeUndefined();
+		expect(back.nav.cursor).toEqual(before.nav.cursor);
+	});
+	test("back at the top level changes nothing", () => {
+		const v = at(1);
+		expect(navigate(v, "back")).toEqual(v.nav);
+	});
+	test("in a detail up and down scroll, never below 0; tab, left, right and home change nothing", () => {
+		let v = at(0, "enter");
+		expect(navigate(v, "up").tops).toBeUndefined();
+		for (let i = 0; i < 3; i++) v = cockpitView({ ...base(), nav: navigate(v, "down") });
+		expect(v.nav.tops?.detail).toBe(3);
+		v = cockpitView({ ...base(), nav: navigate(v, "up") });
+		expect(v.nav.tops?.detail).toBe(2);
+		for (const k of ["tab", "left", "right", "home"] as const) expect(navigate(v, k)).toEqual(v.nav);
+	});
+});
+
+// A Skirmish with a seal of 14 lines, squad alpha (a brother, a penance and a veteran), a returned squad beta and a lone apothecary.
+const LONG = `${"word ".repeat(120)}END-OF-ENTRY`;
+const DETAIL = (over: Partial<ViewInput> = {}): ViewInput =>
+	input({
+		clock: { running: true, el: 42, bk: 120 },
+		phases: [{ name: "Skirmish", tasks: [{ content: "[seal] Demo", status: "in_progress" }, { content: "[battle-brother] Build squad alpha", status: "pending" }, { content: "[captain] note", status: "pending" }] }],
+		seal: { id: "Demo", lines: Array.from({ length: 14 }, (_, i) => `line ${i + 1}`) },
+		slices: [{ id: "alpha", parallel: true, files: ["extensions/a.ts", "extensions/b.ts"], tier: "heavy" }],
+		stopped: [{ id: "beta", files: ["c.ts"] }],
+		agents: { AlphaBrother: { id: "alpha" } },
+		notes: { alpha: { veteran: true } },
+		now: 600_000,
+		deployed: new Map<string, Deployed>([
+			["AlphaBrother", dep({ role: "battle-brother", station: "Skirmish", squad: "alpha", at: 60_000, stalled: 500_000 })],
+			["AlphaPenance", dep({ role: "battle-brother", station: "Skirmish", squad: "alpha", state: "done", at: 60_000, ended: 180_000 })],
+			["AlphaVet", dep({ role: "veteran", station: "Skirmish", squad: "alpha", state: "failed", at: 60_000, ended: 90_000 })],
+			["ApothecaryBeta", dep({ role: "apothecary", station: "Skirmish", at: 120_000 })],
+		]),
+		live: new Map<string, Live>([
+			["AlphaBrother", { since: 60_000, at: 500_000, tool: "read", intent: "scan\n\x1b[31mred\u202e", done: 2, total: 5, pct: 40, eta_min: 7, current: "cur", line: "sig line", blocked: true, cost: 0.42, tokens_in: 1234, tokens_out: 56, cache_read: 7, cache_write: 8 }],
+		]),
+		chronicle: [{ at: "10:00", who: "CAPTAIN", text: LONG }, ...many(3)],
+		...over,
+	});
+const open = (id: string, over: Partial<ViewInput> = {}, extra: Nav = {}): View => cockpitView({ ...DETAIL(over), nav: { cursor: { id, at: 0 }, detail: { id }, ...extra } });
+const longId = () => cockpitView(DETAIL()).chronicle.find(e => e.text === LONG)!.id;
+
+describe("view.detail per kind", () => {
+	test("no detail open, no view.detail", () => {
+		expect(cockpitView(DETAIL()).detail).toBeUndefined();
+	});
+	test("squad: files, parallel, tier, the veteran note and every agent that ran it, penance included", () => {
+		const d = open("squad:alpha").detail!;
+		expect(d.title).toBe("SQUAD alpha · forging");
+		const t = d.lines.join("\n");
+		expect(d.lines.slice(0, 7)).toEqual(["files:", "  extensions/a.ts", "  extensions/b.ts", "parallel: yes", "tier: heavy", "escalated to veteran", "agents (3):"]);
+		expect(t).toContain("battle-brother AlphaBrother · running");
+		expect(t).toContain("penance AlphaPenance · returned");
+		expect(t).toContain("veteran AlphaVet · failed");
+		expect(t).toContain("ran 2m"); // ended - at
+		expect(t).toContain("ran <1m"); // the veteran: 30s
+		expect(t.indexOf("AlphaBrother")).toBeLessThan(t.indexOf("AlphaPenance"));
+	});
+	test("squad: an unknown slice says so, a squad with no agent says none deployed, parallel false is no", () => {
+		const none = open("squad:beta", { slices: [], stopped: [{ id: "beta", files: ["c.ts"], parallel: false }], deployed: new Map() }).detail!;
+		expect(none.title).toBe("SQUAD beta · returned");
+		expect(none.lines).toEqual(["files:", "  c.ts", "parallel: no", "no agent deployed yet"]);
+		const unknown = open("squad:alpha", { slices: [], stopped: [], agents: {}, deployed: new Map() }, {});
+		expect(unknown.detail).toBeUndefined(); // the line is gone with its slice
+	});
+	test("agent: role, id, station, elapsed, state, every live field, cost and tokens", () => {
+		const lines = open("squad:alpha").detail!.lines;
+		const brother = lines.slice(lines.indexOf("agents (3):") + 1, lines.indexOf("")).map(l => l.replace(/^  /, "")); // each agent indented under agents (n):
+		expect(brother).toEqual([
+			"battle-brother AlphaBrother · running",
+			"station: Skirmish",
+			"squad: alpha",
+			"ran 9m",
+			"progress: 40% · 2/5",
+			"eta: ~7m",
+			"current: cur",
+			"intent: scan red",
+			"tool: read",
+			"signalled: sig line",
+			"blocked",
+			"stalled 1m",
+			"cost: $0.42",
+			"tokens: 1,234 in · 56 out · cache 7 read · 8 write",
+		]);
+	});
+	test("agent detail of an apothecary with no usage says cost unknown and has no tokens line", () => {
+		const d = open("agent:ApothecaryBeta").detail!;
+		expect(d.title).toBe("APOTHECARY ApothecaryBeta");
+		expect(d.lines).toEqual(["apothecary ApothecaryBeta · running", "station: Skirmish", "ran 8m", "cost: unknown"]);
+	});
+	test("seal: the title of the panel and all 14 lines", () => {
+		const v = open("seal:Demo:3");
+		expect(v.detail!.title).toContain("SEAL DEMO");
+		expect(v.detail!.lines).toHaveLength(14);
+		expect(v.detail!.lines.at(-1)).toBe("line 14");
+	});
+	test("chronicle: the full text of a 600-char entry, uncut", () => {
+		const d = open(longId()).detail!;
+		expect(d.title).toBe("CHRONICLE · 10:00 · CAPTAIN");
+		expect(d.lines).toEqual([LONG]);
+		expect(LONG.length).toBeGreaterThan(600);
+	});
+	test("task: its text, status and station", () => {
+		const id = cockpitView(DETAIL()).items.find(i => i.id.startsWith("task:"))!.id;
+		const d = open(id).detail!;
+		expect(d.title).toBe("CAPTAIN TASK");
+		expect(d.lines).toEqual(["note", "status: pending", "station: Skirmish"]);
+	});
+	test("untrusted text comes out cleaned: no ESC, bidi override or newline in any title or line", () => {
+		const evil = "a\x1b[31mb\u202ec\nd\re";
+		const squad = open("squad:alpha", { slices: [{ id: "alpha", files: [evil], tier: evil }] }).detail!;
+		const chronicle = [{ at: "10:00", who: evil, text: evil }];
+		const entry = open(cockpitView(DETAIL({ chronicle })).chronicle[0].id, { chronicle }).detail!;
+		const agent = open("agent:ApothecaryBeta", { live: new Map([["ApothecaryBeta", { since: 1, at: 1, intent: evil, line: evil, current: evil, tool: evil }]]) }).detail!;
+		for (const d of [squad, entry, agent]) for (const l of [d.title, ...d.lines]) expect(l).not.toMatch(/[\x00-\x1f\x7f\u202a-\u202e]/);
+	});
+});
+
+describe("detail normalisation", () => {
+	test("the detail is dropped with its line: seal granted, entry trimmed at the cap", () => {
+		expect(open("seal:Demo:2").nav.detail).toEqual({ id: "seal:Demo:2" });
+		const granted = open("seal:Demo:2", { phases: [{ name: "Skirmish", tasks: [{ content: "[seal] Demo", status: "completed" }, { content: "[captain] note", status: "pending" }] }] });
+		expect(granted.nav.detail).toBeUndefined();
+		expect(granted.detail).toBeUndefined();
+		expect(granted.nav.cursor).toBeDefined(); // falls to the nearest line
+		expect(granted.items.some(i => i.id === granted.nav.cursor!.id)).toBe(true);
+		const old = cockpitView(DETAIL({ chronicle: many(200) })).chronicle.at(-1)!.id;
+		const full = [...many(200)];
+		expect(open(old, { chronicle: full }).nav.detail).toEqual({ id: old });
+		expect(open(old, { chronicle: pushEntry(full, { at: "11:00", who: "X", text: "new" }) }).nav.detail).toBeUndefined();
+	});
+	test("the detail and its scroll survive a redraw with new data; the scroll key goes with the detail", () => {
+		const v = open("seal:Demo:2", {}, { tops: { detail: 2 } });
+		const again = cockpitView({ ...DETAIL({ chronicle: [{ at: "10:05", who: "X", text: "fresh" }, ...DETAIL().chronicle] }), nav: v.nav });
+		expect(again.nav.detail).toEqual({ id: "seal:Demo:2" });
+		expect(again.nav.tops?.detail).toBe(2);
+		expect(cockpitView({ ...DETAIL(), nav: { cursor: v.nav.cursor, tops: { detail: 2 } } }).nav.tops).toBeUndefined();
+	});
+});
+
+describe("wrap", () => {
+	test("hanging indent: every row keeps the leading spaces of the first, capped so 2 cells remain", () => {
+		const path = "    extensions/strategium/a-very-long-file-name.ts";
+		const rows = wrap(path, 20);
+		expect(rows.length).toBeGreaterThan(2);
+		for (const row of rows) {
+			expect(row.startsWith("    ")).toBe(true);
+			expect(Bun.stringWidth(row)).toBeLessThanOrEqual(20);
+		}
+		expect(rows.map(x => x.trim()).join("")).toBe(path.trim());
+		expect(wrap("        abcdef", 6)).toEqual(["    ab", "    cd", "    ef"]);
+	});
+	test("breaks on spaces, splits a word longer than the width, keeps the indent on every row", () => {
+		expect(wrap("aaa bbb ccc", 7)).toEqual(["aaa bbb", "ccc"]);
+		expect(wrap("abcdefghij", 4)).toEqual(["abcd", "efgh", "ij"]);
+		expect(wrap("  indented text here", 10)).toEqual(["  indented", "  text", "  here"]);
+		expect(wrap("", 10)).toEqual([""]);
+	});
+	test("wide graphemes never overflow", () => {
+		for (const s of ["漢字漢字漢字漢字", "👍🏽👍🏽👍🏽 ❤️❤️❤️❤️", "a漢b漢c漢d"]) for (let w = 2; w < 12; w++) for (const r of wrap(s, w)) expect(Bun.stringWidth(r)).toBeLessThanOrEqual(w);
+	});
+	test("a 100000-char word is split in linear time", () => {
+		const t0 = performance.now();
+		const rows = wrap("x".repeat(100_000), 50);
+		expect(rows).toHaveLength(2000);
+		expect(performance.now() - t0).toBeLessThan(1000);
+	});
+	test("a long run of trailing whitespace is wrapped in linear time", () => {
+		for (const s of ["a" + " ".repeat(1e5), "a" + "\t ".repeat(5e4)]) {
+			const t0 = performance.now();
+			expect(wrap(s, 50)).toEqual(["a"]);
+			expect(performance.now() - t0).toBeLessThan(1000);
+		}
+	});
+	// properties: seeded walk standing in for fast-check.
+	test("property: every row fits the width and no character is lost", () => {
+		let s = 99;
+		const rnd = (n: number) => ((s = (Math.imul(s, 1103515245) + 12345) | 0), ((s >>> 8) >>> 0) % n);
+		const atoms = ["a", "bb", "ccc", "  ", " ", "漢字", "👍🏽", "❤️", "x".repeat(30), "\t", "é", "e\u0301"];
+		for (let i = 0; i < 3000; i++) {
+			const str = Array.from({ length: rnd(14) }, () => atoms[rnd(atoms.length)]).join(rnd(2) ? " " : "");
+			const w = 2 + rnd(30);
+			const rows = wrap(str, w);
+			for (const r of rows) expect(Bun.stringWidth(r)).toBeLessThanOrEqual(w);
+			expect(rows.join("").replace(/\s/g, "")).toBe(str.replace(/\s/g, ""));
+		}
+	});
+});
+
+describe("never trap: Esc twice closes from any state", () => {
+	test("property: from any nav, at most two Esc presses reach close", () => {
+		let s = 4242;
+		const rnd = (n: number) => ((s = (Math.imul(s, 1103515245) + 12345) | 0), ((s >>> 8) >>> 0) % n);
+		const keys: NavKey[] = ["up", "down", "left", "right", "home", "tab", "enter", "back"];
+		for (const base of [input(), NAVRUN(), DETAIL()])
+			for (let round = 0; round < 40; round++) {
+				let nav: Nav = {};
+				for (let i = 0; i < 25; i++) nav = navigate(cockpitView({ ...base, nav }), keys[rnd(keys.length)]);
+				let closed = false;
+				for (let press2 = 0; press2 < 2 && !closed; press2++) {
+					const k = cockpitKey("\x1b", !!cockpitView({ ...base, nav }).nav.detail);
+					if (k === "close") closed = true;
+					else if (k) nav = navigate(cockpitView({ ...base, nav }), k);
+				}
+				expect(closed).toBe(true);
+			}
+	});
+});
+
+describe("detail rendering", () => {
+	const ids = (): string[] => ["seal:Demo:0", "squad:alpha", "agent:ApothecaryBeta", longId()];
+	test("every width and height: no line wider than the width, framed rows closed, title names the detail, no chronicle rule, back footer", () => {
+		for (const width of [50, 72, 100, 140])
+			for (const height of [undefined, 12, 40])
+				for (const id of ids()) {
+					const v = open(id);
+					const rows = draw(v, width, height);
+					if (height) expect(rows).toHaveLength(height);
+					const title = v.detail!.title;
+					for (const l of rows) {
+						if (width >= 72) {
+							expect(Bun.stringWidth(l)).toBe(width);
+							if (l.startsWith("║")) expect(l.at(-1)).toBe("║");
+						} else expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
+					}
+					if (width >= 72) {
+						expect(rows.some(l => l.startsWith("╟─ ") && l.includes(title.slice(0, 12)))).toBe(true);
+						expect(rows.some(l => /^╟─ CHRONICLE ─/.test(l))).toBe(false);
+						expect(rows.at(-1)).toMatch(/^╚═ esc\/bksp back · q close · ↑↓ scroll ═+╝$/);
+					} else {
+						expect(rows.some(l => l.includes(title.slice(0, 12)))).toBe(true);
+						expect(rows.includes("CHRONICLE")).toBe(false);
+						expect(rows.at(-1)).toBe("esc back · q close");
+					}
+				}
+	});
+	test("words of width-1 and width cells drop nothing and cut nothing, wide and narrow", () => {
+		for (const width of [100, 50]) {
+			const inner = width - 2;
+			// Words of width-1 and width cells: wrapping at the full width would leave rows the frame then cuts with `…`.
+			const chronicle = [{ at: "10:00", who: "CAPTAIN", text: `${"Q".repeat(width - 1)} ${"Z".repeat(width)} END-OF-ENTRY` }];
+			const t = draw(open(cockpitView(DETAIL({ chronicle })).chronicle[0].id, { chronicle }), width).join("\n");
+			expect(t).not.toContain("…");
+			expect(t.match(/Q/g)).toHaveLength(width - 1);
+			expect(t.match(/Z/g)).toHaveLength(width);
+			expect(t).toContain("END-OF-ENTRY");
+		}
+	});
+	test("a long detail title is cut, not its scroll position", () => {
+		const id = `A${"x".repeat(150)}`;
+		const deployed = new Map<string, Deployed>([[id, dep({ role: "apothecary", station: "Skirmish", at: 120_000 })]]);
+		for (const width of [100, 50]) {
+			const title = draw(open(`agent:${id}`, { deployed }), width, 9).find(l => l.includes("APOTHECARY"))!;
+			expect(title).toMatch(/…\s?· \d+–\d+\/\d+ *(─+╢)?$/);
+		}
+	});
+	test("the scroll position stays gold after a cut title, wide and narrow", () => {
+		const id = `A${"x".repeat(150)}`;
+		const deployed = new Map<string, Deployed>([[id, dep({ role: "apothecary", station: "Skirmish", at: 120_000 })]]);
+		for (const width of [100, 50]) {
+			const row = renderCockpit(open(`agent:${id}`, { deployed }), width, 0, TRUE, 9).find(l => plain(l).includes("APOTHECARY"))!;
+			const sgr = (s: string) => s.match(/\x1b\[[0-9;]*m/g)!;
+			const at = row.search(/· \d+–\d+\/\d+/);
+			expect(at).toBeGreaterThan(0);
+			expect(sgr(row.slice(0, at)).at(-1)).toBe(sgr(row.slice(0, row.indexOf("APOTHECARY")))!.at(-1)); // the gold that opened the title
+		}
+	});
+	test("with no height every row is drawn, uncut, without a range suffix", () => {
+		for (const width of [50, 100]) {
+			const rows = draw(open(longId()), width).join(" ");
+			expect(rows).toContain("END-OF-ENTRY");
+			expect(rows).not.toMatch(/\d+–\d+\/\d+/);
+		}
+		expect(draw(open("seal:Demo:0"), 100).join("\n")).toContain("line 14");
+	});
+	test("a long detail at a fixed height shows a–b/n, scrolls with tops.detail and clamps at the bottom", () => {
+		const top = draw(open("seal:Demo:0"), 100, 12);
+		const t0 = top.find(l => l.startsWith("╟─ SEAL") || /╟─.*SEAL/.test(l))!;
+		expect(t0).toMatch(/· 1–\d+\/14/);
+		expect(top.join("\n")).toContain("line 1 ");
+		expect(top.join("\n")).not.toContain("line 14");
+		const v = open("seal:Demo:0", {}, { tops: { detail: 99 } });
+		const bottom = draw(v, 100, 12);
+		expect(bottom.join("\n")).toContain("line 14");
+		expect(bottom.find(l => /╟─.*SEAL/.test(l))).toMatch(/· \d+–14\/14/);
+		expect(v.nav.tops!.detail).toBeLessThan(99);
+		const mid = draw(open("seal:Demo:0", {}, { tops: { detail: 3 } }), 100, 12).join("\n");
+		expect(mid).toContain("line 4 ");
+		expect(mid).not.toContain("line 1 ");
+	});
+	test("a detail that fits the height has no suffix and clears a zero scroll", () => {
+		const v = open("agent:ApothecaryBeta");
+		expect(draw(v, 100, 40).join("\n")).not.toMatch(/\d+–\d+\/\d+/);
+		expect(v.nav.tops).toBeUndefined();
+	});
+});
+
+describe("top-level footer", () => {
+	test("enter open at 100 and 140, the old hint at 72, always starting esc/q close", () => {
+		for (const w of [72, 100, 140]) {
+			const f = draw(cockpitView(NAVRUN()), w).at(-1)!;
+			expect(f.startsWith("╚═ esc/q close")).toBe(true);
+			expect(f.endsWith("╝")).toBe(true);
+			expect(f.includes("enter open")).toBe(w >= 100);
+		}
+		expect(draw(cockpitView(NAVRUN()), 50).at(-1)).toBe("esc/q close");
+	});
+});
+
+describe("review fixes", () => {
+	const agent = (state: Deployed["state"], over: Partial<Deployed> = {}) =>
+		cockpitView({ ...DETAIL({ deployed: new Map([["Z", dep({ role: "scout", station: "Skirmish", state, at: 60_000, ...over })]]), live: new Map([["Z", { since: 60_000, at: 500_000, done: 1, total: 4, eta_min: 7, blocked: true }]]), now: 600_000 }), nav: { cursor: { id: "agent:Z", at: 0 }, detail: { id: "agent:Z" } } }).detail!.lines;
+	test("a returned or failed agent shows no eta, no blocked and no stalled line, even if its row had them", () => {
+		for (const state of ["done", "failed"] as const) {
+			const t = agent(state, { ended: 120_000, stalled: 500_000 }).join("\n");
+			expect(t).toContain("progress: 1/4");
+			expect(t).not.toMatch(/eta|stalled|blocked/);
+		}
+		expect(agent("active", { stalled: 500_000 }).join("\n")).toMatch(/eta: ~7m[\s\S]*blocked[\s\S]*stalled 1m/);
+	});
+	test("a finished agent with no `ended` says elapsed unknown, never an ever-growing ran", () => {
+		for (const state of ["done", "failed"] as const) {
+			const t = agent(state);
+			expect(t).toContain("elapsed unknown");
+			expect(t.join("\n")).not.toContain("ran ");
+		}
+		expect(agent("active")).toContain("ran 9m");
+	});
+	test("squad detail indents each agent's facts by two spaces under agents (n):", () => {
+		const lines = open("squad:alpha").detail!.lines;
+		const at = lines.indexOf("agents (3):");
+		const body = lines.slice(at + 1);
+		expect(body[0]).toBe("  battle-brother AlphaBrother · running");
+		for (const l of body) expect(l === "" || l.startsWith("  ")).toBe(true);
+		expect(body.filter(l => l === "")).toHaveLength(2);
+	});
+	describe("nav through a detail", () => {
+		const R = () => input({ phases: run(4) });
+		const detailed = (): View => {
+			let nav: Nav = {};
+			for (const k of ["left", "down", "enter"] as const) nav = navigate(cockpitView({ ...R(), nav }), k);
+			return cockpitView({ ...R(), nav });
+		};
+		test("opening a detail from a browsed station keeps the shown station through enter, scroll and back", () => {
+			let v = detailed();
+			expect(v.nav.shown).toEqual({ phase: 3, from: 4 });
+			expect(v.nav.detail).toBeDefined();
+			for (const k of ["down", "down", "up"] as const) {
+				v = cockpitView({ ...R(), nav: navigate(v, k) });
+				expect(v.nav.shown).toEqual({ phase: 3, from: 4 });
+			}
+			v = cockpitView({ ...R(), nav: navigate(v, "back") });
+			expect(v.nav.detail).toBeUndefined();
+			expect(v.nav.shown).toEqual({ phase: 3, from: 4 });
+		});
+		test("enter inside a detail leaves nav unchanged, scrolled detail and viewed station included", () => {
+			const v = cockpitView({ ...R(), nav: { ...detailed().nav, tops: { detail: 3 } } });
+			expect(v.nav.tops).toEqual({ detail: 3 });
+			expect(navigate(v, "enter")).toEqual(v.nav);
+		});
+	});
+	test("a detail of exactly the rows that fit has no a–b/n suffix, one more has it", () => {
+		const fit = (n: number) => {
+			const v = open("seal:Demo:0", { seal: { id: "Demo", lines: Array.from({ length: n }, (_, i) => `line ${i + 1}`) } });
+			return draw(v, 100, 20).find(l => /╟─.*SEAL/.test(l))!;
+		};
+		// find the room: the largest n with no suffix
+		let n = 1;
+		while (!/\d+–\d+\/\d+/.test(fit(n + 1))) n++;
+		expect(fit(n)).not.toMatch(/\d+–\d+\/\d+/);
+		expect(fit(n + 1)).toMatch(new RegExp(`· 1–${n}/${n + 1}`));
+		expect(n).toBeGreaterThan(3);
+	});
+	describe("wrap", () => {
+		test("interior runs of spaces survive when the line fits", () => {
+			expect(wrap("name    cost   tier", 30)).toEqual(["name    cost   tier"]);
+			expect(wrap("  a  b", 30)).toEqual(["  a  b"]);
+		});
+		test("a run at a break collapses and no row starts or ends with the dropped run", () => {
+			expect(wrap("aaa      bbb", 5)).toEqual(["aaa", "bbb"]);
+			expect(wrap("aa  bb    cc", 7)).toEqual(["aa  bb", "cc"]);
+		});
+		test("a word wider than the row hard-splits after an indent, and a wide grapheme in a one-cell row still moves on", () => {
+			expect(wrap("  abcdefghij", 6)).toEqual(["  abcd", "  efgh", "  ij"]);
+			expect(wrap("漢字", 1)).toEqual(["漢", "字"]);
+		});
 	});
 });
