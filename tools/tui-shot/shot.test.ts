@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allExit, type Args, parseArgs, parseSnaps, rec, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+import { allExit, type Args, parseArgs, parseSnaps, rec, relicEnv, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
 
 const args = (argv: string[]) => {
 	const a = parseArgs(argv);
@@ -31,13 +31,16 @@ test("parseArgs --ponytail: bare, =DIR, DIR, and bare before a flag", () => {
 	expect(args(["--ponytail", "--all"])).toMatchObject({ ponytail: true, all: true });
 });
 
-test("parseArgs --relic: bare and =1 are on, =0 off, default unset, other values rejected", () => {
-	expect(args([]).relic).toBeNull();
+test("parseArgs --relic: a plain flag, off by default, no value", () => {
+	expect(args([]).relic).toBe(false);
 	expect(args(["--relic"]).relic).toBe(true);
-	expect(args(["--relic=1"]).relic).toBe(true);
-	expect(args(["--relic=0"]).relic).toBe(false);
 	expect(args(["--relic", "--all"])).toMatchObject({ relic: true, all: true });
-	expect(parseArgs(["--relic=2"])).toHaveProperty("error", expect.stringContaining("--relic"));
+	for (const v of ["=1", "=0", "=2"]) expect(parseArgs([`--relic${v}`])).toHaveProperty("error", expect.stringContaining("--relic"));
+});
+
+test("relicEnv always pins STRATEGIUM_RELIC, so a user's own value never changes a shot", () => {
+	expect(relicEnv(false)).toEqual({ STRATEGIUM_RELIC: "0" });
+	expect(relicEnv(true)).toEqual({ STRATEGIUM_RELIC: "1" });
 });
 
 test("parseArgs rejects an unknown flag, a missing value and a bad seed", () => {

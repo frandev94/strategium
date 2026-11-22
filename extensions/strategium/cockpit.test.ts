@@ -2671,24 +2671,28 @@ describe("relic", () => {
 	const render = (v: View, width: number, pal = BLOOD, relic = true, height?: number, frame = 0) => renderCockpit(v, width, frame, pal, height, relic);
 	const POOL: string[] = [..."═─╍┅╌┄•╱╲·  abcXYZ019世界😀é", "\x1b[31m", "\t", "\u202e", "\n"];
 	const word = (r: (n: number) => number, n: number) => Array.from({ length: r(n) }, () => POOL[r(POOL.length)]).join("");
-	const randomView = (r: (n: number) => number): View =>
-		cockpitView(
-			DETAIL({
-				key: [...word(r, 14)].filter(c => c >= " " && c !== "\u202e").join("") || "k",
-				phases: [
-					{ name: "Skirmish", tasks: [{ content: "[seal] Demo", status: "in_progress" }, ...Array.from({ length: r(5) }, () => ({ content: `[battle-brother] ${word(r, 30)}`, status: ["pending", "in_progress", "completed"][r(3)] }))] },
-				],
-				seal: { id: "Demo", lines: Array.from({ length: r(16) }, () => word(r, 60)) },
-				chronicle: Array.from({ length: r(20) }, () => ({ at: "10:00", who: word(r, 12), text: word(r, 160) })),
-			}),
-		);
+	const randomView = (r: (n: number) => number, kind = 0): View => {
+		const inp = DETAIL({
+			key: [...word(r, 14)].filter(c => c >= " " && c !== "\u202e").join("") || "k",
+			phases: [
+				{ name: "Skirmish", tasks: [{ content: "[seal] Demo", status: "in_progress" }, ...Array.from({ length: r(5) }, () => ({ content: `[battle-brother] ${word(r, 30)}`, status: ["pending", "in_progress", "completed"][r(3)] }))] },
+			],
+			seal: { id: "Demo", lines: Array.from({ length: r(16) }, () => word(r, 60)) },
+			chronicle: Array.from({ length: 1 + r(20) }, () => ({ at: "10:00", who: word(r, 12), text: word(r, 160) })),
+			transcript: { id: "ApothecaryBeta", lines: Array.from({ length: r(60) }, () => word(r, 80)) },
+		});
+		if (kind === 1) return cockpitView({ ...inp, nav: { cursor: { id: cockpitView(inp).chronicle[0].id, at: 0 }, detail: { id: cockpitView(inp).chronicle[0].id } } }); // an entry's detail
+		if (kind === 2) return cockpitView({ ...inp, nav: trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta") }); // a transcript
+		return cockpitView(inp);
+	};
 	const cells = (s: string) => [...plain(s)];
 
-	test("(a) 300 random views: relic only wears fill runs and scratches blank cells with blank neighbours, never changes a line's width or the line count", () => {
+	test("(a) 300 random views, detail and transcript included: relic only wears fill runs and scratches blank cells with blank neighbours (never in a detail or transcript), never changes a line's width or the line count", () => {
 		const r = rnd0(20260);
 		let changed = 0;
 		for (let n = 0; n < 300; n++) {
-			const view = randomView(r);
+			const view = randomView(r, n % 3);
+			expect(!!view.detail).toBe(n % 3 > 0);
 			const width = 72 + r(129);
 			const height = r(2) ? undefined : 20 + r(41);
 			const pal = n % 2 ? palette("256", THEMES.cogitator) : BLOOD;
@@ -2704,7 +2708,7 @@ describe("relic", () => {
 					if (c === b[j]) return;
 					changed++;
 					const worn = WORN[b[j]]?.includes(c);
-					const scratch = b[j] === " " && b[j - 1] === " " && b[j + 1] === " " && "╱╲·".includes(c);
+					const scratch = !view.detail && b[j] === " " && b[j - 1] === " " && b[j + 1] === " " && "╱╲·".includes(c);
 					expect([n, i, j, b[j], c, worn || scratch]).toEqual([n, i, j, b[j], c, true]);
 				});
 			});
@@ -2735,11 +2739,11 @@ describe("relic", () => {
 		expect(norm(on0)).toEqual(norm(on1));
 	});
 
-	test("(d) other keys give another relic: alpha vs beta, and equal-length keys with the key text masked", () => {
+	test("(d) other keys give another relic: alpha vs beta, and equal-length keys that appear nowhere else with the key text masked", () => {
 		const at = (key: string) => render(cockpitView(DETAIL({ key, chronicle: many(14) })), 140, BLOOD, true, 30);
 		expect(at("alpha")).not.toEqual(at("beta"));
 		const masked = (key: string) => at(key).map(l => l.replaceAll(key, "KEY"));
-		expect(masked("alpha")).not.toEqual(masked("bravo"));
+		expect(masked("kkkkk")).not.toEqual(masked("mmmmm"));
 	});
 
 	test("(e) in 256 colours the relic adds no colour sequence", () => {
@@ -2760,20 +2764,20 @@ describe("relic", () => {
 		const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
 		return (hi + 0.05) / (lo + 0.05);
 	};
-	const dimIron = (iron: string, bg: string) => {
+	const dimIron = (iron: string, bg?: string) => {
 		const f = iron.match(/\d+/g)!.slice(2).map(Number);
-		const b = bg.match(/\d+/g)!.slice(2).map(Number);
-		return `\x1b[38;2;${f.map((x, i) => Math.round((x + b[i]) / 2)).join(";")}m`;
+		const b = bg?.match(/\d+/g)!.slice(2).map(Number);
+		return `\x1b[38;2;${f.map((x, i) => (b ? Math.round((x + b[i]) / 2) : Math.round(x * 0.6))).join(";")}m`; // a themed background: halfway to it; none: 0.6 of the iron
 	};
 	test.each(Object.entries(THEMES))("(f) theme %s: truecolor relic adds tarnish shades that are no palette tone and keep 3:1 on the background", (_name, theme: Theme) => {
 		const pal = palette("truecolor", theme);
 		const view = cockpitView(DETAIL({ chronicle: many(14) }));
 		const seqs = (ls: string[]) => new Set(ls.join("\n").match(/\x1b\[38;2;\d+;\d+;\d+m/g));
 		const off = seqs(render(view, 140, pal, false, 30));
-		const faint = pal.bg ? dimIron(pal.iron, pal.bg) : pal.iron; // the scratches: iron halfway to the background, faint on purpose (no 3:1)
+		const faint = dimIron(pal.iron, pal.bg); // the scratches: faint on purpose (no 3:1), and never the iron the real text is in
 		const shades = [...seqs(render(view, 140, pal, true, 30))].filter(s => !off.has(s) && s !== faint);
 		expect(shades).toHaveLength(8); // 4 shades and their dimmed twins on the odd scanlines
-		if (pal.bg) expect(faint).not.toBe(pal.iron);
+		expect(faint).not.toBe(pal.iron);
 		const tones: string[] = Object.values(pal);
 		for (const s of shades) {
 			expect(tones).not.toContain(s);
@@ -2820,7 +2824,7 @@ describe("relic", () => {
 		expect(rows.filter(d => a.at(-d) !== off.at(-d)).length).toBeGreaterThan(0); // not vacuous: some of them are scratched
 	});
 
-	test("scratches are sparse: at most one per row, about 1 in 120 blank cells, clustered as · ╱ ╲ or ╱╲", () => {
+	test("scratches are sparse: at most one per row, about 1 in 140 blank cells, clustered as · ╱ ╲ or ╱╲", () => {
 		let blank = 0;
 		let marks = 0;
 		for (let k = 0; k < 40; k++) {
@@ -2850,5 +2854,114 @@ describe("relic", () => {
 				expect(on.at(-1)).toMatch(/═╝$/);
 			}
 		}
+	});
+
+	const bars = (ls: string[]) => ls.map(l => l.match(/\x1b\[[0-9;]*m║/g) ?? []); // each ║ with the tarnish shade before it
+	const shot = (inp: ViewInput, nav?: Nav) => render(cockpitView(nav ? { ...inp, nav } : inp), 140, BLOOD, true, 40);
+
+	test("the rules and the ║ tints stay put when the cursor moves between a box line and a chronicle entry", () => {
+		const inp = DETAIL({ key: "stable", chronicle: many(4) });
+		const v = cockpitView(inp);
+		const [a, b] = [shot(inp, { cursor: { id: v.boxes[0].lines[0].id, at: 0 } }), shot(inp, { cursor: { id: v.chronicle[0].id, at: 0 } })];
+		expect(a).toHaveLength(b.length);
+		expect(a).not.toEqual(b); // the cursor does move
+		expect(bars(a)).toEqual(bars(b));
+		a.forEach((l, i) => {
+			if (!l.includes("▸") && !b[i].includes("▸")) expect(l).toBe(b[i]);
+		});
+	});
+
+	test("the rules, the ║ tints and the filler rows stay put when the chronicle grows by one entry", () => {
+		const at = (n: number) => shot(DETAIL({ key: "stable", chronicle: many(n) }));
+		const [a, b] = [at(4), at(5)];
+		expect(a).toHaveLength(b.length);
+		expect(bars(b)).toEqual(bars(a));
+		a.forEach((l, i) => {
+			if (/^[╔╟╚]/.test(plain(l))) expect(b[i]).toBe(l);
+		});
+		for (let d = 1; d <= 9; d++) expect(b.at(-d)).toBe(a.at(-d)); // the fillers and the bottom frame, by distance from the bottom
+	});
+
+	test("a box line whose text changes keeps its scratch column", () => {
+		const lines = (text: string, key: string) => {
+			const inp = DETAIL({ key, phases: [{ name: "Skirmish", tasks: [{ content: "[seal] Demo", status: "in_progress" }, { content: `[battle-brother] ${text}`, status: "pending" }] }], slices: [], stopped: [], agents: {}, deployed: new Map() });
+			const on = render(cockpitView(inp), 140).map(plain);
+			const off = render(cockpitView(inp), 140, BLOOD, false).map(plain);
+			const row = off.findIndex(l => l.includes(text));
+			return { on: [...on[row]], off: [...off[row]], row };
+		};
+		let kept = 0;
+		for (let k = 0; k < 400; k++) {
+			const [a, b] = [lines("zzq", `col-${k}`), lines("zzqzzq", `col-${k}`)];
+			expect(a.row).toBeGreaterThan(0);
+			a.on.forEach((c, j) => {
+				if (c === a.off[j] || b.off.slice(j - 4, j + 2).join("") !== "      ") return;
+				kept++;
+				expect([k, j, b.on[j]]).toEqual([k, j, c]);
+			});
+		}
+		expect(kept).toBeGreaterThan(0);
+	});
+
+	test("in a box a scratch has at least 3 blank cells between it and the text", () => {
+		let seen = 0;
+		for (let k = 0; k < 150; k++) {
+			const view = cockpitView(DETAIL({ key: `gap-${k}`, chronicle: many(2) }));
+			const on = render(view, 140, BLOOD, true, 40).map(plain);
+			const off = render(view, 140, BLOOD, false, 40).map(plain);
+			on.forEach((l, i) => {
+				if (!off[i].includes("│")) return;
+				[...l].forEach((c, j) => {
+					if (c === [...off[i]][j]) return;
+					seen++;
+					expect([k, i, j, [...off[i]].slice(j - 3, j).join("")]).toEqual([k, i, j, "   "]);
+				});
+			});
+		}
+		expect(seen).toBeGreaterThan(0);
+	});
+
+	const rgbOf = (s: string) => s.match(/\d+/g)!.slice(2).map(Number);
+	test("tarnish: shades lie between gold and brass, the first closer to gold, the odd lines carry their 0.85 twins", () => {
+		const view = cockpitView(DETAIL({ chronicle: many(14) }));
+		const seqs = (ls: string[]) => ls.join("\n").match(/\x1b\[38;2;\d+;\d+;\d+m/g) ?? [];
+		const palette0 = new Set([...seqs(render(view, 140, BLOOD, false, 30)), dimIron(BLOOD.iron, BLOOD.bg)]);
+		const lines = render(view, 140, BLOOD, true, 30);
+		const [even, odd] = [0, 1].map(p => new Set(seqs(lines.filter((_, i) => i % 2 === p)).filter(s => !palette0.has(s))));
+		expect([even.size, odd.size]).toEqual([4, 4]); // the scanline parity: the shades on the even lines, the twins on the odd ones
+		for (const o of odd) {
+			expect(even.has(o)).toBe(false);
+			expect([...even].some(e => rgbOf(e).every((x, c) => Math.round(x * 0.85) === rgbOf(o)[c]))).toBe(true);
+		}
+		const [gold, brass] = [rgbOf(BLOOD.gold), [0x8c, 0x6a, 0x2a]];
+		const dist = (a: number[], b: number[]) => Math.hypot(...a.map((x, c) => x - b[c]));
+		const shades = [...even].map(rgbOf).sort((x, y) => dist(x, gold) - dist(y, gold));
+		for (const s of shades) s.forEach((x, c) => expect(x).toBeWithin(Math.min(gold[c], brass[c]), Math.max(gold[c], brass[c]) + 1));
+		expect(dist(shades[0], gold)).toBeLessThan(dist(shades[0], brass));
+	});
+
+	test("wear and scratch density: worn cells are a minority of the run cells, scratches between 1 in 200 and 1 in 80 blank cells", () => {
+		let worn = 0;
+		let run = 0;
+		let blank = 0;
+		let marks = 0;
+		for (let k = 0; k < 60; k++) {
+			const view = cockpitView(DETAIL({ key: `dens-${k}`, chronicle: many(2) }));
+			const on = render(view, 140, BLOOD, true, 50).map(plain);
+			const off = render(view, 140, BLOOD, false, 50).map(plain);
+			on.forEach((l, i) => {
+				const [a, b] = [[...l], [...off[i]]];
+				a.forEach((c, j) => {
+					if ("╍┅╌┄".includes(c)) worn++;
+					if ("═─".includes(b[j]) && c !== "•") run++;
+					if (b[j] === " ") blank++;
+					if ("╱╲·".includes(c) && b[j] === " " && !"╱╲".includes(a[j - 1] ?? "")) marks++;
+				});
+			});
+		}
+		expect(worn / run).toBeGreaterThan(0.02);
+		expect(worn / run).toBeLessThan(0.2);
+		expect(marks / blank).toBeGreaterThan(1 / 200);
+		expect(marks / blank).toBeLessThan(1 / 80);
 	});
 });

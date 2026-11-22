@@ -1775,7 +1775,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			const c = arg.match(/^commit\s+(on|off)$/);
 			const k = arg.match(/^cockpit-key\s+(\S+)$/);
 			const th = arg.match(/^cockpit-theme\s+(\S+)$/);
-			const re = arg.match(/^relic\s+(on|off|default)$/i);
+			const re = arg.match(/^relic\s+(on|off|default)$/);
 			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
@@ -1800,7 +1800,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				theme = themeSetting();
 				pal = palette(colorDepth(), THEMES[theme.name]);
 			} else if (re) {
-				const v = re[1].toLowerCase();
+				const v = re[1];
 				if (v === "default") rmSync(relicFile(), { force: true });
 				else {
 					mkdirSync(stateDir(), { recursive: true, mode: 0o700 });

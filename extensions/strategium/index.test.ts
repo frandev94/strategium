@@ -3537,8 +3537,10 @@ describe("cockpit", () => {
 
 		test("a bad relic argument is refused and writes no file", async () => {
 			const s = setup();
-			await s.sub("config", "relic maybe");
-			expect(s.notes.at(-1)).toContain("config takes");
+			for (const bad of ["relic maybe", "relic ON", "relic Default"]) {
+				await s.sub("config", bad);
+				expect(s.notes.at(-1)).toContain("config takes");
+			}
 			expect(existsSync(join(s.dir, "relic"))).toBe(false);
 		});
 	});
