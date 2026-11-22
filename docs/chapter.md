@@ -102,7 +102,7 @@ Station names are unchanged. One line each:
 - Extraction: the work is delivered and the pull request is prepared.
 - Debrief: the run is summed up and its report is written.
 
-The Inquisition station also hosts the confessor and `sonic`, which are not in the Inquisition: stations are workflow, not organisation. `STRATEGOS` is the project's own word, not Codex lore: it is the voice of the chronicle, the log of the Strategium, the command bridge. It is not a rank and not an agent.
+The Inquisition station hosts `sonic` and `task` and ends with the confessor's review; none of them is part of the Inquisition: stations are workflow, not organisation. `STRATEGOS` is the project's own word, not Codex lore: it is the voice of the chronicle, the log of the Strategium, the command bridge. It is not a rank and not an agent.
 
 ## Cockpit themes
 
@@ -112,7 +112,7 @@ The Inquisition station also hosts the confessor and `sonic`, which are not in t
 
 No agent holds either today. They are defined here so that a later use (#62) has a lawful path.
 
-- Ancient: a post, not a rank. The Ancient is the standard-bearer of the 1st Company and is a veteran. The Captain assigns it to a veteran for a task; it is not earned by service, and a veteran does not become an Ancient by being a veteran.
+- Ancient: a post, not a rank. The Ancient is the standard-bearer of a company (the Chapter Ancient is of the 1st) and is a veteran. It is a post assigned by the Captain to a veteran for a task, not earned by service, and a veteran does not become an Ancient by being a veteran.
 - Venerable: an honorific, not a rank and not a post. In the lore it is given mostly to Dreadnoughts, the entombed heroes. It is never a promotion for an ordinary agent.
 
 ## Using these terms
