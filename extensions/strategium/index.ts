@@ -19,6 +19,7 @@ import {
 	overlapMin,
 	release,
 	safeName,
+	writeAtomic,
 	type Ev,
 } from "./timer";
 import { debrief, type AgentCost, type Reported } from "./debrief";
@@ -27,6 +28,7 @@ import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
 import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./names";
+import { applyRun, corrupted, loadRoster, rankBrothers, runOutcomes, unfinished, updateRoster, withRosterLock } from "./roster";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -71,6 +73,9 @@ type Run = {
 	redraft?: true;
 	builds?: Record<string, number>;
 	names?: NameEntry[];
+	// `ended`: how each squad's latest builder ended (a new builder of the squad clears it); `merged`: the Captain's own gh pr merge / glab mr merge came back clean. Both only with names on: they feed the roster at `end`.
+	ended?: Record<string, "ok" | "failed">;
+	merged?: true;
 	phases?: Phase[];
 	since?: string;
 };
@@ -274,24 +279,6 @@ function liveRows(run: Run): Map<string, Live> {
 	return rows;
 }
 
-/** Write through a temp file and rename, so a reader in another session never sees half a file. */
-function writeAtomic(file: string, data: string): void {
-	mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-	const tmp = `${file}.${process.pid}.tmp`;
-	writeFileSync(tmp, data, { mode: 0o600 });
-	// Windows refuses the rename for a moment while a scanner or indexer holds the target or the temp file open.
-	// ponytail: ~1 s of bounded retries, Windows only (blocking, like the sync write); a longer lock still throws.
-	for (let tries = 0; ; tries++) {
-		try {
-			return renameSync(tmp, file);
-		} catch (err) {
-			const code = (err as NodeJS.ErrnoException).code;
-			if (process.platform !== "win32" || tries >= 20 || !(code === "EPERM" || code === "EBUSY" || code === "EACCES")) throw err;
-			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
-		}
-	}
-}
-
 const beat = (sid: string) => writeAtomic(beatFile(sid), nowIso());
 function lastBeat(sid: string): string | undefined {
 	try {
@@ -386,7 +373,11 @@ function readRun(sid: string): Run | undefined {
 	if (!existsSync(f)) return undefined;
 	try {
 		const run = JSON.parse(readFileSync(f, "utf8")) as Run;
-		if (run && typeof run === "object" && "names" in run) run.names = cleanNames(run.names);
+		if (run && typeof run === "object") {
+			if ("names" in run) run.names = cleanNames(run.names);
+			run.ended = cleanEnded(run.ended);
+			if (run.merged !== true) delete run.merged;
+		}
 		return run;
 	} catch {
 		return undefined;
@@ -656,7 +647,7 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 }
 
 /** End this session's run, or another session's run of `key` by naming that crashed session's id in `takeover`. */
-function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } }): string {
+function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } }, names = false): string {
 	// ownRun() may drop the run file, so ask for it once.
 	const mine = ownRun(sid);
 	const run = key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine;
@@ -670,9 +661,10 @@ function endRun(sid: string, key?: string, takeover?: string, reported?: Reporte
 	release(stateDir(), run.key, sid);
 	// After the last span is closed and before the run's files go: the debrief reads them.
 	const lines = writeDebrief(run, reported, live, run.sid === sid);
+	const record = names ? recordRun(run) : undefined;
 	dropFiles(run.sid);
 	dropPointer(sid);
-	return [`ENDED ${run.key}`, ...lines].join("\n");
+	return [`ENDED ${run.key}`, ...lines, ...(record ? [record] : [])].join("\n");
 }
 
 function report(date?: string): string {
@@ -840,6 +832,62 @@ function cleanNames(v: unknown): NameEntry[] | undefined {
 		out.push({ name, agent, surname, ...(squad !== undefined ? { squad } : {}), ...(spawned === true ? { spawned: true as const } : {}), ...(old === true ? { old: true as const } : {}) });
 	}
 	return out.length ? out : undefined;
+}
+
+/** Run.ended as read from disk: only "ok" and "failed" outcomes. */
+function cleanEnded(v: unknown): Record<string, "ok" | "failed"> | undefined {
+	const kept = Object.entries(asObj(v)).filter(([, e]) => e === "ok" || e === "failed");
+	return kept.length ? (Object.fromEntries(kept) as Record<string, "ok" | "failed">) : undefined;
+}
+
+/** The run with `squad`'s outcome set, or cleared when `end` is undefined. */
+function setEnded(run: Run, squad: string, end?: "ok" | "failed"): Run {
+	const kept = Object.entries(run.ended ?? {}).filter(([k]) => k !== squad);
+	if (end) kept.push([squad, end]);
+	return { ...run, ended: kept.length ? Object.fromEntries(kept) : undefined };
+}
+
+const MERGE_CMD = /\b(?:gh\s+pr|glab\s+mr)\s+merge\b/;
+
+/** Fold the run's outcomes into the shared roster at `end`: the line to print, undefined with nothing to record. A roster failure never stops the end. */
+function recordRun(run: Run): string | undefined {
+	const names = cleanNames(run.names);
+	const outcomes = runOutcomes({ ...run, names });
+	if (!outcomes.length) return undefined;
+	const merged = run.merged === true && !unfinished({ names, ended: run.ended });
+	const err = updateRoster(stateDir(), b => applyRun(b, outcomes, merged));
+	return err ? `WARN ROSTER not written: ${err}` : `ROSTER ${outcomes.length} squad(s) recorded`;
+}
+
+type Pick = { prefer: string[]; skip: Set<string> };
+
+/** Surnames in use by the not-retired builders of other sessions' open runs: those brothers are on campaign. */
+function onCampaign(sid: string): Set<string> {
+	const away = new Set<string>();
+	for (const r of allRuns())
+		if (r.sid !== sid && holds(stateDir(), r.key, r.sid))
+			for (const n of cleanNames(r.names) ?? []) if (n.squad !== undefined && !n.old) away.add(n.surname);
+	return away;
+}
+
+/**
+ * Run `fn` (it ends with writeRun) under the roster lock, with the picks for a new builder squad: the best brothers first,
+ * corrupted ones and those on campaign skipped. A busy lock or an unreadable roster allocates without records and returns a WARN line.
+ */
+function withPicks<T>(sid: string, fn: (pick: Pick) => T): { value: T; warn?: string } {
+	let warn: string | undefined;
+	const locked = withRosterLock(stateDir(), () => {
+		const away = onCampaign(sid);
+		const loaded = loadRoster(stateDir());
+		if ("error" in loaded) {
+			warn = `WARN roster ${path.join(stateDir(), "roster.json")} unreadable (${loaded.error}): names come from the pool; fix or delete it`;
+			return fn({ prefer: [], skip: away });
+		}
+		const skip = new Set([...away, ...Object.keys(loaded.brothers).filter(b => corrupted(loaded.brothers[b]))]);
+		return fn({ prefer: rankBrothers(loaded.brothers, away), skip });
+	});
+	if ("busy" in locked) return { value: fn({ prefer: [], skip: onCampaign(sid) }), warn: "WARN roster busy: names come from the pool" };
+	return { value: locked.value, warn };
 }
 
 /** The run once the name behind a spawn key (omp's -N suffix dropped) is marked spawned; the same run when no name of that agent matches or it is marked already. */
@@ -1656,7 +1704,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	/** End the session's run. When it was its own, the tools come back and the Strategium theme plays; a takeover end does neither. */
 	async function finish(sid: string, ctx: SessionCtx, key?: string, takeover?: string, reported?: Reported): Promise<string> {
 		const mine = ownRun(sid);
-		const result = endRun(sid, key, takeover, reported, cockpit);
+		const result = endRun(sid, key, takeover, reported, cockpit, naming.on);
 		if (mine && result.split("\n", 1)[0] === `ENDED ${mine.key}`) {
 			await restoreTools(mine.hidden);
 			const err = alert(sid, "theme", `${mine.key}: run ended`, ctx);
@@ -1838,13 +1886,19 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 							return text(`ERROR squad ${squad} is not declared: call strategium action slices first`);
 						// No await from here to writeRun: parallel calls in one process cannot hand out one name twice.
 						const issued = issuedFor(sid);
-						const got = allocateName(run.names ?? [], { agent, squad, again: params.again }, issued);
-						if ("error" in got) return text(`ERROR ${got.error}`);
-						if (got.fresh) {
-							writeRun({ ...run, names: [...(run.names ?? []), got.entry] });
-							issued.add(got.entry.name);
-						}
-						return text(`NAME ${got.entry.name}`);
+						const place = (pick?: Pick): string => {
+							const got = allocateName(run.names ?? [], { agent, squad, again: params.again }, issued, undefined, pick);
+							if ("error" in got) return `ERROR ${got.error}`;
+							if (got.fresh) {
+								writeRun({ ...run, names: [...(run.names ?? []), got.entry] });
+								issued.add(got.entry.name);
+							}
+							return `NAME ${got.entry.name}`;
+						};
+						// A new builder surname comes from the roster, under its lock with the run write inside; every other name needs no roster.
+						if (!["battle-brother", "veteran"].includes(agent) || run.names?.some(n => n.squad === squad && !n.old)) return text(place());
+						const placed = withPicks(sid, place);
+						return text(placed.warn ? `${placed.warn}\n${placed.value}` : placed.value);
 					}
 					case "status":
 						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}\nCOMMIT ${commitState(sid)}\nTIERS ${tiersState()}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}\nNAMES ${namesState()}`);
@@ -1880,17 +1934,18 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const err = checkSlices(slices, stopped);
 						if (err) return text([...lines, `ERROR ${err}`].join("\n"));
 						const live = slices.filter(s => !stopped.some(d => d.id === s.id));
+						const at = lines.length;
 						lines.push(`SQUADS ${live.map(s => s.id + (s.parallel || s.tier ? ` (${[s.parallel && "parallel", s.tier].filter(Boolean).join(", ")})` : "")).join(", ") || "none"}`);
 						let next: Run = { ...run, slices: live, launched: undefined };
-						if (naming.on) {
-							// Each live parallel squad's first Brother, reused until it has spawned; a squad whose Brother has spawned is skipped.
-							// Synchronous from ownRun to writeRun, like `name`, so parallel calls cannot hand out one name twice.
+						// Each live parallel squad's first Brother, reused until it has spawned; a squad whose Brother has spawned is skipped.
+						// Synchronous from ownRun to writeRun, like `name`, so parallel calls cannot hand out one name twice.
+						const place = (pick?: Pick) => {
 							const entries = [...(run.names ?? [])];
 							const issued = issuedFor(sid);
 							const pairs: string[] = [];
 							for (const s of live.filter(s => s.parallel)) {
 								if (entries.some(n => n.squad === s.id && !n.old && n.agent === "battle-brother" && n.spawned)) continue;
-								const got = allocateName(entries, { agent: "battle-brother", squad: s.id }, issued);
+								const got = allocateName(entries, { agent: "battle-brother", squad: s.id }, issued, undefined, pick);
 								if ("error" in got) {
 									lines.push(`WARN ${got.error}`);
 									continue;
@@ -1903,8 +1958,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 							}
 							if (pairs.length) lines.push(`NAMES ${pairs.join(", ")}`);
 							if (entries.length) next = { ...next, names: entries };
+							writeRun(next);
+						};
+						if (!naming.on) writeRun(next);
+						else if (!live.some(s => s.parallel)) place();
+						else {
+							const placed = withPicks(sid, place);
+							if (placed.warn) lines.splice(at, 0, placed.warn);
 						}
-						writeRun(next);
 						return text(lines.join("\n"));
 					}
 					case "seal": {
@@ -1925,7 +1986,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const run = ownRun(sid);
 						if (!run) return text("ERROR no active run in this session");
 						if (run.redraft) return text(`ERROR the redraft of ${run.key} is spent (1 per run)`);
-						writeRun({ ...run, redraft: true, builds: undefined, ...(run.names ? { names: run.names.map(n => (n.squad ? { ...n, old: true as const } : n)) } : {}) });
+						writeRun({ ...run, redraft: true, builds: undefined, ended: undefined, ...(run.names ? { names: run.names.map(n => (n.squad ? { ...n, old: true as const } : n)) } : {}) });
 						record({ event: "redraft", key: run.key });
 						return text(
 							`REDRAFT ${run.key}: back to Auspex; no librarian or archmagos until a scout spawned now has finished${run.archmagosSpawned ? "; then one more archmagos may be spawned" : ""}`,
@@ -2423,9 +2484,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		}
 		if (agent === "battle-brother" && run.repo && !run.slices) return { block: true, reason: SLICES_REASON };
 		// The tier sets the child's model and its effort (the selector's :level). Reviewers and the rest keep their own.
-		const marked = markSpawned(run, key, agent);
+		const spawned = markSpawned(run, key, agent);
 		let tier: Tier | undefined;
-		const squad = agent === "veteran" || agent === "battle-brother" ? squadOf(marked, key, briefNames)?.id : undefined;
+		const squad = agent === "veteran" || agent === "battle-brother" ? squadOf(spawned, key, briefNames)?.id : undefined;
+		// A new builder reopens its squad: the outcome of the one before no longer stands.
+		const marked = squad && naming.on && run.ended && Object.hasOwn(run.ended, squad) ? setEnded(spawned, squad) : spawned;
 		if (agent === "veteran") tier = "heavy";
 		else if (agent === "battle-brother") tier = tierFor(marked, key, briefNames) ?? "standard";
 		// tierFor already wrote the marked run with its `builds`; any other spawn writes the mark alone.
@@ -2450,11 +2513,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		if (finished.length) next = { ...next, librarians: { ...run.librarians, ...Object.fromEntries(finished.map(id => [id, "done" as const])) } };
 		const scouted = completed.filter(id => run.scouts?.[id] === "running");
 		if (scouted.length) next = { ...next, scouts: { ...run.scouts, ...Object.fromEntries(scouted.map(id => [id, "done" as const])) } };
-		const ended = run.agents ? endedAgents(messages).filter(id => run.agents![id]) : [];
+		const ends = run.agents ? jobEnds(messages).filter(j => run.agents![j.id]) : [];
+		const ended = ends.map(j => j.id);
 		if (ended.length) {
 			const agents = { ...run.agents };
 			for (const id of ended) delete agents[id];
 			next = settle(next, agents, ended.map(id => run.agents![id]));
+			if (naming.on) for (const j of ends) next = setEnded(next, run.agents![j.id].id, j.status === "completed" ? "ok" : "failed");
 		}
 		if (next !== run) writeRun(next);
 	});
@@ -2474,6 +2539,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		let scouted = false;
 		const launched: Slice[] = [];
 		let tracked = false;
+		const done: [string, "ok" | "failed"][] = [];
 		for (const p of progress.map(asObj)) {
 			const item = typeof p.index === "number" ? items[p.index] : undefined;
 			if (!item || typeof p.id !== "string") continue;
@@ -2496,12 +2562,23 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			launched.push(slice);
 			// A blocking call returns once its agents are done: those never count as running.
 			if (p.status === "pending" || p.status === "running") agents[p.id] = slice;
+			else if (["completed", "failed", "aborted"].includes(String(p.status))) done.push([slice.id, p.status === "completed" ? "ok" : "failed"]);
 		}
 		let next: Run = run;
 		if (launched.length) next = settle(next, agents, launched);
+		if (naming.on) for (const [squad, end] of done) next = setEnded(next, squad, end);
 		if (tracked) next = { ...next, librarians };
 		if (scouted) next = { ...next, scouts };
 		if (next !== run) writeRun(next);
+	});
+
+	// The Captain's own gh pr merge / glab mr merge that came back clean: the run was merged (the Laurel needs it).
+	pi.on("tool_result", (e, ctx) => {
+		if (!naming.on || ctx?.agent?.kind === "sub" || !ctx?.sessionManager || e.toolName.replace(/^_+/, "") !== "bash" || e.isError) return;
+		const input = asObj(e.input);
+		if (input.async === true || asObj(e.details).exitCode !== undefined || !MERGE_CMD.test(String(input.command ?? ""))) return;
+		const run = ownRun(sidOf(ctx));
+		if (run && !run.merged) writeRun({ ...run, merged: true });
 	});
 
 	// ponytail: bash is a pattern list (see bashBlock); the edit tools are hidden and write/edit targets are checked below.

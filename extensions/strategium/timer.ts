@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** A day file is `YYYY-MM-DD.jsonl`; anything else never becomes a path. */
 export const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -252,4 +252,22 @@ export function nowIso(d: Date = new Date()): string {
 		`T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
 		`${sign}${pad(Math.floor(a / 60))}:${pad(a % 60)}`
 	);
+}
+
+/** Write through a temp file and rename, so a reader in another session never sees half a file. */
+export function writeAtomic(file: string, data: string): void {
+	mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+	const tmp = `${file}.${process.pid}.tmp`;
+	writeFileSync(tmp, data, { mode: 0o600 });
+	// Windows refuses the rename for a moment while a scanner or indexer holds the target or the temp file open.
+	// ponytail: ~1 s of bounded retries, Windows only (blocking, like the sync write); a longer lock still throws.
+	for (let tries = 0; ; tries++) {
+		try {
+			return renameSync(tmp, file);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (process.platform !== "win32" || tries >= 20 || !(code === "EPERM" || code === "EBUSY" || code === "EACCES")) throw err;
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+		}
+	}
 }

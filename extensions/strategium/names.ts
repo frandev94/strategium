@@ -75,6 +75,7 @@ export function allocateName(
 	req: NameRequest,
 	avoid: ReadonlySet<string> = new Set(),
 	rand: () => number = Math.random,
+	opts: { prefer?: readonly string[]; skip?: ReadonlySet<string> } = {},
 ): { entry: NameEntry; fresh: boolean } | { error: string } {
 	const { agent, squad, again } = req;
 	if (!NAMED_AGENTS.includes(agent)) return { error: `unknown agent ${agent}: names are for ${NAMED_AGENTS.join(", ")}` };
@@ -129,12 +130,16 @@ export function allocateName(
 		[(s) => holders(s).length === 0, (base) => (base.length <= MAX_NAME && !taken.has(base) ? base : undefined)],
 		[(s) => holders(s).every((e) => e.old || (!builder && e.agent === agent)), (base) => freeName(base, taken)],
 	];
+	// `prefer` surnames lead the candidates, so the first free one wins; otherwise draw from the pool.
+	const prefer = (opts.prefer ?? []).filter((s) => !opts.skip?.has(s));
+	const candidates = [...new Set([...prefer, ...pool])].filter((s) => !opts.skip?.has(s));
 	for (const [eligible, compose] of passes) {
 		const options: [string, string][] = [];
-		for (const s of pool) {
+		for (const s of candidates) {
 			const name = eligible(s) ? compose(title + s) : undefined;
 			if (name) options.push([s, name]);
 		}
+		if (options.length && prefer.includes(options[0][0])) return make(...options[0]);
 		if (options.length) {
 			const [s, name] = options[draw(options.length, rand)];
 			return make(s, name);

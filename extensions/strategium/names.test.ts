@@ -159,6 +159,55 @@ describe("roles", () => {
 	});
 });
 
+describe("prefer and skip", () => {
+	const alloc = (entries: NameEntry[], req: Parameters<typeof allocateName>[1], opts: { prefer?: string[]; skip?: Set<string> }, rand = seeded(3)) => {
+		const r = allocateName(entries, req, undefined, rand, opts);
+		if ("error" in r) throw new Error(r.error);
+		if (r.fresh) entries.push(r.entry);
+		return r.entry;
+	};
+
+	test("the first free preferred surname wins over the draw, in order", () => {
+		const entries: NameEntry[] = [];
+		const prefer = ["Gideon", "Leon", "Uriel"];
+		expect(alloc(entries, { agent: "battle-brother", squad: "a" }, { prefer }).surname).toBe("Gideon");
+		expect(alloc(entries, { agent: "battle-brother", squad: "b" }, { prefer }).surname).toBe("Leon");
+		expect(alloc(entries, { agent: "battle-brother", squad: "c" }, { prefer }).surname).toBe("Uriel");
+	});
+
+	test("a role takes its preferred surname", () => {
+		expect(alloc([], { agent: "scout" }, { prefer: ["Cyrus"] }).name).toBe("ScoutCyrus");
+	});
+
+	test("skipped surnames are never chosen, even if preferred", () => {
+		const skip = new Set(["Gideon"]);
+		for (let i = 0; i < 40; i++) {
+			const e = alloc([], { agent: "battle-brother", squad: "a" }, { prefer: ["Gideon"], skip }, seeded(i));
+			expect(e.surname).not.toBe("Gideon");
+		}
+	});
+
+	test("with every preferred surname taken or skipped, it recruits from the pool", () => {
+		const entries: NameEntry[] = [];
+		const first = alloc(entries, { agent: "battle-brother", squad: "a" }, { prefer: ["Gideon"] });
+		const second = alloc(entries, { agent: "battle-brother", squad: "b" }, { prefer: ["Gideon", "Leon"], skip: new Set(["Leon"]) });
+		expect(first.surname).toBe("Gideon");
+		expect(second.surname).not.toMatch(/^(Gideon|Leon)$/);
+		expect(second.name.startsWith("Brother")).toBe(true);
+	});
+
+	test("a squad keeps its surname when preferences change", () => {
+		const entries: NameEntry[] = [];
+		const b = alloc(entries, { agent: "battle-brother", squad: "a" }, { prefer: ["Gideon"] });
+		const v = alloc(entries, { agent: "veteran", squad: "a" }, { prefer: ["Leon"], skip: new Set(["Gideon"]) });
+		expect(v.surname).toBe(b.surname);
+	});
+
+	test("without options the result is unchanged", () => {
+		expect(alloc([], { agent: "scout" }, {}, seeded(5))).toEqual(give([], { agent: "scout" }, undefined, seeded(5)));
+	});
+});
+
 describe("servitors", () => {
 	test("designation is drawn from rand and retried until free", () => {
 		const a = give([], { agent: "sonic" }, undefined, seeded(7));
