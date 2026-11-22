@@ -137,7 +137,9 @@ export function allocateName(
 	for (const eligible of passes) {
 		const options: [string, string][] = [];
 		for (const s of candidates) {
-			const name = eligible(s) ? freeName(title + s, taken) : undefined;
+			const base = title + s;
+			// Only a preferred surname is kept with an epithet; the rest need their bare name free.
+			const name = !eligible(s) ? undefined : prefer.includes(s) || eligible === passes[1] ? freeName(base, taken) : base.length <= MAX_NAME && !taken.has(base) ? base : undefined;
 			if (name) options.push([s, name]);
 		}
 		if (options.length && prefer.includes(options[0][0])) return make(...options[0]);

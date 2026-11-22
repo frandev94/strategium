@@ -409,7 +409,7 @@ function allRuns(): Run[] {
 				return undefined;
 			}
 		})
-		.filter((r): r is Run => typeof r === "object" && r !== null);
+		.filter((r): r is Run => typeof r?.key === "string" && typeof r.sid === "string");
 }
 
 // Session ids share a time prefix, so the tail tells sessions apart.

@@ -4,6 +4,51 @@ import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./
 // Seeded LCG so draws are reproducible.
 const seeded = (seed: number) => () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
 
+describe("without prefer the bare name is required (REG-1)", () => {
+	const bare = (agent: string, title: string, pool: string[]) => {
+		for (let seed = 1; seed <= 10; seed++) {
+			const keep = pool[seed % pool.length];
+			const avoid = new Set(pool.filter((s) => s !== keep).map((s) => title + s));
+			const r = allocateName([], agent === "battle-brother" ? { agent, squad: "a" } : { agent }, avoid, seeded(seed));
+			expect("error" in r ? r.error : r.entry.name).toBe(title + keep);
+		}
+	};
+	const brothers = () => {
+		const held: NameEntry[] = [];
+		const names: string[] = [];
+		for (let i = 0; i < 49; i++) {
+			const r = allocateName(held, { agent: "battle-brother", squad: "p" + i });
+			if ("error" in r) break;
+			held.push(r.entry);
+			names.push(r.entry.surname);
+		}
+		return names;
+	};
+	test("48 of 49 bare Brother names avoided: the remaining one, for 10 seeds", () => bare("battle-brother", "Brother", brothers()));
+	test("a librarian likewise", () => {
+		const pool: string[] = [];
+		const held: NameEntry[] = [];
+		for (;;) {
+			const r = allocateName(held, { agent: "librarian" });
+			if ("error" in r) break;
+			held.push(r.entry);
+			pool.push(r.entry.surname);
+		}
+		bare("librarian", "Librarian", pool);
+	});
+	test("differential: same result as the old bare-name pass 1 for random seeds", () => {
+		const all = brothers();
+		for (let seed = 1; seed <= 40; seed++) {
+			const rand = seeded(seed);
+			const avoid = new Set(all.filter(() => rand() < 0.9).map((s) => "Brother" + s));
+			const free = all.filter((s) => !avoid.has("Brother" + s));
+			const r = allocateName([], { agent: "battle-brother", squad: "a" }, avoid, seeded(seed + 100));
+			if (free.length) expect(free).toContain("error" in r ? "" : r.entry.surname);
+			if (!("error" in r) && free.length) expect(r.entry.name).toBe("Brother" + r.entry.surname);
+		}
+	});
+});
+
 describe("prefer with names already issued (CB1)", () => {
 	test("a preferred surname whose bare name is in avoid is kept with an epithet", () => {
 		const r = allocateName([], { agent: "battle-brother", squad: "a" }, new Set(["BrotherLorenzo"]), undefined, { prefer: ["Lorenzo"] });

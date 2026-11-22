@@ -8238,6 +8238,16 @@ describe("service record (#134)", () => {
 			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
 		});
 
+		test("a builder end over a junk ended rewrites the run file with a clean object (M18)", async () => {
+			const s = await open();
+			await build(s, "S1");
+			edit(s, run => {
+				run.ended = "ok";
+			});
+			await build(s, "S2", "failed");
+			expect(runFile(s).ended).toEqual({ S2: "failed" });
+		});
+
 		test("a squad that failed and then was aborted has no outcome either", async () => {
 			const s = await open();
 			await build(s, "S1", "failed");
@@ -8307,6 +8317,16 @@ describe("service record (#134)", () => {
 			for (const [f, body] of [["null.json", "null"], ["str.json", '"x"'], ["num.json", "7"]]) writeFileSync(join(dir, "runs", f), body);
 			const s = await open({ dir, brothers: { Alpha: svc({ passed: 9 }) } });
 			expect(s.slices).toContain("S1=BrotherAlpha");
+		});
+
+		test("a run file that is an object without key and sid is skipped (N7)", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "st-roster-empty-"));
+			dirs.push(dir);
+			mkdirSync(join(dir, "runs"));
+			writeFileSync(join(dir, "runs", "empty.json"), "{}");
+			const s = await open({ dir, brothers: { Alpha: svc({ passed: 9 }) } });
+			expect(s.slices).toContain("S1=BrotherAlpha");
+			expect(await nameFor(s, "battle-brother", "S3")).toStartWith("Brother");
 		});
 
 		test("a quiet run file does not free a brother while the heartbeat is fresh", async () => {
