@@ -111,6 +111,31 @@ With `STRATEGIUM_NAMES` on, the plugin gives every agent a name for the run: a t
 - A surname belongs to one squad or one role in a run; a taken name gets an epithet (`InquisitorEisenhornSteadfast`). A name is at most 28 characters, so omp's `-N` suffix keeps the id within 32.
 - A redraft retires the old builder names; the re-planned squads get new surnames.
 
+## Service record and honours
+
+With `STRATEGIUM_NAMES` on, each builder surname (the `Lorenzo` of `BrotherLorenzo`, `PenitentLorenzo` and `VeteranLorenzo`) is one Battle-Brother with a service record. Every builder of a squad serves under that squad's surname, so the squad's outcome goes to one record. Other roles (librarian, inquisitor and so on) keep no record. With names off nothing is recorded.
+
+The record is filled only from what the plugin observes, and is written when the run ends:
+
+| Event | Effect |
+|---|---|
+| Squad passes on the first build | +1 passed, Purity Seal |
+| Squad passes after a penance | +1 passed, no honour |
+| Squad saved by the veteran | +2 passed, Iron Halo |
+| Each fix round | +1 penance |
+| Squad ends failed (the veteran failed, or a builder failed with no later builder) | +1 fall |
+| Every squad with an outcome | +1 squad served |
+| Run merged, every squad passed on the first build | Laurel Imperialis to every brother with an outcome in the run |
+| 10 passed | Crux Terminatus |
+
+- Reading: the plugin sees the agent's job status, not the reviewers' verdict, so a builder that returns `completed` counts as passed. A veteran is an escalation, not a penance. A squad still running or never built records nothing.
+- Laurel: the merge counts only when the Captain's own `gh pr merge` or `glab mr merge` command succeeds. A merge done elsewhere (the web page, another tool) earns no Laurel.
+- Honours are decorations, not ranks, titles or posts, and a name never changes with them. They are counters that only grow: nothing removes one, and Crux Terminatus is read from the passed count.
+- Corrupted: a brother with 3 falls, or with more penances than passes after 5 squads served, is corrupted and kept in reserve. It is read from the counters, never stored, and it only decides who is sent: the honours stay.
+- On campaign: a brother whose squad sits in another session's open run is on campaign. He is released when that run ends or is redrafted. A paused run keeps its brothers.
+- Allocation: a new squad's surname goes to the best available brother (most passed, then fewest falls, then fewest penances, then name order), skipping the corrupted and those on campaign. A name from the pool nobody has recorded is recruited only when no such brother is left. With every pool name skipped the run gets the usual "no free name" error.
+- Roster: the records live in one file, `roster.json` in the state directory, shared by every omp session and guarded by a lock (`roster.lock`), so two sessions allocating or ending at once never take the same brother and lose no result. A file the plugin cannot read is left untouched, with a warning, and names come from the pool.
+
 ## Stations and the chronicle voice
 
 Station names are unchanged. One line each:
@@ -136,6 +161,7 @@ No agent holds either today. They are defined here so that a later use (#62) has
 
 - Ancient: a post, not a rank. The Ancient is the standard-bearer of a company (the Chapter Ancient is of the 1st) and is a post held by a veteran. It is not earned by service, and a veteran does not become an Ancient by being a veteran.
 - Venerable: an honorific, not a rank and not a post. In the lore it is given mostly to Dreadnoughts, the entombed heroes. It is never a promotion for an ordinary agent.
+- Honours (Purity Seal, Iron Halo, Laurel Imperialis, Crux Terminatus; see Service record and honours) are none of the three: they are decorations on a brother's record. They change no name, rank, title or post.
 
 ## Using these terms
 
