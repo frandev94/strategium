@@ -677,38 +677,124 @@ const inverse = (s: string) => `\x1b[7m${s}\x1b[27m`;
 /** A selected line as one even inverse block: fitted to `width` cells as plain text first (fit's reset would otherwise end the inverse early, and its colours would break the block). */
 const selected = (s: string, width: number) => inverse(fit(Bun.stripANSI(s), width));
 
-function drawBox(b: Box, w: number, pal: Palette): string[] {
+// The relic look (D3-D8 of the plan): decoration drawn as the frame is built, seeded by the run key. Nothing random, no clock and no frame goes in, so a redraw is the same bytes.
+type Relic = { seed: number; ord: number; gold: string; iron: string; scratch: string; shades: string[]; twin: Map<string, string> }; // ord: counts the runs and rows drawn in this render; scratch: iron dimmed toward the background; shades: tarnish colours (truecolor only), twin: each one dimmed, for the scanlines
+const WEAR: Record<string, string> = { "═": "╍┅", "─": "╌┄" };
+const SCRATCH = "╱╲·";
+const BRASS = [0x8c, 0x6a, 0x2a]; // the dark brass the gold tarnishes toward
+const GOLD_RGB = /^\x1b\[38;2;(\d+);(\d+);(\d+)m$/;
+
+/** murmur3's fmix32 over three words. */
+function mix(a: number, b: number, c: number): number {
+	let h = Math.imul(a ^ Math.imul(b, 0x9e3779b1), 0x85ebca6b) ^ Math.imul(c + 1, 0xc2b2ae35);
+	h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+	h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+	return (h ^ (h >>> 16)) >>> 0;
+}
+
+/** The tarnish shades of a truecolor gold (4 blends toward brass, each with a dimmed twin); none for any other palette. */
+function tarnish(gold: string): { shades: string[]; twin: Map<string, string> } {
+	const m = GOLD_RGB.exec(gold);
+	const twin = new Map<string, string>();
+	if (!m) return { shades: [], twin };
+	for (const k of [1, 2, 3, 4]) {
+		const rgb = [1, 2, 3].map((i, j) => Math.round(Number(m[i]) + (BRASS[j] - Number(m[i])) * k * 0.15));
+		twin.set(`\x1b[38;2;${rgb.join(";")}m`, `\x1b[38;2;${rgb.map(x => Math.round(x * 0.85)).join(";")}m`);
+	}
+	return { shades: [...twin.keys()], twin };
+}
+
+/** Iron mixed halfway toward the theme background (truecolor only); else iron itself. */
+function dim(iron: string, bg?: string): string {
+	const f = GOLD_RGB.exec(iron);
+	const b = bg && /^\x1b\[48;2;(\d+);(\d+);(\d+)m$/.exec(bg);
+	return f && b ? `\x1b[38;2;${[1, 2, 3].map(i => Math.round((Number(f[i]) + Number(b[i])) / 2)).join(";")}m` : iron;
+}
+
+function relicOf(key: string, pal: Palette): Relic {
+	let seed = 0x811c9dc5; // FNV-1a
+	for (let i = 0; i < key.length; i++) seed = Math.imul(seed ^ key.charCodeAt(i), 0x01000193);
+	return { seed, ord: 0, gold: pal.gold, iron: pal.iron, scratch: dim(pal.iron, pal.bg), ...tarnish(pal.gold) };
+}
+
+/** A fill run of `n` cells of `ch` (`═` or `─`). Without `rc`, exactly `ch.repeat(n)`. With it: short worn stretches inside the run (never its first or last cell), rivets near both ends of a `═` run of 8 or more, and with `shaded` (a run in gold) a tarnish shade per cell. */
+function run(rc: Relic | undefined, ch: string, n: number, shaded = false): string {
+	if (!rc || n < 1) return ch.repeat(n);
+	const id = rc.ord++;
+	let wear = 0;
+	let out = "";
+	let prev = -1;
+	for (let i = 0; i < n; i++) {
+		let cell = ch;
+		if (i > 0 && i < n - 1) {
+			const h = mix(rc.seed, id, i);
+			if (h % 20 === 0) wear = Math.max(wear, i + 1 + ((h >>> 8) % 3));
+			if (i < wear) cell = WEAR[ch][(h >>> 12) & 1];
+			if (ch === "═" && n >= 8 && (i === 1 || i === n - 2)) cell = "•";
+		}
+		if (shaded && rc.shades.length) {
+			const s = mix(rc.seed, id, i + 0x10000) % rc.shades.length;
+			if (s !== prev) out += rc.shades[s];
+			prev = s;
+		}
+		out += cell;
+	}
+	return shaded && rc.shades.length ? out + rc.gold : out;
+}
+
+/** `n` blank cells with at most one faint scratch (a `·`, a `╱`, a `╲` or a `╱╲` pair, about 1 in 120 cells) on cells that have a blank cell on both sides inside the run: never the first or last. `a` and `salt` seed the row. */
+function blanks(rc: Relic, n: number, a: number, salt: number): string {
+	let out = "";
+	let done = false;
+	for (let c = 0; c < n; c++) {
+		const h = c > 0 && c < n - 1 && !done ? mix(rc.seed ^ salt, a, c) : 1;
+		if (h % 120) { out += " "; continue; }
+		const k = (h >>> 8) % 4;
+		const pair = k === 3 && c + 2 < n;
+		out += paint(rc.scratch, pair ? "╱╲" : SCRATCH[k % 3]);
+		if (pair) c++;
+		done = true;
+	}
+	return out;
+}
+
+function drawBox(b: Box, w: number, pal: Palette, rc?: Relic): string[] {
 	const [tl, h, tr, v, bl, br] = "┌─┐│└┘";
 	const c = (s: string) => paint(pal[b.tone], s);
 	const title = fit(b.title, w - 5).replace(`…${RESET}`, "");
 	return [
-		c(`${tl}${h} ${title} ${h.repeat(w - Bun.stringWidth(title) - 5)}${tr}`),
-		...b.lines.map((l, r) => `${c(v)}${r === b.sel ? paint(pal.gold, "▸") : " "}${pad(r === b.sel ? selected(l, w - 4) : fit(l, w - 4), w - 4)} ${c(v)}`),
-		c(`${bl}${h.repeat(w - 2)}${br}`),
+		c(`${tl}${h} ${title} ${run(rc, h, w - Bun.stringWidth(title) - 5)}${tr}`),
+		...b.lines.map((l, r) => {
+			if (!rc || r === b.sel) return `${c(v)}${r === b.sel ? paint(pal.gold, "▸") : " "}${pad(r === b.sel ? selected(l, w - 4) : fit(l, w - 4), w - 4)} ${c(v)}`;
+			const text = fit(l, w - 4);
+			return `${c(v)} ${text}${blanks(rc, Math.max(0, w - 4 - Bun.stringWidth(text)) + 1, rc.ord++, 1)}${c(v)}`; // the cell after the text and the last are never scratched
+		}),
+		c(`${bl}${run(rc, h, w - 2)}${br}`),
 	];
 }
 
 /** `boxes` in a grid of `cols` equal columns across `inner` cells (one cell of margin each side). */
-function grid(boxes: Box[], cols: number, inner: number, pal: Palette): string[] {
+function grid(boxes: Box[], cols: number, inner: number, pal: Palette, rc?: Relic): string[] {
 	const w = Math.floor((inner - 2 - (cols - 1)) / cols);
 	const last = inner - 2 - (cols - 1) - w * (cols - 1); // the last column takes the remainder, so every row ends at the same cell
 	const out: string[] = [];
 	for (let i = 0; i < boxes.length; i += cols) {
 		const row = boxes.slice(i, i + cols);
 		const h = Math.max(...row.map(b => b.lines.length));
-		const drawn = row.map((b, j) => drawBox({ ...b, lines: [...b.lines, ...Array(h - b.lines.length).fill("")] }, j === cols - 1 ? last : w, pal));
+		const drawn = row.map((b, j) => drawBox({ ...b, lines: [...b.lines, ...Array(h - b.lines.length).fill("")] }, j === cols - 1 ? last : w, pal, rc));
 		for (let r = 0; r < drawn[0].length; r++) out.push(` ${drawn.map(d => d[r]).join(" ")}`);
 	}
 	return out;
 }
 
-// With a height: exactly that many lines, the chronicle on the spare rows, `blank` after it, `close` last; a too tall body is cut from the bottom. The chronicle window starts at 0 and follows the entry `sel` when it is past the spare rows.
-function withHeight(body: string[], entries: string[], blank: string, close: string, height?: number, sel = -1): string[] {
+// With a height: exactly that many lines, the chronicle on the spare rows, `blank(d)` after it (d: the filler row's distance from `close`, 1 for the row just above it), `close` last; a too tall body is cut from the bottom. The chronicle window starts at 0 and follows the entry `sel` when it is past the spare rows.
+function withHeight(body: string[], entries: string[], blank: (d: number) => string, close: string, height?: number, sel = -1): string[] {
 	if (height === undefined) return [...body, ...entries, close];
 	const spare = Math.max(0, height - body.length - 1);
 	const from = sel >= spare ? sel - spare + 1 : 0;
 	const shown = entries.slice(from, from + spare);
-	return [...body, ...shown, ...Array(spare - shown.length).fill(blank)].slice(0, Math.max(0, height - 1)).concat(close);
+	const fillers = spare - shown.length;
+	return [...body, ...shown, ...Array.from({ length: fillers }, (_, j) => blank(fillers - j))].slice(0, Math.max(0, height - 1)).concat(close);
 }
 
 // shortcut: a box keeps at least 1 line, so a window too short for every box at 1 line still cuts the chronicle; upgrade with the navigable cockpit (#13).
@@ -753,13 +839,20 @@ function boxLines(lines: View["boxes"][number]["lines"], cap: number, pal: Palet
 	return { lines: out, ...(sel === undefined ? {} : { sel }) };
 }
 
-export function renderCockpit(view: View, width: number, frame: number, pal: Palette, height?: number): string[] {
-	const lines = cockpitLines(view, width, frame, pal, height);
+/** The overlay as lines. `relic` (wide layouts only, below 72 columns it is ignored) draws the worn techno-relic look, seeded by `view.key`; false, or omitted, is the plain frame byte for byte. */
+export function renderCockpit(view: View, width: number, frame: number, pal: Palette, height?: number, relic = false): string[] {
+	const rc = relic && width >= 72 ? relicOf(view.key, pal) : undefined;
+	let lines = cockpitLines(view, width, frame, pal, height, rc);
+	// Scanlines: odd lines swap each tarnish shade for its dimmed twin. Exact sequences this module emitted, so no text is recoloured.
+	if (rc?.shades.length) {
+		const shades = new RegExp(rc.shades.map(s => s.replace(/[[\]]/g, "\\$&")).join("|"), "g");
+		lines = lines.map((l, i) => (i % 2 ? l.replace(shades, s => rc.twin.get(s)!) : l));
+	}
 	// A themed background fills every line to the full width, so the overlay reads as one panel.
 	return pal.bg ? lines.map(l => pal.bg + pad(l, width) + BG_RESET) : lines;
 }
 
-function cockpitLines(view: View, width: number, frame: number, pal: Palette, height?: number): string[] {
+function cockpitLines(view: View, width: number, frame: number, pal: Palette, height?: number, rc?: Relic): string[] {
 	const s = view.station;
 	const station = markText(s.kind, s.mark, s.name, pal, frame) + (s.note ? ` · ${paint(pal.gold, s.note)}` : "");
 	const sel = view.nav.cursor?.id;
@@ -791,7 +884,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 			const sc = detailWindow(rows.length, head.length + 1, height, win, view.detail.transcript);
 			const back = "esc back · q close";
 			const foot = view.detail.target !== undefined && width >= Bun.stringWidth(`${back} · enter transcript`) ? `${back} · enter transcript` : back;
-			return withHeight([...head, paint(pal.gold, fit(view.detail.title, width - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix))], rows.slice(sc.from, sc.to).map(r => `  ${paint(pal.parchment, r)}`), "", paint(pal.iron, foot), height).map(l => fit(l, width));
+			return withHeight([...head, paint(pal.gold, fit(view.detail.title, width - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix))], rows.slice(sc.from, sc.to).map(r => `  ${paint(pal.parchment, r)}`), () => "", paint(pal.iron, foot), height).map(l => fit(l, width));
 		}
 		const body = [
 			...head,
@@ -800,12 +893,18 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 			paint(pal.gold, "CHRONICLE"),
 		];
 		const entries = view.chronicle.map((e, i) => (i === si ? `${paint(pal.gold, "▸")} ${selected(entryLine(e, pal), width - 2)}` : entryLine(e, pal)));
-		return withHeight(body, entries, "", paint(pal.iron, "esc/q close"), height, si).map(l => fit(l, width));
+		return withHeight(body, entries, () => "", paint(pal.iron, "esc/q close"), height, si).map(l => fit(l, width));
 	}
 
 	const inner = width - 2;
 	const g = (t: string) => paint(pal.gold, t);
-	const row = (content: string) => `${g("║")}${pad(fit(content, inner), inner)}${g("║")}`;
+	// A relic frame tarnishes its verticals; `tag` seeds which shade (a counter for a content row, the distance from the bottom for a blank one).
+	const bar = (tag: number, side: number) => (rc?.shades.length ? paint(rc.shades[mix(rc.seed, tag, side) % rc.shades.length], "║") : g("║"));
+	const row = (content: string) => {
+		const tag = rc ? rc.ord++ : 0;
+		return `${bar(tag, 0)}${pad(fit(content, inner), inner)}${bar(tag, 1)}`;
+	};
+	const blankRow = (d: number) => (rc ? `${bar(0x20000 + d, 0)}${blanks(rc, inner, d, 2)}${bar(0x20000 + d, 1)}` : row(""));
 	const left = " " + clockText(view.clock, pal, true);
 	const right = `${g("SEALS")} ${sealsText(view.seals, pal, view.ic)} `;
 	const clockRow = !view.seals.length ? [row(left)] : Bun.stringWidth(left) + Bun.stringWidth(right) < inner ? [row(left + " ".repeat(inner - Bun.stringWidth(left) - Bun.stringWidth(right)) + right)] : [row(left), row(` ${right}`)];
@@ -813,7 +912,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 
 	const lead = "╔═ ✠ STRATEGIUM ── COGITATOR ";
 	const key = fit(view.key, Math.max(1, width - Bun.stringWidth(lead) - 5));
-	const top = `${lead}${"═".repeat(Math.max(0, width - Bun.stringWidth(lead) - Bun.stringWidth(key) - 4))} ${key} ═╗`;
+	const top = `${lead}${run(rc, "═", Math.max(0, width - Bun.stringWidth(lead) - Bun.stringWidth(key) - 4), true)} ${key} ═╗`;
 	const title = fit(station, inner - 4); // keeps at least one cell of rule
 	const cols = Math.max(1, Math.min(view.boxes.length, Math.floor((inner - 1) / 27)));
 
@@ -823,16 +922,16 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 		const dt = paint(pal.gold, fit(view.detail.title, inner - 4 - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix)); // the title is cut, not the scroll position; keeps at least one cell of rule
 		const base = "esc/bksp back · q close · ↑↓ scroll";
 		const back = view.detail.target !== undefined && inner - 3 - Bun.stringWidth(`${base} · enter transcript`) >= 1 ? `${base} · enter transcript` : base;
-		return withHeight([g(fit(top, width)), ...head, `${g("╟─ ")}${dt}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(dt))}╢`)}`], rows.slice(sc.from, sc.to).map(r => row(` ${paint(pal.parchment, r)}`)), row(""), g(`╚═ ${back} ${"═".repeat(inner - 3 - Bun.stringWidth(back))}╝`), height);
+		return withHeight([g(fit(top, width)), ...head, `${g("╟─ ")}${dt}${g(` ${run(rc, "─", inner - 3 - Bun.stringWidth(dt), true)}╢`)}`], rows.slice(sc.from, sc.to).map(r => row(` ${paint(pal.parchment, r)}`)), blankRow, g(`╚═ ${back} ${run(rc, "═", inner - 3 - Bun.stringWidth(back), true)}╝`), height);
 	}
 	const si = view.chronicle.findIndex(e => e.id === sel);
 	const base = "esc/q close · ↑↓ line · ←→ station · tab box · home active";
 	const hint = inner - 3 - Bun.stringWidth(`${base} · enter open`) >= 1 ? `${base} · enter open` : base;
 	return withHeight(
-		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(title))}╢`)}`, ...(box ? grid([box], 1, inner, pal).map(row) : []), ...grid(boxes(boxCap(height, head.length + 4 + (box ? box.lines.length + 2 : 0), Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal).map(row), g(`╟─ CHRONICLE ${"─".repeat(inner - 12)}╢`)],
+		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${run(rc, "─", inner - 3 - Bun.stringWidth(title), true)}╢`)}`, ...(box ? grid([box], 1, inner, pal, rc).map(l => row(l)) : []), ...grid(boxes(boxCap(height, head.length + 4 + (box ? box.lines.length + 2 : 0), Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal, rc).map(l => row(l)), g(`╟─ CHRONICLE ${run(rc, "─", inner - 12, true)}╢`)],
 		view.chronicle.map((e, i) => row(i === si ? `${g("▸")}${selected(entryLine(e, pal), inner - 1)}` : ` ${entryLine(e, pal)}`)),
-		row(""),
-		g(`╚═ ${hint} ${"═".repeat(inner - 3 - Bun.stringWidth(hint))}╝`),
+		blankRow,
+		g(`╚═ ${hint} ${run(rc, "═", inner - 3 - Bun.stringWidth(hint), true)}╝`),
 		height,
 		si,
 	);

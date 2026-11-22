@@ -2535,3 +2535,320 @@ describe("transcript boundaries (#125 penance)", () => {
 		expect(foot(Bun.stringWidth(hint) - 1)).toBe("esc back · q close");
 	});
 });
+
+// The relic switch must leave today's renderer byte for byte alone. These digests were taken from the renderer of main 157274f before the relic code existed.
+describe("relic off: byte-identical to main", () => {
+	const FIX: Record<string, () => View> = {
+		scriptorium: () =>
+			cockpitView(
+				input({
+					clock: { running: true, el: 42, bk: 120 },
+					phases: [
+						{ name: "Muster", tasks: [{ content: "[captain] Orders", status: "completed" }] },
+						{ name: "Scriptorium", tasks: [{ content: "[librarian] Draft the plan", status: "completed" }, { content: "[seal] Plan", status: "in_progress" }] },
+						{ name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "pending" }] },
+					],
+					seal: { id: "Plan", lines: ["Squads: a, b", "Merge bar: tests green", "Review: confessor"] },
+					chronicle: many(7),
+				}),
+			),
+		skirmish: () => cockpitView(DETAIL({ chronicle: many(14) })),
+		detail: () => open("agent:AlphaBrother", { chronicle: many(6) }),
+	};
+	const PALS = { truecolor: () => palette("truecolor", THEMES["blood-angels"]), 256: () => palette("256", THEMES.cogitator) };
+	const DIGESTS: Record<string, string> = {
+		"detail/100/256/-/0": "e10dfd918d8d79a23e00f9c1510838561eaca2552eef8882d13976c32a54eedc",
+		"detail/100/256/-/1": "a852b9dc31d2488a763c4aeec9c3d9fa58eb051bef54abe1f4a8c3bcc3064727",
+		"detail/100/256/30/0": "25cc5b0784f85bef16419be4839ce701e7b4aa42a96c26d9b269549a43a7556b",
+		"detail/100/256/30/1": "267276ad39dbb94eaa2124fb6d4b2346fffaea788da627e2f3db5e6d5b85457f",
+		"detail/100/truecolor/-/0": "3a72d4768698594a18b46ec65707c274841bf2db207a1474b5d156b954f730c1",
+		"detail/100/truecolor/-/1": "438398b11d02d5899df3603cf4510d8c85120974177869373cf1f46a9cf6597e",
+		"detail/100/truecolor/30/0": "ca985979a473f0313ad97dcba1e04b07ada3aeb6ebda9f844de85f6d11a12bbe",
+		"detail/100/truecolor/30/1": "4a1222c3cb6cce3f4cde6e5324b8971261a75a0fee849a62683ab0cb2cae97a8",
+		"detail/140/256/-/0": "9f7118775c82ddeb2cd33c2c6139c97685c8c3de93979eb19b57ed04e93d68a1",
+		"detail/140/256/-/1": "98b8beb7fe730635b5a10794398777b89b8ce01a50351f92d15a334f8c92632b",
+		"detail/140/256/30/0": "a5b42ef7ab60a81d8bc5af16517529220449604886b25c36de7fa20c49b439a3",
+		"detail/140/256/30/1": "96a8d1a9296a155696549d0a82d938a37e7e012017e2a3cb20de9adfa1dd20c1",
+		"detail/140/truecolor/-/0": "c1c33b4cf3ebd25a9ec5fbc90c0e77b3200c774be4b7e56e147670444a6f8764",
+		"detail/140/truecolor/-/1": "197c8f6e9ec8f62fed77858bba4487c51ddad3826e9452c0b61d73defa04dc15",
+		"detail/140/truecolor/30/0": "0e5549eb8db33449cfcfed5001156bc5c4c45e3dcff3472067d67d3aad02f2dd",
+		"detail/140/truecolor/30/1": "b46c7e18e42fbb4aa338f2f84fd7c8ac89d4ac24ac89ca3e83d76e0ebac7f3c9",
+		"detail/60/256/-/0": "ed8c561656c4f39414aabcab08c069fd3b3d3dd7ed0d0e6878964ca9a5151a7e",
+		"detail/60/256/-/1": "49142af281231b7b114e7413855f8a0df80183ab78650bb06adc2c3fc5a97c7e",
+		"detail/60/256/30/0": "aa85091b2222c97d4700ee5f52afdb100a355351865da3b0103c8ad71bf744c6",
+		"detail/60/256/30/1": "5ef69dd478257bac6f8ecef4acebf9af3b735c9a76b29db1ae8ba0b4509d812b",
+		"detail/60/truecolor/-/0": "4bfeccab366e2d581e6085acca672c13f98d282aa70dff3a9a6fab2715d2fe2c",
+		"detail/60/truecolor/-/1": "219bb248b4dd37f453476860a08328c522978bcabe356d82e64a90d10276de2f",
+		"detail/60/truecolor/30/0": "a582c088158eeac3e2ca084876a0a72e7f89825d675293e8488c46ce43359a89",
+		"detail/60/truecolor/30/1": "d0162a27b01587bc7d5932421edb4e3ca671deddb8b0d19c5914cc93d8b4902e",
+		"detail/72/256/-/0": "55ab7850d4694a887c7ea6a6d0de54b70c8bc01756255b8aa9d04d672daca83b",
+		"detail/72/256/-/1": "981b3de70210239bb7ac3070dcc3a152c2ae2a4d1c81ce48cb7ba25fe95a7169",
+		"detail/72/256/30/0": "460f90a2ea321224219c2c99119be20441665e91091e7cd793a5d9dc95436c57",
+		"detail/72/256/30/1": "eece39708368b88cfd54b575ab5b1e2f94865a267c7728e0fcabbdb549729571",
+		"detail/72/truecolor/-/0": "2feed0497fa3b5548bf2fbdbf4535873ff87d928a16d1ff18f8c5137948c841b",
+		"detail/72/truecolor/-/1": "c365970d124b190b7bb34df3e9bf3cbebbde31550fc1fee5c21a924453c0afdb",
+		"detail/72/truecolor/30/0": "8aa1b8ec59d94c899500adc6d4d92132028c16a7f0e839a93c2a6f2c9b83e561",
+		"detail/72/truecolor/30/1": "4b7a93558a6406caf7e525085226b422060aa4d97294191eb4fac69020d44cd3",
+		"scriptorium/100/256/-/0": "b920b3373502b71ff02dcf013af868092e6dbdc1ec39f50fc02c4726543d8aef",
+		"scriptorium/100/256/-/1": "754672fc9175985cefec8dbb0fb6e03d61c4ade9e4744e14eee63c98fab301a2",
+		"scriptorium/100/256/30/0": "cca5baf1d29ff4e5e3e5d8786aa8e079b362422fecb1a4bfad7d3ab01af1eda5",
+		"scriptorium/100/256/30/1": "6b300a1caab704828f7a2a9221234b5ef2c20d8f384ac1be04448a385f3339c1",
+		"scriptorium/100/truecolor/-/0": "c35f7cb46e2f16024184c9da2c686201b6810efeed575d64bc5c3f15721f1e5f",
+		"scriptorium/100/truecolor/-/1": "7f2166bd87f1f3ac9f0baeabbc7c4676c5e4d30856014603830fc74d4d151631",
+		"scriptorium/100/truecolor/30/0": "292d00395fdf514bf2bf383b419e02b7cf32a8241614fad81f843b9aa44260ac",
+		"scriptorium/100/truecolor/30/1": "c6c04bc45efcf9638375e59776c6b7047c09c3e18598c96d3f8f113f70c1b526",
+		"scriptorium/140/256/-/0": "8cb522251edfb183f1785e9ec409741fc14614819a0cb74fafb5175ee9dd11fe",
+		"scriptorium/140/256/-/1": "43fd4536af843e3eea64d0fffa56a994a2866d4dc14f6e11bf4114d2ad3a1f95",
+		"scriptorium/140/256/30/0": "081a528bcac7b9a74a08bc7f1e3bf7d8ccb95fc91921e690051b554ab1bf1bd2",
+		"scriptorium/140/256/30/1": "d6a609c6f9a0782c8fa848375fc060c55d4c8811ee6d9e8deb404c59986b65d5",
+		"scriptorium/140/truecolor/-/0": "59d6f5de5c122d9966ca4e9b14424c130aac32dbc49ea592a560ce97a01c073f",
+		"scriptorium/140/truecolor/-/1": "f56f41d49e9cc834426be32f9d40fec4a5f6bbdd7a32d20cff6858fb4009d712",
+		"scriptorium/140/truecolor/30/0": "3d1c8886c4969aef8b7e3d5077c03e8003cf9948211634ea080308421dadeb45",
+		"scriptorium/140/truecolor/30/1": "e403fca76604179bb90b88f7b793c91780daa1f246cd032247583d682bd2e23d",
+		"scriptorium/60/256/-/0": "b9ae139c5f2c8abda95edc82905d74479305d13ade5e82c5bfc34a3f25d6e408",
+		"scriptorium/60/256/-/1": "dc6a34367578afad568c23d9f61760f3532cffd0d448d9d00565f402c611e63e",
+		"scriptorium/60/256/30/0": "44464e0dba8c9a3dabf1651a93df54b04b2ff21bbd4a79b746ef0a3d77a647ce",
+		"scriptorium/60/256/30/1": "5869f0a53dad112a191f61ceaefa265bf88072c6cb731e83ed8ed7d087d99bce",
+		"scriptorium/60/truecolor/-/0": "2d1d0be828f7cdb7a7de7c61226af63521f83d79dcaf428bc04b06903750423f",
+		"scriptorium/60/truecolor/-/1": "6efdeb721e55145b3a1f262d62f4ba01bb5d479dfeac976a3f3a5d64fa31cb37",
+		"scriptorium/60/truecolor/30/0": "24263fda84545e20c357b0461c5a74106c62e2d2d1f5557ae9caae86e00fbbe9",
+		"scriptorium/60/truecolor/30/1": "34eddd345fe94a7d8580b69bf988da066788e97f8322ff89f04454b95910e9f3",
+		"scriptorium/72/256/-/0": "15173bcdc2b77c8a1f2e444842d152ee2b8b656ca7a56fde6712bee5672a4123",
+		"scriptorium/72/256/-/1": "f9f9640e5edd465d1905b94737a478cdc8456c889208a2f8dabe6a372652c2e6",
+		"scriptorium/72/256/30/0": "b8fcee0c9c9c82953cb38947f50f665af9670e16feba88fb6c765ffa5907df6e",
+		"scriptorium/72/256/30/1": "8683cff5735e6396ddc64bda56c01db5e559e9549781a6defca22a92e4a1191d",
+		"scriptorium/72/truecolor/-/0": "d80495b7abf1609f9197caacc6d9f29503d713a672f9be7a2733d02ad5fd4d97",
+		"scriptorium/72/truecolor/-/1": "dff5cb51e265e0fc3d0628db23d95cd87e86c5da2ee45f43b23202df315bfe09",
+		"scriptorium/72/truecolor/30/0": "105a3dba5d01e011ed9bc3ff1897874a029b117a212567bb0584ab808f4b3bcb",
+		"scriptorium/72/truecolor/30/1": "530616c2993a8fbaa616c43a9d42ce2a9e86ba0c3b804c583a45d7121a1de11a",
+		"skirmish/100/256/-/0": "e8ad609fd38e6633acf3aa782a1499c9244a852cdacc555d4ad83109e124904a",
+		"skirmish/100/256/-/1": "3153eece72b05084967cd561e3e19743b05b4dd404889d059e575d3522f00db0",
+		"skirmish/100/256/30/0": "bffae3e7a3b7378d6883e6e26806f8b6443310175d2165583d0406fa7e10c6d2",
+		"skirmish/100/256/30/1": "d70f64a2910e606a04e38d69740217509e62871a4c26b992a17c15290c21cda7",
+		"skirmish/100/truecolor/-/0": "a6f79dfa0d3d5b049b762bd1a625317d49c962b2df4c6222c04f1addc798f837",
+		"skirmish/100/truecolor/-/1": "c9816a7e3f8f40de6d86f4afd397e5f5582193e859aa31f360cf4ab3bcc01831",
+		"skirmish/100/truecolor/30/0": "e973b32b44308241128c71fd2af6005079b39e4ad46f10ae678411c0642180ee",
+		"skirmish/100/truecolor/30/1": "b03f8201d6279112b54f0eca4a988f00db1aeb43652eb93a3770c594a3a358ba",
+		"skirmish/140/256/-/0": "34ea423713ba5dd6716c1b89dfffeabee01fe496b9c163ce893aba7c2d1dee1c",
+		"skirmish/140/256/-/1": "0207fe120aca24e0b2239e4a6d13042d78074f1014af7beb057b03276e172d8e",
+		"skirmish/140/256/30/0": "20613b7d9ba447055dde36f5c4c1036ce9e2d3d317c5dde520eeacf121f4afbf",
+		"skirmish/140/256/30/1": "2649b6658694cb0ec6c1d7ebe6fd0832365283a39468dd6d6eab78fb49196819",
+		"skirmish/140/truecolor/-/0": "d7baaed5bf298f17b6806f3f18e6f2d53500e70ff6086861ae4f1c4a020de550",
+		"skirmish/140/truecolor/-/1": "61326056103eff71c238f147a9df19402a75822b95009976d657b5fef6ce6ffd",
+		"skirmish/140/truecolor/30/0": "f355681571c8c0574a206d34c14dfb0a4b139bcb1bfecd119d7013ca78542387",
+		"skirmish/140/truecolor/30/1": "243f85b25526026ae38370d2569a99e9d28ac896bd75df7fd5730ff5f6f7a089",
+		"skirmish/60/256/-/0": "910aeac412c7c4cfe60bb2b02cf4efa563dbed88673fc2d08e838c451ed90c6a",
+		"skirmish/60/256/-/1": "6da767e6975fc152e6342a348e6f262c9113774a445cedab780934f4073317cf",
+		"skirmish/60/256/30/0": "ca98829503ff373d51ea2712a5125e04ca676a4cda535d138558673ec29be1b8",
+		"skirmish/60/256/30/1": "c6e3bb673548f4a8873e2e975699920c35e7a4f4294dd0be6dc8ed268b22c81b",
+		"skirmish/60/truecolor/-/0": "a8cadf4ba87f49562e909d163df155f14237913f0f87b7b95e70f4faaa759f40",
+		"skirmish/60/truecolor/-/1": "e0e9556a79fac7b9187cb88d2aa751ef25da59a85fbf306dd355b30d33809b0c",
+		"skirmish/60/truecolor/30/0": "0368f99c20121574e6d85906449fcc794c73f747c04fba73e78f06e01f22abfb",
+		"skirmish/60/truecolor/30/1": "847002308a923c59b3cc40ac11b8ab08a5b9a6b8b0e047244c28f308e5a0e656",
+		"skirmish/72/256/-/0": "28bf586095d61875f325f010cdc510bda70e1ba70859d177e39d7472ce983f12",
+		"skirmish/72/256/-/1": "104b999c5f41a2801c13735273700d133a6288758ae2eb338a6fd148a0d768f4",
+		"skirmish/72/256/30/0": "dd2e46e0a9f9722e410d9dad2892d86ac01baec07ab282a6c046b041a37b941f",
+		"skirmish/72/256/30/1": "7e73990c18531b27c474301c1d27dd9535729b23393e9490b5cdeb0e6a60b6bc",
+		"skirmish/72/truecolor/-/0": "2f237e1d451697b7aac939ebd504cb966aef3ca7764b4b4a9e1388fb50c74532",
+		"skirmish/72/truecolor/-/1": "2b7ee05844cc4871589796640663418605cf9867e2ac146693d18dd2c00195ee",
+		"skirmish/72/truecolor/30/0": "d1062c1ddeef6ca930c49a339eabe004213338c7bec3adbca2038ae9a733cccc",
+		"skirmish/72/truecolor/30/1": "8d0d238dbab9acd4615593bc5e499eb85d3f9fe0eda3b3b7104720e9c80d1b5e",
+	};
+	const cases = Object.keys(FIX).flatMap(v => [60, 72, 100, 140].flatMap(w => Object.keys(PALS).flatMap(p => [undefined, 30].flatMap(h => [0, 1].map(f => [`${v}/${w}/${p}/${h ?? "-"}/${f}`, v, w, p, h, f] as const)))));
+	const digest = (v: string, w: number, p: string, h: number | undefined, f: number) =>
+		new Bun.CryptoHasher("sha256").update(renderCockpit(FIX[v](), w, f, PALS[p as keyof typeof PALS](), h).join("\n")).digest("hex");
+
+	test.each(cases)("%s", (name, v, w, p, h, f) => {
+		if (process.env.DUMP_DIGESTS) console.log(`DIGEST ${name} ${digest(v, w, p, h, f)}`);
+		expect(digest(v, w, p, h, f)).toBe(DIGESTS[name]);
+	});
+});
+
+describe("relic", () => {
+	const BLOOD = palette("truecolor", THEMES["blood-angels"]);
+	const WORN: Record<string, string> = { "═": "╍┅•", "─": "╌┄" };
+	const GLYPHS = [..."╍┅╌┄•╱╲·"];
+	const render = (v: View, width: number, pal = BLOOD, relic = true, height?: number, frame = 0) => renderCockpit(v, width, frame, pal, height, relic);
+	const POOL: string[] = [..."═─╍┅╌┄•╱╲·  abcXYZ019世界😀é", "\x1b[31m", "\t", "\u202e", "\n"];
+	const word = (r: (n: number) => number, n: number) => Array.from({ length: r(n) }, () => POOL[r(POOL.length)]).join("");
+	const randomView = (r: (n: number) => number): View =>
+		cockpitView(
+			DETAIL({
+				key: [...word(r, 14)].filter(c => c >= " " && c !== "\u202e").join("") || "k",
+				phases: [
+					{ name: "Skirmish", tasks: [{ content: "[seal] Demo", status: "in_progress" }, ...Array.from({ length: r(5) }, () => ({ content: `[battle-brother] ${word(r, 30)}`, status: ["pending", "in_progress", "completed"][r(3)] }))] },
+				],
+				seal: { id: "Demo", lines: Array.from({ length: r(16) }, () => word(r, 60)) },
+				chronicle: Array.from({ length: r(20) }, () => ({ at: "10:00", who: word(r, 12), text: word(r, 160) })),
+			}),
+		);
+	const cells = (s: string) => [...plain(s)];
+
+	test("(a) 300 random views: relic only wears fill runs and scratches blank cells with blank neighbours, never changes a line's width or the line count", () => {
+		const r = rnd0(20260);
+		let changed = 0;
+		for (let n = 0; n < 300; n++) {
+			const view = randomView(r);
+			const width = 72 + r(129);
+			const height = r(2) ? undefined : 20 + r(41);
+			const pal = n % 2 ? palette("256", THEMES.cogitator) : BLOOD;
+			const on = render(view, width, pal, true, height);
+			const off = render(view, width, pal, false, height);
+			expect(on).toHaveLength(off.length);
+			on.forEach((l, i) => {
+				expect(Bun.stringWidth(plain(l))).toBe(Bun.stringWidth(plain(off[i])));
+				const a = cells(l);
+				const b = cells(off[i]);
+				expect(a).toHaveLength(b.length);
+				a.forEach((c, j) => {
+					if (c === b[j]) return;
+					changed++;
+					const worn = WORN[b[j]]?.includes(c);
+					const scratch = b[j] === " " && b[j - 1] === " " && b[j + 1] === " " && "╱╲·".includes(c);
+					expect([n, i, j, b[j], c, worn || scratch]).toEqual([n, i, j, b[j], c, true]);
+				});
+			});
+		}
+		expect(changed).toBeGreaterThan(300);
+	});
+
+	test.each([140, 100, 72])("(b) at %i every framed line is exactly the width and ends in ╗║╢╝, and the relic changes something", width => {
+		for (const height of [undefined, 30]) {
+			const view = cockpitView(DETAIL({ chronicle: many(14) }));
+			const on = render(view, width, BLOOD, true, height).map(plain);
+			const off = render(view, width, BLOOD, false, height).map(plain);
+			for (const l of on) {
+				expect(Bun.stringWidth(l)).toBe(width);
+				expect("╗║╢╝").toContain(l.at(-1)!);
+			}
+			expect(on.filter((l, i) => l !== off[i]).length).toBeGreaterThan(0);
+		}
+	});
+
+	test("(c) the same view renders identically twice, and the frame moves no decoration", () => {
+		const view = cockpitView(DETAIL({ chronicle: many(14) }));
+		expect(render(view, 140)).toEqual(render(view, 140));
+		const norm = (ls: string[]) => ls.map(l => l.replaceAll("▷", "▶"));
+		const on0 = render(view, 140, BLOOD, true, 30, 0);
+		const on1 = render(view, 140, BLOOD, true, 30, 1);
+		expect(on0).not.toEqual(on1);
+		expect(norm(on0)).toEqual(norm(on1));
+	});
+
+	test("(d) other keys give another relic: alpha vs beta, and equal-length keys with the key text masked", () => {
+		const at = (key: string) => render(cockpitView(DETAIL({ key, chronicle: many(14) })), 140, BLOOD, true, 30);
+		expect(at("alpha")).not.toEqual(at("beta"));
+		const masked = (key: string) => at(key).map(l => l.replaceAll(key, "KEY"));
+		expect(masked("alpha")).not.toEqual(masked("bravo"));
+	});
+
+	test("(e) in 256 colours the relic adds no colour sequence", () => {
+		const pal = palette("256", THEMES["blood-angels"]);
+		const view = cockpitView(DETAIL({ chronicle: many(14) }));
+		for (const height of [undefined, 30]) {
+			const sgr = (ls: string[]) => new Set(ls.join("\n").match(/\x1b\[[0-9;]*m/g));
+			const off = sgr(render(view, 140, pal, false, height));
+			expect([...sgr(render(view, 140, pal, true, height))].filter(s => !off.has(s))).toEqual([]);
+		}
+	});
+
+	const luminance = (rgb: number[]) => {
+		const [r, g, b] = rgb.map(c => c / 255).map(c => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+		return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+	};
+	const contrast = (a: number[], b: number[]) => {
+		const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+		return (hi + 0.05) / (lo + 0.05);
+	};
+	const dimIron = (iron: string, bg: string) => {
+		const f = iron.match(/\d+/g)!.slice(2).map(Number);
+		const b = bg.match(/\d+/g)!.slice(2).map(Number);
+		return `\x1b[38;2;${f.map((x, i) => Math.round((x + b[i]) / 2)).join(";")}m`;
+	};
+	test.each(Object.entries(THEMES))("(f) theme %s: truecolor relic adds tarnish shades that are no palette tone and keep 3:1 on the background", (_name, theme: Theme) => {
+		const pal = palette("truecolor", theme);
+		const view = cockpitView(DETAIL({ chronicle: many(14) }));
+		const seqs = (ls: string[]) => new Set(ls.join("\n").match(/\x1b\[38;2;\d+;\d+;\d+m/g));
+		const off = seqs(render(view, 140, pal, false, 30));
+		const faint = pal.bg ? dimIron(pal.iron, pal.bg) : pal.iron; // the scratches: iron halfway to the background, faint on purpose (no 3:1)
+		const shades = [...seqs(render(view, 140, pal, true, 30))].filter(s => !off.has(s) && s !== faint);
+		expect(shades).toHaveLength(8); // 4 shades and their dimmed twins on the odd scanlines
+		if (pal.bg) expect(faint).not.toBe(pal.iron);
+		const tones: string[] = Object.values(pal);
+		for (const s of shades) {
+			expect(tones).not.toContain(s);
+			if (theme.bg) expect(contrast(s.slice(7, -1).split(";").map(Number), [1, 3, 5].map(i => parseInt(theme.bg!.slice(i, i + 2), 16)))).toBeGreaterThanOrEqual(3);
+		}
+	});
+
+	test.each([71, 60, 40])("(g) at width %i relic on is byte-identical to off", width => {
+		const view = cockpitView(DETAIL({ chronicle: many(14) }));
+		for (const height of [undefined, 30]) expect(render(view, width, BLOOD, true, height)).toEqual(render(view, width, BLOOD, false, height));
+	});
+
+	test("(h) relic false gives the bytes of omitting the argument", () => {
+		const view = cockpitView(DETAIL({ chronicle: many(14) }));
+		for (const height of [undefined, 30]) expect(renderCockpit(view, 100, 0, BLOOD, height, false)).toEqual(renderCockpit(view, 100, 0, BLOOD, height));
+	});
+
+	test("(i) every decoration glyph is one cell wide and outside the Private Use Area", () => {
+		for (const g of GLYPHS) {
+			expect([g, Bun.stringWidth(g)]).toEqual([g, 1]);
+			expect(g.codePointAt(0)!).toBeLessThan(0xe000);
+		}
+	});
+
+	test("the selected line of a box is never scratched", () => {
+		const id = cockpitView(DETAIL()).boxes[0].lines[0].id;
+		const view = cockpitView({ ...DETAIL(), nav: { cursor: { id, at: 0 } } });
+		for (const width of [72, 100, 140]) {
+			const on = render(view, width).map(plain);
+			const off = render(view, width, BLOOD, false).map(plain);
+			const at = off.findIndex(l => l.includes("▸"));
+			expect(at).toBeGreaterThan(-1);
+			const from = off[at].indexOf("▸");
+			const seg = (l: string) => l.slice(from, l.indexOf("│", from));
+			expect(seg(on[at])).toBe(seg(off[at]));
+		}
+	});
+
+	test("blank filler rows keep their scratches when a chronicle entry is added", () => {
+		const at = (n: number, relic = true) => render(cockpitView(DETAIL({ chronicle: many(n), key: "stable" })), 140, BLOOD, relic, 40).map(plain);
+		const [a, b, off] = [at(4), at(5), at(4, false)];
+		const rows = [2, 3, 4, 5, 6, 7, 8, 9]; // from the bottom: the fillers just above the bottom frame
+		for (const d of rows) expect(a.at(-d)).toBe(b.at(-d));
+		expect(rows.filter(d => a.at(-d) !== off.at(-d)).length).toBeGreaterThan(0); // not vacuous: some of them are scratched
+	});
+
+	test("scratches are sparse: at most one per row, about 1 in 120 blank cells, clustered as · ╱ ╲ or ╱╲", () => {
+		let blank = 0;
+		let marks = 0;
+		for (let k = 0; k < 40; k++) {
+			const view = cockpitView(DETAIL({ key: `sparse-${k}`, chronicle: many(2) }));
+			const on = render(view, 140, BLOOD, true, 50).map(plain);
+			const off = render(view, 140, BLOOD, false, 50).map(plain);
+			on.forEach((l, i) => {
+				const diff = [...l].map((c, j) => (c !== [...off[i]][j] && [...off[i]][j] === " " ? j : -1)).filter(j => j >= 0);
+				const clusters = diff.filter((j, n) => n === 0 || j - diff[n - 1] > 1); // a row of boxes has one scratch at most per box
+				expect(diff.length).toBeLessThanOrEqual(2 * clusters.length);
+				expect(clusters.length).toBeLessThanOrEqual(3);
+				marks += clusters.length;
+				blank += [...off[i]].filter(c => c === " ").length;
+			});
+		}
+		expect(marks).toBeGreaterThan(0);
+		expect(marks / blank).toBeLessThan(1 / 60);
+	});
+
+	test("the first and last cell of the top and bottom runs stay a plain ═, whatever the key", () => {
+		for (let k = 0; k < 200; k++) {
+			for (const width of [72, 140]) {
+				const on = render(cockpitView(DETAIL({ key: `run-${k}`, chronicle: many(3) })), width).map(plain);
+				expect(on[0]).toMatch(/COGITATOR ═/);
+				expect(on[0]).toMatch(/═ run-\d+ ═╗$/);
+				expect(on.at(-1)).toMatch(/home active(?: · enter open)? ═/);
+				expect(on.at(-1)).toMatch(/═╝$/);
+			}
+		}
+	});
+});

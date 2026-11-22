@@ -1128,6 +1128,22 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	let theme = themeSetting();
 	let pal = palette(colorDepth(), THEMES[theme.name]);
 
+	// The relic look: /strategium-config relic saves "on" or "off" in the state dir, which wins over STRATEGIUM_RELIC (1/0, anything else ignored); off by default.
+	const relicFile = () => path.join(stateDir(), "relic");
+	const relicSetting = (): { on: boolean; from: string } => {
+		let saved = "";
+		try {
+			saved = readFileSync(relicFile(), "utf8").trim().toLowerCase();
+		} catch {
+			// no saved choice: fall through to the env and the default
+		}
+		const fromEnv = process.env.STRATEGIUM_RELIC?.trim() ?? "";
+		if (saved === "on" || saved === "off") return { on: saved === "on", from: "/strategium-config" };
+		if (fromEnv === "1" || fromEnv === "0") return { on: fromEnv === "1", from: "STRATEGIUM_RELIC" };
+		return { on: false, from: "default" };
+	};
+	let relic = relicSetting();
+
 	// The cockpit: an overlay on demand while this session has a run. Everything it shows beyond the run file
 	// (chronicle, squad notes, agent ids) lives in memory, keyed by run key, and drawCockpit saves it beside the run in
 	// runs/<sid>.cockpit when it changed (dirty), so the plan-approval move and an omp restart both keep it.
@@ -1342,7 +1358,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 					cockpit.overlay = tui;
 					cockpit.close = close;
 					return {
-						render: width => renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows),
+						render: width => renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows, relic.on),
 						handleInput: data => {
 							const act = keyAction(data, !!cockpit.nav.detail);
 							if (act === "close") return close();
@@ -1746,7 +1762,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
 		let preview = false;
 		if (arg !== undefined) {
@@ -1759,7 +1775,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			const c = arg.match(/^commit\s+(on|off)$/);
 			const k = arg.match(/^cockpit-key\s+(\S+)$/);
 			const th = arg.match(/^cockpit-theme\s+(\S+)$/);
-			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			const re = arg.match(/^relic\s+(on|off|default)$/i);
+			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
 			else if (to) toastBySession.set(sid, to[1] === "on");
@@ -1782,6 +1799,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				}
 				theme = themeSetting();
 				pal = palette(colorDepth(), THEMES[theme.name]);
+			} else if (re) {
+				const v = re[1].toLowerCase();
+				if (v === "default") rmSync(relicFile(), { force: true });
+				else {
+					mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
+					writeFileSync(relicFile(), v);
+				}
+				relic = relicSetting();
 			} else if (k) {
 				const v = k[1].toLowerCase();
 				if (v === "default") rmSync(keyFile(), { force: true });
@@ -1809,6 +1834,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				`commit: ${commitState(sid)}`,
 				`cockpit-key: ${cockpitKey.key} (${cockpitKey.from})${next.key !== cockpitKey.key || next.from !== cockpitKey.from ? `; next omp start: ${next.key} (${next.from})` : ""}`,
 				`cockpit-theme: ${theme.name} (${theme.from})`,
+				`relic: ${relic.on ? "on" : "off"} (${relic.from})`,
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
 				`state: ${stateDir()}`,
