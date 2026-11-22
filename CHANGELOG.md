@@ -1,3 +1,21 @@
+## [0.2.34] - 2026-11-22
+
+### 🚀 Features
+
+- *(cockpit)* An optional worn techno-relic look
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Relic decoration seeded by structure, scratches kept off text
+- *(cockpit)* Single-glyph relic scratches and tests for tarnish, rivets and fillers
+
+### 📚 Documentation
+
+- *(cockpit)* Describe the relic look
+
+### 🧪 Testing
+
+- *(tooling)* Tui-shot --relic flag
 ## [0.2.33] - 2026-11-22
 
 ### 🚀 Features
