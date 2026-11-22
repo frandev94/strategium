@@ -1,6 +1,6 @@
 const USAGE = `Run the real omp + this plugin in a Windows ConPTY, seed a run, and screenshot what the user sees, or replay past regressions. Windows only.
 
-  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live|signal|detail] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
+  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live|signal|detail|transcript] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
                              [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png]
   bun tools/tui-shot/shot.ts --replay=NAME | --all  [--plugin=DIR] [--suffix=-x] [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png] [--all-png] [--keep-work]
 
@@ -12,7 +12,7 @@ Outputs (default %TEMP%\\strategium-tui-shot): <name>.raw (VT bytes), <name>.htm
 The run is seeded on disk and omp resumes a hand-written session with the same id, so no model call is spent (the replays that need a model use the fake provider in replay-ext.ts).
 `;
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,7 +25,8 @@ const SID = "01a1eb00-0000-7000-8000-00000000d3a0", KEY = "demo-shot"; // the se
 // --- seeds: data only. Task text is "[role] Title"; status completed|in_progress|pending. To add one, add an entry here. ---
 type Task = { content: string; status: string };
 type Phase = { name: string; tasks: Task[] };
-type Seed = { where: Record<string, string>; extra: Record<string, unknown>; phases: Phase[]; timed?: number; cockpit?: Record<string, unknown>; live?: Record<string, LiveSeed> };
+type Seed = { where: Record<string, string>; extra: Record<string, unknown>; phases: Phase[]; timed?: number; cockpit?: Record<string, unknown>; live?: Record<string, LiveSeed>;
+	transcripts?: Record<string, string>; finals?: Record<string, string> }; // id -> JSONL / md text, written beside the session file (<session minus .jsonl>/<id>.jsonl, <id>.md) as omp does
 // What a child writes in runs/<sid>.live/<agent id>.json (index.ts readLive, contract v3: pct, eta_min, line, blocked are what a child's signal writes; cost is its USD spend, absent = unknown); since/at are minutes before the seed is written, the rest goes as is.
 type LiveSeed = { since: number; at: number; busy: number; done?: number; total?: number; current?: string; intent?: string; tool?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean; cost?: number; tokens_in?: number; tokens_out?: number; cache_read?: number; cache_write?: number };
 const t = (content: string, status: string): Task => ({ content, status });
@@ -126,6 +127,40 @@ SEEDS.detail = {
 		AlphaBrother: { since: 10, at: 0, busy: 1, done: 2, total: 5, pct: 40, eta_min: 12, line: "Writing the detail tests", cost: 0.42, tokens_in: 12345, tokens_out: 678, cache_read: 90000, cache_write: 4321 },
 		ApothecaryBeta: { since: 3, at: 0, busy: 1, tool: "bash", intent: "Running the tests", cost: 1.07, tokens_in: 54321, tokens_out: 987, cache_read: 123456, cache_write: 7654 },
 	},
+};
+
+// #125: the transcript view. The detail seed plus generated transcripts (never copied from a real session; shapes as omp writes a child's .jsonl).
+function assistantText(text: string) {
+	return JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } });
+}
+function penanceJsonl() {
+	const out = [JSON.stringify({ type: "session_init", prompt: "SECRET-INIT " + "x".repeat(600 * 1024) })]; // one 600 KiB line, over the 512 KiB the view reads: the head is cut, so the notice shows
+	out.push(JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "Build squad alpha: the cockpit transcript" }] } }));
+	for (let i = 1; i < 60; i++) { // 60 messages, every row kind; thinking is never shown
+		const m = (message: object) => JSON.stringify({ type: "message", message });
+		const call = (name: string, args: object, intent?: string) => m({ role: "assistant", content: [{ type: "toolCall", id: `c${i}`, name, arguments: args, ...(intent ? { intent } : {}) }] });
+		switch ((i - 1) % 6) {
+			case 0: out.push(m({ role: "assistant", content: [{ type: "thinking", thinking: "SECRET-THINKING " + i }, { type: "text", text: i === 7 ? "red\x1b[31mRED\x1b[0m flip\u202etxt" : `Step ${i}: reading the files\nsecond line of step ${i}` }] })); break;
+			case 1: out.push(call("read", { path: `file${i}.ts` }, `Reading file ${i}`)); break;
+			case 2: out.push(m({ role: "toolResult", toolName: "read", isError: false, content: [{ type: "text", text: `first line ${i}\nsecond line` }] })); break;
+			case 3: out.push(call("bash", { i: `Running tests ${i}`, command: "bun test" })); break;
+			case 4: out.push(m({ role: "toolResult", toolName: "bash", isError: true, content: [{ type: "text", text: `FAIL case ${i}\nstack` }] })); break;
+			default: out.push(call("grep", { pattern: `needle${i}`, path: "." }));
+		}
+		if (i === 20) out.push('{"type":"message","message":{"role":"assis'); // a malformed line
+	}
+	return out.join("\n") + "\n";
+}
+function betaJsonl() {
+	return [JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "Test squad beta" }] } }),
+		JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "b1", name: "bash", arguments: { command: "bun test" }, intent: "Running the tests" }] } }),
+		JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "bash", isError: false, content: [{ type: "text", text: "all green" }] } }),
+		assistantText("LIVE-1"), assistantText("LIVE-2"), assistantText("LIVE-3")].join("\n") + "\n";
+}
+SEEDS.transcript = {
+	...SEEDS.detail,
+	transcripts: { AlphaPenance: penanceJsonl(), ApothecaryBeta: betaJsonl() }, // DeltaBrother: no file
+	finals: { AlphaPenance: "# Result\n\nSquad alpha built.\n\nFINAL-END\n" },
 };
 
 // --- args: argparse semantics (--x=v and --x v; --ponytail with an optional value), no prefix abbreviations ---
@@ -251,6 +286,11 @@ export class Run {
 		if (S.cockpit) // the file index.ts writes (cockpit file contract: key, chronicle oldest first, notes, deployed [id, Deployed][])
 			writeFileSync(join(this.state, "runs", SID + ".cockpit"), JSON.stringify({ key: KEY, ...S.cockpit }));
 		if (S.live) this.writeLive(S.live);
+		if (S.transcripts || S.finals) {
+			mkdirSync(this.sfile.slice(0, -".jsonl".length), { recursive: true });
+			for (const [id, text] of Object.entries(S.transcripts ?? {})) writeFileSync(this.transcript(id), text);
+			for (const [id, text] of Object.entries(S.finals ?? {})) writeFileSync(this.transcript(id, "md"), text);
+		}
 		if (S.timed) { // the day file startKey would have written: local date, local time with offset
 			const n = new Date(); n.setMilliseconds(0);
 			const midnight = new Date(n); midnight.setHours(0, 0, 0, 0);
@@ -281,6 +321,11 @@ export class Run {
 		const now = Date.now();
 		for (const [id, { since, at, ...rest }] of Object.entries(rows))
 			writeFileSync(join(dir, encodeURIComponent(id) + ".json"), JSON.stringify({ since: now - since * 60_000, at: now - at * 60_000, ...rest }));
+	}
+
+	/** Where omp writes an agent's transcript (.jsonl) or final answer (.md): beside the session file, in a dir named like it. */
+	transcript(id: string, ext: "jsonl" | "md" = "jsonl") {
+		return join(this.sfile.slice(0, -".jsonl".length), `${id}.${ext}`);
 	}
 
 	/** The whole stream so far (bytes). */
@@ -1149,6 +1194,95 @@ function checksCockpitDetail(C: Ctx) {
 	}
 }
 
+// cockpit-transcript (#125, seed `transcript`). Keys are win32 (faithful). Reopening starts clean (index.ts), so the narrow pass walks down, tab, tab, down from the first item to ApothecaryBeta.
+async function stepsCockpitTranscript(R: Run) {
+	const names: string[] = [];
+	R.notes = { names };
+	const step = async (name: string, keys: string[], png = false) => {
+		for (const k of keys) await R.key(k);
+		await R.sleep(0.7); await R.snap(name, png); names.push(name);
+	};
+	await R.open(); await R.snap("open");
+	R.notes.open = R.altOpen();
+	await step("alpha-line", ["down", "tab"]);
+	await step("alpha-squad", ["ret"]);
+	await step("alpha-transcript", ["ret"], true);
+	await step("alpha-up", Array.from({ length: 10 }, () => "up"));
+	await step("alpha-head", Array.from({ length: 60 }, () => "up")); // to the first row: the notice of the cut head
+	await step("alpha-back", ["bksp"]);
+	await step("alpha-top", ["esc"]);
+	await step("delta-line", ["down"]);
+	await step("delta-squad", ["ret"]);
+	await step("delta-reason", ["ret"], true);
+	await step("delta-back", ["bksp"]);
+	await step("delta-top", ["esc"]);
+	await step("beta-line", ["tab", "down"]);
+	await step("beta-agent", ["ret"]);
+	await step("beta-transcript", ["ret"]);
+	appendFileSync(R.transcript("ApothecaryBeta"), assistantText("LIVE-4") + "\n" + assistantText("LIVE-5") + "\n");
+	await R.sleep(2.5); await R.snap("beta-live", true); names.push("beta-live");
+	await R.key("q"); await R.waitQuiet(1.0, 3.0); await R.snap("beta-closed");
+	await R.open(); await R.resize(60, R.rows); await R.sleep(1.5);
+	await step("narrow-line", ["down", "tab", "tab", "down"]);
+	await step("narrow-agent", ["ret"]);
+	await step("narrow-transcript", ["ret"], true);
+	await R.key("q"); await R.waitQuiet(1.0, 3.0); await R.snap("narrow-closed");
+}
+/** The last row with text above the bottom frame (wide) or the footer (narrow, unframed): a transcript shorter than the window sits at the top, so the row just above the footer can be blank. */
+const lastBodyRow = (s: Snap) => {
+	const f = s.rowsText.findLastIndex(r => r.startsWith("╚"));
+	return s.rowsText.slice(0, f >= 0 ? f : s.rowsText.findLastIndex(r => r)).findLast(r => r.replace(/[║ ]/g, "")) ?? "";
+};
+const transcriptTitle = (s: Snap) => /TRANSCRIPT (\w+)(?: · (\d+)–(\d+)\/(\d+))?/.exec(s.rowsText.filter(r => r.startsWith("╟─")).join("\n"));
+function checksCockpitTranscript(C: Ctx) {
+	const names = C.R.notes.names as string[];
+	const o = snapOf(C, "open");
+	C.ck("open: alternate buffer, framed, no ▸", C.R.notes.open && o.type === "alternate" && o.framed() && markers(o).length === 0, markers(o), "none", o);
+	for (const name of names) {
+		const s = snapOf(C, name), W = s.cols;
+		C.ck(`${name}: cockpit still open (alternate buffer)`, s.type === "alternate", s.type, "alternate", s);
+		const bad = range(0, s.rows).filter(i => oneOf(s.at(i, 0), "╔║╟╚") && !oneOf(s.at(i, W - 1), "╗║╢╝"));
+		C.ck(`${name}: every framed row ends at col ${W - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, s);
+		C.ck(`${name}: no ESC-derived text or bidi on screen (SECRET-INIT, U+202E)`, !s.has("SECRET-INIT") && !s.rowsText.some(r => /[\u202e\u2028]/.test(r)), null, null, s);
+	}
+	const squad = snapOf(C, "alpha-squad");
+	C.ck("alpha-squad: footer offers enter transcript", footerRow(squad).includes("enter transcript"), footerRow(squad), "… enter transcript …", squad);
+	const a = snapOf(C, "alpha-transcript"), t = transcriptTitle(a);
+	C.ck("alpha-transcript: a ╟─ row names TRANSCRIPT AlphaPenance with a–b/n", t?.[1] === "AlphaPenance" && !!t[4], t?.[0], "TRANSCRIPT AlphaPenance · a–b/n", a);
+	C.ck("alpha-transcript: b = n (opens at the bottom)", !!t?.[4] && t[3] === t[4], t?.slice(2), "b = n", a);
+	C.ck("alpha-transcript: FINAL-END on the last body row", lastBodyRow(a).includes("FINAL-END"), lastBodyRow(a), "FINAL-END", a);
+	C.ck("alpha-transcript: the final answer is labelled", a.has("final answer:"), null, "final answer:", a);
+	C.ck("alpha-transcript: no SECRET-THINKING (thinking blocks are skipped)", !a.has("SECRET-THINKING"), null, "not on screen", a);
+	C.ck("alpha-transcript: footer esc/bksp back · q close · ↑↓ scroll", footerRow(a).includes("esc/bksp back · q close · ↑↓ scroll"), footerRow(a), "esc/bksp back · q close · ↑↓ scroll", a);
+	const u = transcriptTitle(snapOf(C, "alpha-up"));
+	C.ck("alpha-up: ↑×10 moved a up (window left the bottom)", !!t?.[2] && !!u?.[2] && +u[2] < +t[2] && +u[3] < +u[4], [t?.slice(2), u?.slice(2)], "a and b lower", snapOf(C, "alpha-up"));
+	const h = snapOf(C, "alpha-head");
+	C.ck("alpha-head: the first row is `… earlier entries not shown` and a = 1 (the 600 KiB init line is cut, not shown)", h.has("… earlier entries not shown") && transcriptTitle(h)?.[2] === "1" && !h.has("SECRET-INIT"), transcriptTitle(h)?.slice(2), "a = 1 with the notice", h);
+	const ab = snapOf(C, "alpha-back");
+	C.ck("alpha-back: Bksp returns to SQUAD alpha", ab.rowsText.some(r => r.startsWith("╟─") && r.includes("SQUAD alpha")) && !ab.has("TRANSCRIPT"), null, "SQUAD alpha", ab);
+	const top = snapOf(C, "alpha-top"), m0 = markers(snapOf(C, "alpha-line")), m1 = markers(top);
+	C.ck("alpha-top: Esc returns to the top level, ▸ on the same cell", top.has("BATTLE-BROTHERS") && m0.length === 1 && Bun.deepEquals(m0, m1), m1, m0, top);
+	const d = snapOf(C, "delta-reason");
+	C.ck("delta-reason: TRANSCRIPT DeltaBrother gives the exact reason", transcriptTitle(d)?.[1] === "DeltaBrother" && d.has("no transcript yet: omp writes it after the agent's first reply"), transcriptTitle(d)?.[0], "no transcript yet: omp writes it after the agent's first reply", d);
+	const dt = snapOf(C, "delta-top"), n0 = markers(snapOf(C, "delta-line")), n1 = markers(dt);
+	C.ck("delta-top: two Backs return to the top level, ▸ on the same cell", dt.has("BATTLE-BROTHERS") && n0.length === 1 && Bun.deepEquals(n0, n1), n1, n0, dt);
+	const ba = snapOf(C, "beta-agent");
+	C.ck("beta-agent: agent detail footer offers enter transcript", ba.has("ApothecaryBeta") && footerRow(ba).includes("enter transcript"), footerRow(ba), "… enter transcript …", ba);
+	const b = snapOf(C, "beta-transcript");
+	C.ck("beta-transcript: LIVE-3 on the last body row", lastBodyRow(b).includes("LIVE-3"), lastBodyRow(b), "LIVE-3", b);
+	C.ck("beta-transcript: an active agent shows no final answer", !b.has("final answer:"), null, "absent", b);
+	const l = snapOf(C, "beta-live");
+	C.ck("beta-live: LIVE-5 on the last body row after the append (no keypress)", lastBodyRow(l).includes("LIVE-5"), lastBodyRow(l), "LIVE-5", l);
+	const bc = snapOf(C, "beta-closed");
+	C.ck("beta-closed: q closes from the transcript (normal buffer, no frame)", bc.type === "normal" && !bc.framed(), bc.type, "normal, no frame", bc);
+	const nt = snapOf(C, "narrow-transcript");
+	C.ck("narrow-transcript: 60 columns, unframed, TRANSCRIPT ApothecaryBeta", nt.cols === 60 && !nt.framed() && nt.has("TRANSCRIPT ApothecaryBeta"), [nt.cols, nt.framed()], "60, unframed", nt);
+	C.ck("narrow-transcript: LIVE-5 on the last body row", lastBodyRow(nt).includes("LIVE-5"), lastBodyRow(nt), "LIVE-5", nt);
+	C.ck("narrow-transcript: nothing past col 59", range(0, nt.rows).every(y => nt.lastCol(y) < 60), null, null, nt);
+	const nc = snapOf(C, "narrow-closed");
+	C.ck("narrow-closed: q closes from the narrow transcript", nc.type === "normal" && !nc.framed(), nc.type, "normal, no frame", nc);
+}
+
 // name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, settle (false: wait only for the first heartbeat), steps, checks
 type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
 export const REPLAYS: Record<string, Replay> = {
@@ -1177,6 +1311,7 @@ export const REPLAYS: Record<string, Replay> = {
 	"cockpit-restart": { r: "#19", kind: "FIXED", seed: "restart", steps: stepsCockpitRestart, checks: checksCockpitRestart },
 	"cockpit-cursor": { r: "#123", kind: "FIXED", seed: "restart", ext: true, steps: stepsCockpitCursor, checks: checksCockpitCursor },
 	"cockpit-detail": { r: "#124", kind: "FIXED", seed: "detail", ext: true, steps: stepsCockpitDetail, checks: checksCockpitDetail },
+	"cockpit-transcript": { r: "#125", kind: "FIXED", seed: "transcript", ext: true, steps: stepsCockpitTranscript, checks: checksCockpitTranscript },
 };
 
 // shortcut: only the entities Chromium's --dump-dom writes in text (amp, lt, gt, quot, apos, nbsp, numeric); a full table if that ever changes

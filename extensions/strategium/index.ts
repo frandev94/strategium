@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -23,7 +23,7 @@ import {
 import { debrief, type AgentCost, type Reported } from "./debrief";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -75,7 +75,7 @@ type Component = { render(width: number): string[]; handleInput?(data: string): 
 // What the extension reads from the host's session context: the real one has more.
 // `hasUI` and the optional ui calls are absent with --no-ui or in headless modes; RPC has them, but its custom() resolves at once without building the component.
 type SessionCtx = {
-	sessionManager: { getSessionId(): string };
+	sessionManager: { getSessionId(): string; getSessionFile?(): string | undefined };
 	hasUI?: boolean;
 	ui: {
 		notify(message: string, level?: "info" | "warning" | "error"): void;
@@ -272,6 +272,85 @@ function lastBeat(sid: string): string | undefined {
 	}
 }
 const sidOf = (ctx: { sessionManager: { getSessionId(): string } }) => ctx.sessionManager.getSessionId();
+
+const TAIL_BYTES = 512 * 1024; // the newest part of a child's .jsonl the cockpit reads
+const FINAL_BYTES = 64 * 1024; // the head of its final answer (.md)
+const HEAD_CHUNK = 64 * 1024; // read size while looking for the agent's brief in the head of a cut log
+const HEAD_BYTES = 512 * 1024; // how far into the log that look goes (session_init and skill prompts come first)
+type TranscriptRead = { id: string; stamp: string; lines: string[] };
+const NOT_FILE = Object.assign(new Error("not a regular file"), { code: "not a regular file" });
+/** A regular file opened for reading, with the size and mtime of the open handle; undefined when absent. A link, directory or FIFO seen by lstat throws before any open. Not race-proof: a link swapped in between the lstat and the open is followed, and the fstat only confirms that what was opened is a regular file. */
+function openRegular(file: string): { fd: number; size: number; mtimeMs: number } | undefined {
+	const l = lstatSync(file, { throwIfNoEntry: false });
+	if (!l) return undefined;
+	if (!l.isFile()) throw NOT_FILE;
+	const fd = openSync(file, "r");
+	try {
+		const st = fstatSync(fd);
+		if (!st.isFile()) throw NOT_FILE;
+		return { fd, size: st.size, mtimeMs: st.mtimeMs };
+	} catch (e) {
+		closeSync(fd);
+		throw e;
+	}
+}
+/** Up to `len` bytes of the open file from `from`. */
+function readSlice(fd: number, from: number, len: number): string {
+	const buf = Buffer.allocUnsafe(len);
+	return buf.toString("utf8", 0, readSync(fd, buf, 0, len, from));
+}
+/** The brief row of the log's first `limit` bytes, read in HEAD_CHUNK pieces up to the first complete `user` message (a line is parsed only once whole, and only once). */
+function headBrief(fd: number, limit: number): string | undefined {
+	let buf = Buffer.alloc(0);
+	let from = 0;
+	while (buf.length < limit) {
+		const chunk = Buffer.allocUnsafe(Math.min(HEAD_CHUNK, limit - buf.length));
+		const n = readSync(fd, chunk, 0, chunk.length, buf.length);
+		if (n <= 0) break;
+		buf = Buffer.concat([buf, chunk.subarray(0, n)]);
+		const nl = buf.lastIndexOf(10);
+		if (nl < from) continue;
+		const row = briefRow(buf.toString("utf8", from, nl + 1));
+		if (row !== undefined) return row;
+		from = nl + 1;
+	}
+	return undefined;
+}
+/**
+ * The rows of agent `id`'s transcript, from `<session file minus .jsonl>/<id>.jsonl` (omp writes a child's files beside its parent's) and, when `finished`, its `<id>.md`.
+ * The id is checked before it becomes a path (a `.` is a nested agent, never read); only a regular file is opened, and its own handle is stat'ed. Bounded: the last TAIL_BYTES of the log, the first FINAL_BYTES of the answer.
+ * `prev` is returned as is while both files keep their size and mtime. Never throws: a problem is one reason row.
+ */
+export function readTranscript(sessionFile: string | undefined, id: string, finished: boolean, prev?: TranscriptRead): TranscriptRead {
+	const reason = (r: string): TranscriptRead => ({ id, stamp: r, lines: [r] });
+	if (id.includes(".")) return reason(`${id}: a nested agent; its transcript is not read`);
+	if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return reason(`${id}: not a transcript id`);
+	if (!sessionFile?.endsWith(".jsonl")) return reason("no session file: this session is not saved, so its agents' transcripts are not either");
+	const base = `${sessionFile.slice(0, -6)}/${id}`;
+	const fds: number[] = [];
+	try {
+		const log = openRegular(`${base}.jsonl`);
+		if (!log) return reason("no transcript yet: omp writes it after the agent's first reply");
+		fds.push(log.fd);
+		let ans: { fd: number; size: number; mtimeMs: number } | undefined;
+		try {
+			ans = finished ? openRegular(`${base}.md`) : undefined;
+		} catch {
+			ans = undefined; // a bad answer file (directory, link, unreadable) is no answer; the log's rows still show
+		}
+		if (ans) fds.push(ans.fd);
+		const stamp = `${log.size}:${log.mtimeMs}:${finished ? (ans ? `${ans.size}:${ans.mtimeMs}` : "none") : "live"}`;
+		if (prev?.id === id && prev.stamp === stamp) return prev;
+		const tail = readSlice(log.fd, Math.max(0, log.size - TAIL_BYTES), Math.min(log.size, TAIL_BYTES));
+		const final = finished ? (ans ? readSlice(ans.fd, 0, Math.min(ans.size, FINAL_BYTES)) : null) : undefined;
+		const cut = log.size > TAIL_BYTES;
+		return { id, stamp, lines: transcriptLines(tail, cut, final, cut ? headBrief(log.fd, Math.min(HEAD_BYTES, log.size - TAIL_BYTES)) : undefined) };
+	} catch (e) {
+		return reason(`transcript unreadable: ${(e as NodeJS.ErrnoException).code ?? "error"}`);
+	} finally {
+		for (const fd of fds) closeSync(fd);
+	}
+}
 
 function readRun(sid: string): Run | undefined {
 	const f = runFile(sid);
@@ -1063,6 +1142,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
 		input: undefined as ViewInput | undefined, // the last view input, so a cursor key recomputes the view without reading files
+		transcript: undefined as TranscriptRead | undefined, // the rows of the open transcript, with the stamp of the files they came from; read by Enter and by the redraw while it is open
 		nav: {} as Nav, // the cursor and browsed station: in memory only, never saved
 		overlay: undefined as Tui | undefined,
 		status: undefined as "working" | "awaiting" | undefined,
@@ -1079,7 +1159,18 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.clock = undefined;
 		cockpit.seal = undefined;
 		cockpit.nav = {};
+		cockpit.transcript = undefined;
 		cockpit.dirty = key !== undefined;
+	};
+	/** The open transcript's rows (the one nav names; undefined with none open): the files are stat'ed and read again only when their size or mtime changed. */
+	let readAt = 0;
+	const readOpen = (ctx: SessionCtx) => {
+		const id = cockpit.nav.detail?.transcript;
+		if (id === undefined) return undefined;
+		const now = Date.now();
+		if (cockpit.transcript?.id === id && now - readAt < 1000 && now >= readAt) return cockpit.transcript; // at most one stat per second
+		readAt = now;
+		return readTranscript(ctx.sessionManager.getSessionFile?.(), id, cockpit.deployed.get(id)?.state !== "active", cockpit.transcript);
 	};
 	/** Take the saved state of this session's run, replacing memory; a missing, corrupt or other-key file is a clean start. */
 	const loadCockpit = (sid: string, key: string) => {
@@ -1178,6 +1269,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			job.stalled = start;
 			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
 		}
+		cockpit.transcript = readOpen(ctx);
 		cockpit.input = {
 			live: rows,
 			now,
@@ -1194,6 +1286,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
 			seal: cockpit.seal,
+			transcript: cockpit.transcript,
 		};
 		cockpit.view = cockpitView({ ...cockpit.input, nav: cockpit.nav });
 		cockpit.nav = cockpit.view.nav; // normalized: a browsed station is dropped when the active one moved
@@ -1215,10 +1308,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		if (cockpit.close) return;
 		cockpit.status = agentStatus(ctx);
 		cockpit.nav = {}; // a reopened cockpit starts clean
+		cockpit.transcript = undefined;
 		drawCockpit(run, ctx);
 		const closed = () => {
 			cockpit.close = undefined;
 			cockpit.overlay = undefined;
+			cockpit.nav = {}; // a closed cockpit reads no transcript on a later redraw
+			cockpit.transcript = undefined;
 		};
 		// Not awaited: the command returns at once and the overlay lives until Esc or q.
 		Promise.resolve(
@@ -1251,7 +1347,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 							const act = keyAction(data, !!cockpit.nav.detail);
 							if (act === "close") return close();
 							if (!act || !cockpit.view || !cockpit.input) return;
+							const open = cockpit.nav.detail?.transcript;
 							cockpit.nav = navigate(cockpit.view, act);
+							if (cockpit.nav.detail?.transcript !== open) {
+								// Enter opening a transcript is the one key that reads a file; closing it drops the rows.
+								cockpit.transcript = readOpen(ctx);
+								cockpit.input = { ...cockpit.input, transcript: cockpit.transcript };
+							}
 							cockpit.view = cockpitView({ ...cockpit.input, status: cockpit.status, nav: cockpit.nav });
 							cockpit.nav = cockpit.view.nav;
 							tui.requestRender();

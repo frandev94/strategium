@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, setSystemTime, test, vi } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, setSystemTime, spyOn, test, vi } from "bun:test";
+import * as fs from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension, { keyOf, parseTiers, whereFrom } from "./index";
+import extension, { keyOf, parseTiers, readTranscript, whereFrom } from "./index";
 import { cockpitView } from "./cockpit";
 import { append, claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
 
@@ -5362,6 +5363,431 @@ describe("cockpit", () => {
 				rmSync(join(s.dir, "runs"), { recursive: true, force: true });
 				expect(openDetail(c, "back · q close")).toBe(true);
 				c.handleInput!("q");
+			});
+
+			describe("transcript", () => {
+				const msg = (role: string, content: unknown, extra: object = {}) => JSON.stringify({ type: "message", message: { role, content, ...extra } });
+				const say = (text: string) => msg("assistant", [{ type: "text", text }]);
+				// The session file omp would report; a child's files sit in the dir named like it.
+				const session = (s: S) => {
+					const dir = join(s.dir, "sessions", "main");
+					mkdirSync(dir, { recursive: true });
+					(s.ctx.sessionManager as { getSessionFile?: () => string }).getSessionFile = () => join(s.dir, "sessions", "main.jsonl");
+					return dir;
+				};
+				// Tab to the first line, ↓ to "squad a forging", Enter for its detail, Enter again for its newest agent's transcript.
+				const open = (c: { render(w: number): string[]; handleInput?(d: string): void }) => {
+					for (const k of ["\t", "\x1b[B", "\r"]) c.handleInput!(k);
+					expect(show(c)).toContain("enter transcript");
+					c.handleInput!("\r");
+				};
+				const ended = (s: S) => s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A")] }, details: { progress: [{ index: 0, id: "A", status: "completed" }] }, isError: false }, s.ctx));
+
+				test("Enter on a squad's detail opens its newest agent's transcript from the session's child file; Back returns to the detail", async () => {
+					const { s, ui } = await squad();
+					writeFileSync(join(session(s), "A.jsonl"), [msg("user", [{ type: "text", text: "Build squad a" }]), say("EDITING-NOW"), msg("assistant", [{ type: "thinking", thinking: "SECRET-THINKING" }, { type: "toolCall", name: "read", intent: "Reading a.ts", arguments: { path: "a.ts" } }]), msg("toolResult", [{ type: "text", text: "line one\nline two" }], { toolName: "read", isError: false })].join("\n") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					const t = show(c);
+					expect(t).toContain("TRANSCRIPT A");
+					expect(t).toContain("user: Build squad a");
+					expect(t).toContain("EDITING-NOW");
+					expect(t).toContain("→ read Reading a.ts");
+					expect(t).toContain("← read ok: line one");
+					expect(t).not.toContain("SECRET-THINKING");
+					c.handleInput!("\x7f");
+					expect(show(c)).toContain("back · q close");
+					expect(show(c)).not.toContain("TRANSCRIPT");
+					c.handleInput!("q");
+				});
+
+				test("a missing file, a directory in its place and an unsafe agent id each give one reason row and read nothing outside the session dir", async () => {
+					const { s, ui } = await squad();
+					const dir = session(s);
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					expect(show(c)).toContain("no transcript yet: omp writes it after the agent's first reply");
+					c.handleInput!("\x7f");
+					mkdirSync(join(dir, "A.jsonl"));
+					c.handleInput!("\r");
+					expect(show(c)).toContain("transcript unreadable: not a regular file");
+					c.handleInput!("q");
+					// An id that climbs out of the dir: its file exists outside, and is not shown.
+					writeFileSync(join(s.dir, "sessions", "evil.jsonl"), say("OUTSIDE") + "\n");
+					taskResult(s, "../evil");
+					await s.sub("cockpit");
+					const e = ui.opened.at(-1)!.component;
+					open(e);
+					expect(show(e)).toContain("TRANSCRIPT ../evil");
+					expect(show(e)).toContain("../evil: a nested agent; its transcript is not read");
+					expect(show(e)).not.toContain("OUTSIDE");
+					e.handleInput!("q");
+				});
+
+				test("only the last 512 KiB of the file are read: the partial first line is dropped and the head is not shown", async () => {
+					const { s, ui } = await squad();
+					const pad = "x".repeat(900);
+					const lines = [say("HEAD-MARK")];
+					for (let i = 0; i < 700; i++) lines.push(say(`${i} ${pad}`));
+					lines.push(say("TAIL-MARK"));
+					writeFileSync(join(session(s), "A.jsonl"), lines.join("\n") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					const t = show(c);
+					expect(t).toContain("TAIL-MARK");
+					expect(t).not.toContain("HEAD-MARK");
+					c.handleInput!("q");
+				});
+
+				test("a finished agent shows its final answer from the .md, an active one none", async () => {
+					const { s, ui } = await squad();
+					const dir = session(s);
+					writeFileSync(join(dir, "A.jsonl"), say("WORKING") + "\n");
+					writeFileSync(join(dir, "A.md"), "FINAL-ANSWER-TEXT\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					expect(show(c)).not.toContain("final answer:");
+					c.handleInput!("q");
+					ended(s);
+					await s.sub("cockpit");
+					const d = ui.opened.at(-1)!.component;
+					open(d);
+					expect(show(d)).toContain("final answer:");
+					expect(show(d)).toContain("FINAL-ANSWER-TEXT");
+					d.handleInput!("q");
+				});
+
+				test("scrolling inside the open transcript reads no file, and the 500 ms redraw re-reads it only when its size or mtime changed", async () => {
+					vi.useFakeTimers();
+					const { s, ui } = await squad();
+					const file = join(session(s), "A.jsonl");
+					writeFileSync(file, say("ROW-AAAA") + "\n");
+					utimesSync(file, 1e9, 1e9); // a whole-second mtime, so it can be put back exactly
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					expect(show(c)).toContain("ROW-AAAA");
+					// The one keypress that reads a file was Enter: scrolling still works with the file gone.
+					rmSync(file);
+					c.handleInput!("\x1b[A");
+					c.handleInput!("\x1b[B");
+					expect(show(c)).toContain("ROW-AAAA");
+					// Same size, same mtime, other text: not re-read.
+					writeFileSync(file, say("ROW-BBBB") + "\n");
+					utimesSync(file, 1e9, 1e9);
+					vi.advanceTimersByTime(2000);
+					expect(show(c)).toContain("ROW-AAAA");
+					expect(show(c)).not.toContain("ROW-BBBB");
+					// Appended: re-read within a second.
+					appendFileSync(file, say("ROW-CCCC") + "\n");
+					vi.advanceTimersByTime(2000);
+					expect(show(c)).toContain("ROW-BBBB");
+					expect(show(c)).toContain("ROW-CCCC");
+					c.handleInput!("q");
+				});
+
+				test("event-driven redraws within a second reuse the transcript without a stat; a second later it is re-read", async () => {
+					vi.useFakeTimers();
+					const { s, ui } = await squad();
+					const file = join(session(s), "A.jsonl");
+					writeFileSync(file, say("ROW-AAAA") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					appendFileSync(file, say("ROW-LATE") + "\n");
+					const st = watch("lstatSync");
+					ended(s);
+					expect(st.mock.calls.filter(call => String(call[0]).endsWith("A.jsonl"))).toHaveLength(0);
+					expect(show(c)).not.toContain("ROW-LATE");
+					vi.advanceTimersByTime(1000);
+					ended(s);
+					expect(show(c)).toContain("ROW-LATE");
+					c.handleInput!("q");
+				});
+
+				test("rewriting the answer with the log unchanged is read again", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("W") + "\n");
+					writeFileSync(join(dir, "A.md"), "ANSWER-ONE\n");
+					utimesSync(join(dir, "A.md"), 1e9, 1e9);
+					const a = readTranscript(file, "A", true);
+					expect(a.lines).toContain("ANSWER-ONE");
+					writeFileSync(join(dir, "A.md"), "ANSWER-TWO\n");
+					utimesSync(join(dir, "A.md"), 2e9, 2e9);
+					const b = readTranscript(file, "A", true, a);
+					expect(b.lines).toContain("ANSWER-TWO");
+					expect(b.lines).not.toContain("ANSWER-ONE");
+				});
+
+				test("a log over 512 KiB shows the agent's brief first, read once per open, never on a redraw", () => {
+					const { dir, file } = tree();
+					const user = (text: string) => JSON.stringify({ type: "message", message: { role: "user", content: text } });
+					const pad = say("x".repeat(1000)) + "\n";
+					writeFileSync(join(dir, "A.jsonl"), user("THE-BRIEF") + "\n" + pad.repeat(600) + say("TAIL-MARK") + "\n");
+					expect(fs.statSync(join(dir, "A.jsonl")).size).toBeGreaterThan(512 * KB);
+					const a = readTranscript(file, "A", false);
+					expect(a.lines.slice(0, 2)).toEqual(["user: THE-BRIEF", "… earlier entries not shown"]);
+					expect(a.lines.at(-1)).toBe("TAIL-MARK");
+					const rd = watch("readSync");
+					expect(readTranscript(file, "A", false, a)).toBe(a);
+					expect(rd.mock.calls).toHaveLength(0);
+				});
+
+				test("the brief is found behind a 200 KiB session_init line, and never past the start of the tail", () => {
+					const { dir, file } = tree();
+					const user = (text: string) => JSON.stringify({ type: "message", message: { role: "user", content: text } });
+					const init = JSON.stringify({ type: "session_init", systemPrompt: "p".repeat(200 * KB) }) + "\n";
+					const pad = say("x".repeat(1000)) + "\n";
+					writeFileSync(join(dir, "A.jsonl"), init + user("DEEP-BRIEF") + "\n" + pad.repeat(600) + say("TAIL-MARK") + "\n");
+					expect(readTranscript(file, "A", false).lines.slice(0, 2)).toEqual(["user: DEEP-BRIEF", "… earlier entries not shown"]);
+					// the only user message is beyond the 512 KiB head cap: no brief
+					writeFileSync(join(dir, "B.jsonl"), init + pad.repeat(700) + user("TOO-FAR") + "\n" + pad.repeat(600));
+					expect(readTranscript(file, "B", false).lines.join("\n")).not.toContain("TOO-FAR");
+				});
+
+				test("the throttle is keyed by id: another agent's transcript is read at once", async () => {
+					vi.useFakeTimers();
+					const { s, ui } = await squad();
+					writeFileSync(join(session(s), "A.jsonl"), say("ROW-AAAA") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					expect(show(c)).toContain("ROW-AAAA");
+					c.handleInput!("q");
+					writeFileSync(join(session(s), "A.jsonl"), say("ROW-NEW") + "\n");
+					await s.sub("cockpit");
+					const d = ui.opened.at(-1)!.component;
+					open(d);
+					expect(show(d)).toContain("ROW-NEW");
+					d.handleInput!("q");
+				});
+
+				test("with no transcript open the redraw never reads the child's file", async () => {
+					vi.useFakeTimers();
+					const { s, ui } = await squad();
+					const dir = session(s);
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					for (const k of ["\t", "\x1b[B", "\r"]) c.handleInput!(k);
+					writeFileSync(join(dir, "A.jsonl"), say("LATE-ROW") + "\n");
+					vi.advanceTimersByTime(2000);
+					expect(show(c)).not.toContain("LATE-ROW");
+					c.handleInput!("\r");
+					expect(show(c)).toContain("LATE-ROW");
+					c.handleInput!("q");
+				});
+
+				// --- #125 penance: reasons, ids, byte budgets, links, cache ---
+				const NO_SESSION = "no session file: this session is not saved, so its agents' transcripts are not either";
+				const roots: string[] = [];
+				const spies: { mockRestore(): void }[] = [];
+				afterEach(() => {
+					spies.splice(0).forEach(sp => sp.mockRestore());
+					roots.splice(0).forEach(r => rmSync(r, { recursive: true, force: true }));
+				});
+				const watch = <K extends "openSync" | "lstatSync" | "fstatSync" | "readSync">(name: K) => {
+					const sp = spyOn(fs, name);
+					spies.push(sp);
+					return sp;
+				};
+				const bytes = (sp: { mock: { results: { value: unknown }[] } }) => sp.mock.results.reduce((n, r) => n + (r.value as number), 0);
+				const KB = 1024;
+				// A session file and the dir its children's files sit in, all under one temp root.
+				const tree = () => {
+					const root = mkdtempSync(join(tmpdir(), "rt-"));
+					roots.push(root);
+					mkdirSync(join(root, "main"));
+					return { root, dir: join(root, "main"), file: join(root, "main.jsonl") };
+				};
+
+				test("every reason reads exactly as the Spec says", () => {
+					const { dir, file } = tree();
+					expect(readTranscript(undefined, "A", false).lines).toEqual([NO_SESSION]);
+					expect(readTranscript(join(dir, "x.txt"), "A", false).lines).toEqual([NO_SESSION]);
+					expect(readTranscript(file, "a.b", false).lines).toEqual(["a.b: a nested agent; its transcript is not read"]);
+					expect(readTranscript(file, "a/b", false).lines).toEqual(["a/b: not a transcript id"]);
+					expect(readTranscript(file, "A", false).lines).toEqual(["no transcript yet: omp writes it after the agent's first reply"]);
+					mkdirSync(join(dir, "D.jsonl"));
+					expect(readTranscript(file, "D", false).lines).toEqual(["transcript unreadable: not a regular file"]);
+					writeFileSync(join(dir, "E.jsonl"), say("x") + "\n");
+					watch("openSync").mockImplementation(() => {
+						throw Object.assign(new Error("denied"), { code: "EACCES" });
+					});
+					expect(readTranscript(file, "E", false).lines).toEqual(["transcript unreadable: EACCES"]);
+				});
+
+				test("an id with a dot, a separator or a colon, or over 64 chars, never reaches fs, decoys inside and outside the dir or not", () => {
+					const { root, dir, file } = tree();
+					for (const base of [dir, root]) mkdirSync(join(base, "a"));
+					const ids = ["a.b", "a/b", "a\\b", "a:b", "a".repeat(65), "", "..", "a b", "a\nb"];
+					for (const id of ids) for (const base of [dir, root]) try { writeFileSync(join(base, `${id}.jsonl`), say("DECOY") + "\n"); } catch { /* not a legal name here: no decoy for it */ }
+					const open = watch("openSync");
+					const st = watch("lstatSync");
+					const fst = watch("fstatSync");
+					for (const id of ids) expect(readTranscript(file, id, false).lines.join()).not.toContain("DECOY");
+					expect(open.mock.calls).toHaveLength(0);
+					expect(st.mock.calls).toHaveLength(0);
+					expect(fst.mock.calls).toHaveLength(0);
+				});
+
+				test("ids of 1 to 64 letters, digits, `_` and `-` are read, including one that starts with `_` or `-`", () => {
+					const { dir, file } = tree();
+					for (const id of ["_x", "-x", "a".repeat(64), "A1"]) {
+						writeFileSync(join(dir, `${id}.jsonl`), say(`ROW-${id.length}`) + "\n");
+						expect(readTranscript(file, id, false).lines).toEqual([`ROW-${id.length}`]);
+					}
+				});
+
+				test("a 10 MB log and a 100 KiB answer read at most 512 KiB + 64 KiB and show the newest end", () => {
+					const { dir, file } = tree();
+					const pad = say("x".repeat(1000)) + "\n";
+					writeFileSync(join(dir, "A.jsonl"), say("HEAD-MARK") + "\n" + pad.repeat(10_000) + say("TAIL-MARK") + "\n");
+					writeFileSync(join(dir, "A.md"), `FIRST-LINE\n${"y".repeat(100 * KB)}\nEND-MARK\n`);
+					expect(fs.statSync(join(dir, "A.jsonl")).size).toBeGreaterThan(10 * 1024 * KB);
+					const rd = watch("readSync");
+					const alloc = spyOn(Buffer, "allocUnsafe");
+					spies.push(alloc);
+					const t = readTranscript(file, "A", true).lines.join("\n");
+					expect(bytes(rd)).toBeGreaterThan(0);
+					expect(bytes(rd)).toBeLessThanOrEqual(512 * KB + 64 * KB + 512 * KB); // tail, answer and the head the brief is looked for in
+					expect(Math.max(...alloc.mock.calls.map(c => c[0]))).toBeLessThanOrEqual(512 * KB); // never a buffer the size of the file
+					expect(t).toContain("TAIL-MARK");
+					expect(t).toContain("FIRST-LINE");
+					expect(t).not.toContain("HEAD-MARK");
+					expect(t).not.toContain("END-MARK");
+					expect(t).toContain("… earlier entries not shown");
+				});
+
+				test("an answer over 64 KiB is read only up to 64 KiB", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("W") + "\n");
+					writeFileSync(join(dir, "A.md"), "y".repeat(200 * KB));
+					const rd = watch("readSync");
+					readTranscript(file, "A", true);
+					expect(bytes(rd)).toBeLessThanOrEqual(KB + 64 * KB);
+				});
+
+				test("a file of exactly 512 KiB keeps its first line with no notice; one byte more cuts it", () => {
+					const { dir, file } = tree();
+					const first = say("FIRST-ROW") + "\n";
+					const last = (extra: number) => say("x".repeat(512 * KB - first.length - 1 - say("").length + extra)) + "\n";
+					writeFileSync(join(dir, "A.jsonl"), first + last(0));
+					expect(fs.statSync(join(dir, "A.jsonl")).size).toBe(512 * KB);
+					expect(readTranscript(file, "A", false).lines[0]).toBe("FIRST-ROW");
+					writeFileSync(join(dir, "B.jsonl"), first + last(1));
+					const b = readTranscript(file, "B", false).lines;
+					expect(b[0]).toBe("… earlier entries not shown");
+					expect(b).not.toContain("FIRST-ROW");
+				});
+
+				test("a symlink or a junction in place of the log is refused before it is opened", () => {
+					const { root, dir, file } = tree();
+					writeFileSync(join(root, "real.jsonl"), say("REAL") + "\n");
+					mkdirSync(join(root, "realdir"));
+					const link = (target: string, name: string, type: "file" | "junction") => {
+						try {
+							symlinkSync(target, join(dir, name), type);
+							return true;
+						} catch (e) {
+							console.warn(`skipped ${type} link: creation refused (${(e as NodeJS.ErrnoException).code})`);
+							return false;
+						}
+					};
+					const open = watch("openSync");
+					for (const [ok, id] of [[link(join(root, "real.jsonl"), "S.jsonl", "file"), "S"], [link(join(root, "realdir"), "J.jsonl", "junction"), "J"]] as const) {
+						if (!ok) continue;
+						expect(readTranscript(file, id, false).lines).toEqual(["transcript unreadable: not a regular file"]);
+					}
+					expect(open.mock.calls).toHaveLength(0);
+				});
+
+				test("what was opened must be a regular file: the handle's own stat decides", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("ROW") + "\n");
+					watch("fstatSync").mockImplementation((() => ({ isFile: () => false, size: 1, mtimeMs: 0 })) as unknown as typeof fs.fstatSync);
+					expect(readTranscript(file, "A", false).lines).toEqual(["transcript unreadable: not a regular file"]);
+				});
+
+				test("switching to another agent never shows the first one's cached rows, even with the same size and mtime", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("AAAA") + "\n");
+					writeFileSync(join(dir, "B.jsonl"), say("BBBB") + "\n");
+					for (const id of ["A", "B"]) utimesSync(join(dir, `${id}.jsonl`), 1e9, 1e9);
+					const a = readTranscript(file, "A", false);
+					expect(a.lines).toEqual(["AAAA"]);
+					expect(readTranscript(file, "B", false, a).lines).toEqual(["BBBB"]);
+				});
+
+				test("an answer that appears later shows up although the log did not change", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("W") + "\n");
+					const a = readTranscript(file, "A", true);
+					expect(a.lines).toContain("no final answer file");
+					writeFileSync(join(dir, "A.md"), "FINAL-ANSWER-TEXT\n");
+					const b = readTranscript(file, "A", true, a);
+					expect(b.lines).toContain("final answer:");
+					expect(b.lines).toContain("FINAL-ANSWER-TEXT");
+				});
+
+				test("an answer that is a directory or a symlink never hides the log's rows", () => {
+					const { root, dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("LOG-ROW") + "\n");
+					mkdirSync(join(dir, "A.md"));
+					expect(readTranscript(file, "A", true).lines).toEqual(["LOG-ROW", "no final answer file"]);
+					writeFileSync(join(dir, "B.jsonl"), say("LOG-ROW") + "\n");
+					writeFileSync(join(root, "real.md"), "LEAK\n");
+					try {
+						symlinkSync(join(root, "real.md"), join(dir, "B.md"), "file");
+					} catch (e) {
+						console.warn(`skipped file link: creation refused (${(e as NodeJS.ErrnoException).code})`);
+						return;
+					}
+					expect(readTranscript(file, "B", true).lines).toEqual(["LOG-ROW", "no final answer file"]);
+				});
+
+				test("a session with no file, or one not ending in .jsonl, says so and does not throw", async () => {
+					const { s, ui } = await squad();
+					for (const getSessionFile of [undefined, () => "x.txt"]) {
+						(s.ctx.sessionManager as { getSessionFile?: () => string }).getSessionFile = getSessionFile;
+						await s.sub("cockpit");
+						const c = ui.opened.at(-1)!.component;
+						open(c);
+						expect(show(c)).toContain("no session file");
+						c.handleInput!("q");
+					}
+				});
+
+				test("closing the cockpit, by q or by Esc from the top, drops the open transcript: a later redraw opens no log", async () => {
+					const { s, ui } = await squad();
+					writeFileSync(join(session(s), "A.jsonl"), say("ROW") + "\n");
+					for (const close of [["q"], ["\x1b", "\x1b", "\x1b"]]) {
+						await s.sub("cockpit");
+						const c = ui.opened.at(-1)!.component;
+						open(c);
+						expect(show(c)).toContain("TRANSCRIPT A");
+						const op = watch("openSync");
+						for (const k of close) c.handleInput!(k);
+						op.mockClear();
+						ended(s);
+						expect(op.mock.calls.filter(call => String(call[0]).endsWith("A.jsonl"))).toHaveLength(0);
+						op.mockRestore();
+					}
+				});
+
+				test("Enter opens the transcript although the run's files were deleted after the cockpit opened", async () => {
+					const { s, ui } = await squad();
+					writeFileSync(join(session(s), "A.jsonl"), say("STILL-HERE") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					rmSync(join(s.dir, "runs"), { recursive: true, force: true });
+					open(c);
+					expect(show(c)).toContain("STILL-HERE");
+					c.handleInput!("q");
+				});
 			});
 
 			test("the end of an agent is stored as `ended`, and a loaded state keeps it only as a number", async () => {
