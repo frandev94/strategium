@@ -1,3 +1,22 @@
+## [0.2.33] - 2026-11-22
+
+### 🚀 Features
+
+- *(cockpit)* Enter on an agent opens its transcript
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Transcript reasons, id and file checks, and a closed cockpit reads nothing
+- *(cockpit)* The transcript keeps the brief and reads at most once a second
+- *(cockpit)* Find the agent's brief past a large session header
+
+### 📚 Documentation
+
+- *(cockpit)* Describe the agent transcript view
+
+### 🧪 Testing
+
+- *(tooling)* Tui-shot replay of the agent transcript
 ## [0.2.32] - 2026-11-22
 
 ### 🚀 Features
