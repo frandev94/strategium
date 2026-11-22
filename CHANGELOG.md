@@ -1,3 +1,18 @@
+## [0.2.36] - 2026-11-22
+
+### 🐛 Bug Fixes
+
+- *(lore)* Agent frontmatter on one line, and lore corrections
+
+### 📚 Documentation
+
+- *(lore)* The Chapter organisation under the Codex Astartes
+- *(lore)* Veteran in the 1st Company; Inquisition station and Ancient wording
+- *(lore)* Inquisition station order, reserve companies, title mapping
+
+### 🧪 Testing
+
+- *(skills)* The frontmatter test catches a stray carriage return
 ## [0.2.35] - 2026-11-22
 
 ### 🚀 Features
