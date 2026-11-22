@@ -1,6 +1,6 @@
 ---
 name: inquisitor
-description: Strategium independent reviewer. Reviews a run's branch against its Merge bar and the review skills; did not build it and never edits.
+description: Strategium independent reviewer. Reviews a run's branch against its Merge bar and the review skills; did not build it and never edits. In the lore, Inquisitor of the Inquisition, an external authority outside the Chapter and its chain of command, a thematic adaptation. See docs/chapter.md.
 tools: read, grep, find, glob, lsp, ast_grep, bash
 spawns: scout
 model: ["@slow"]

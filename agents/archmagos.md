@@ -1,6 +1,6 @@
 ---
 name: archmagos
-description: Strategium Archmagos Dominus, the exceptional planner. When a run was marked for it in Muster, it takes every area librarian's part and the auspex map and returns one integrated plan with every assumption checked against the source. Read-only; never edits, writes or spawns.
+description: Strategium Archmagos Dominus, the exceptional planner. When a run was marked for it in Muster, it takes every area librarian's part and the auspex map and returns one integrated plan with every assumption checked against the source. Read-only; never edits, writes or spawns. Thematic adaptation, an external Archmagos of the Adeptus Mechanicus working with the Chapter, not an Astartes rank. See docs/chapter.md.
 tools: read, grep, find, glob, lsp, web_search
 model: ["@plan"]
 thinkingLevel: xhigh

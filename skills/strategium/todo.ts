@@ -32,7 +32,7 @@ export const AGENTS: Record<string, string> = {
 	inquisitor: "\u{f029b}", // md-gavel
 	confessor: "\u{f00a2}", // md-book_cross
 	"security-reviewer": "\u{f0d9a}", // md-shield_search
-	sonic: "\u{f068c}", // md-skull, the servo-skull
+	sonic: "\u{f068c}", // md-skull: the servitor
 	task: "\u{f0474}", // md-school
 	seal: "\u{f047a}", // md-seal: the task waits for the user
 };
