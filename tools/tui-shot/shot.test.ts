@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allExit, type Args, parseArgs, parseSnaps, rec, relicEnv, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+import { allExit, type Args, CASTER_TEXT, casterEnv, parseArgs, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
 
 const args = (argv: string[]) => {
 	const a = parseArgs(argv);
@@ -41,6 +41,23 @@ test("parseArgs --relic: a plain flag, off by default, no value", () => {
 test("relicEnv always pins STRATEGIUM_RELIC, so a user's own value never changes a shot", () => {
 	expect(relicEnv(false)).toEqual({ STRATEGIUM_RELIC: "0" });
 	expect(relicEnv(true)).toEqual({ STRATEGIUM_RELIC: "1" });
+});
+
+test("parseArgs --caster: off by default, bare = default text, =TEXT and TEXT, bare before a flag", () => {
+	expect(args([]).caster).toBeNull();
+	expect(args(["--caster"]).caster).toBe(CASTER_TEXT);
+	expect(args(["--caster=Alpha is green"]).caster).toBe("Alpha is green");
+	expect(args(["--caster", "Alpha is green"]).caster).toBe("Alpha is green");
+	expect(args(["--caster", "--all"])).toMatchObject({ caster: CASTER_TEXT, all: true });
+});
+
+test("casterEnv always pins STRATEGIUM_CASTER and its fake text, so a user's own values never change a shot", () => {
+	expect(casterEnv(null)).toEqual({ STRATEGIUM_CASTER: "0", STRATEGIUM_CASTER_FAKE: "" });
+	expect(casterEnv("Alpha is green")).toEqual({ STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_FAKE: "Alpha is green" });
+});
+
+test("the caster-box replay is registered on the skirmish seed and always runs with the caster", () => {
+	expect(REPLAYS["caster-box"]).toMatchObject({ seed: "skirmish", kind: "FIXED", caster: true });
 });
 
 test("parseArgs rejects an unknown flag, a missing value and a bad seed", () => {

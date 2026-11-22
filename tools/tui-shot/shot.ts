@@ -1,12 +1,13 @@
 const USAGE = `Run the real omp + this plugin in a Windows ConPTY, seed a run, and screenshot what the user sees, or replay past regressions. Windows only.
 
-  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live|signal|detail|transcript] [--ponytail[=DIR]] [--relic] [--suffix=-x] [--plugin=DIR]
+  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live|signal|detail|transcript] [--ponytail[=DIR]] [--relic] [--caster[=TEXT]] [--suffix=-x] [--plugin=DIR]
                              [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png]
   bun tools/tui-shot/shot.ts --replay=NAME | --all  [--plugin=DIR] [--suffix=-x] [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png] [--all-png] [--keep-work]
 
 Default mode writes screen<sfx>.* (the footer the seeded run draws, before Alt+C) and overlay<sfx>.* (after Alt+C).
 --ponytail[=DIR]: also load the ponytail omp plugin (second -e), default dir found under ~/.omp/plugins; suffix defaults to -ponytail.
 --relic: start omp with STRATEGIUM_RELIC=1 and add -relic to the suffix (screen-relic.*, overlay-relic.*, replay work dirs) unless --suffix is given. Without it STRATEGIUM_RELIC=0, whatever the caller's environment holds, so a shot or replay never depends on it.
+--caster[=TEXT]: start omp with STRATEGIUM_CASTER=1 and the test hook STRATEGIUM_CASTER_FAKE=TEXT (default: a fixed two-clause sentence), so the cockpit draws a caster summary with no model call; adds -caster to the suffix unless --suffix is given. Without it both are pinned off (STRATEGIUM_CASTER=0, FAKE empty), whatever the caller's environment holds. Applies to shots and to --replay/--all; the caster-box replay runs with the caster on either way.
 --replay=NAME runs one regression scenario (REPLAYS below): keys, resizes and waits in the real omp, text checks on the screen xterm.js holds at each
 checkpoint; prints PASS/FAIL and exits 0/1 (unknown name: 2). --all runs every scenario and prints a table. --keep-work keeps the work dir (replay.log). --all-png (replays) shoots every snapshot, not only the png=True ones.
 Outputs (default %TEMP%\\strategium-tui-shot): <name>.raw (VT bytes), <name>.html (xterm.js 5.5 vendored in tools/tui-shot/vendor, no network), <name>.png (headless Edge).
@@ -166,15 +167,19 @@ SEEDS.transcript = {
 
 // --- args: argparse semantics (--x=v and --x v; --ponytail with an optional value), no prefix abbreviations ---
 export interface Args {
-	seed: string; ponytail: string | true | null; relic: boolean; suffix: string | null; plugin: string; out: string; omp: string | null; edge: string | null;
+	seed: string; ponytail: string | true | null; relic: boolean; caster: string | null; suffix: string | null; plugin: string; out: string; omp: string | null; edge: string | null;
 	noPng: boolean; allPng: boolean; replay: string | null; all: boolean; keepWork: boolean; help: boolean;
 }
 /** The child's STRATEGIUM_RELIC: always set, so the caller's own value never changes a shot or a replay. */
 export const relicEnv = (relic: boolean) => ({ STRATEGIUM_RELIC: relic ? "1" : "0" });
+/** The text the fake caster says when --caster has no value. */
+export const CASTER_TEXT = "Squad alpha just went green on the parser tests; gamma has been quiet for six minutes.";
+/** The child's STRATEGIUM_CASTER and its test hook STRATEGIUM_CASTER_FAKE: always set (null = off), so the caller's own values never change a shot or a replay. */
+export const casterEnv = (text: string | null) => ({ STRATEGIUM_CASTER: text === null ? "0" : "1", STRATEGIUM_CASTER_FAKE: text ?? "" });
 const VALUE: Record<string, keyof Args> = { "--seed": "seed", "--suffix": "suffix", "--plugin": "plugin", "--out": "out", "--omp": "omp", "--edge": "edge", "--replay": "replay" };
 const FLAG: Record<string, keyof Args> = { "--no-png": "noPng", "--all-png": "allPng", "--all": "all", "--keep-work": "keepWork", "--relic": "relic", "-h": "help", "--help": "help" };
 export function parseArgs(argv: string[]): Args | { error: string } {
-	const a: Args = { seed: "scriptorium", ponytail: null, relic: false, suffix: null, plugin: ROOT, out: join(tmpdir(), "strategium-tui-shot"), omp: null, edge: null,
+	const a: Args = { seed: "scriptorium", ponytail: null, relic: false, caster: null, suffix: null, plugin: ROOT, out: join(tmpdir(), "strategium-tui-shot"), omp: null, edge: null,
 		noPng: false, allPng: false, replay: null, all: false, keepWork: false, help: false };
 	const set = a as unknown as Record<string, unknown>;
 	for (let i = 0; i < argv.length; i++) {
@@ -192,6 +197,10 @@ export function parseArgs(argv: string[]): Args | { error: string } {
 			if (val !== undefined) a.ponytail = val;
 			else if (next !== undefined && !next.startsWith("-")) a.ponytail = argv[++i];
 			else a.ponytail = true;
+		} else if (name === "--caster") {
+			if (val !== undefined) a.caster = val;
+			else if (next !== undefined && !next.startsWith("-")) a.caster = argv[++i];
+			else a.caster = CASTER_TEXT;
 		} else return { error: `unrecognized arguments: ${tok}` };
 	}
 	if (!Object.hasOwn(SEEDS, a.seed)) return { error: `argument --seed: invalid choice: '${a.seed}' (choose from ${Object.keys(SEEDS).map(s => `'${s}'`).join(", ")})` };
@@ -273,7 +282,7 @@ export class Run {
 	private size = 0;
 	private pty!: Pty;
 
-	constructor(seed: string, readonly sfx: string, readonly ext = false, ponytail: string | null = null) {
+	constructor(seed: string, readonly sfx: string, readonly ext = false, ponytail: string | null = null, caster: string | null = A.caster) {
 		// Fixed name (it shows in omp's footer, so shots stay comparable) and per suffix (parallel runs need different --suffix).
 		this.work = join(OUT, "work" + sfx);
 		try { rmSync(this.work, { recursive: true, force: true }); } catch {}
@@ -309,6 +318,7 @@ export class Run {
 		for (const [a, b] of Object.entries(process.env)) if (b !== undefined) this.env[a] = b;
 		Object.assign(this.env, { STRATEGIUM_STATE_DIR: this.state, STRATEGIUM_GLYPHS: "1", TERM_PROGRAM: "Windows_Terminal", WT_SESSION: "00000000-0000-0000-0000-000000000001" });
 		Object.assign(this.env, relicEnv(A.relic));
+		Object.assign(this.env, casterEnv(caster));
 		if (ext) { // every model role pinned to the fake provider: side turns (title...) never reach a real model either
 			writeFileSync(join(this.work, "replay.yml"),
 				"modelRoles:\n" + ["default", "slow", "plan", "advisor", "task", "vision", "commit", "smol"].map(r => `  ${r}: replay/ask\n`).join(""));
@@ -686,6 +696,34 @@ function checksFrameEdges(C: Ctx) {
 		}
 		C.ck(`${n}: box grid has one right edge per box count (no staircase)`, blocks.size > 0 && [...perCount.values()].every(e => e.size === 1), perCount, null, s);
 	}
+}
+
+async function stepsCasterBox(R: Run) {
+	await R.open();
+	if (!(await R.waitFor(Buffer.from("parser"), 15))) throw new Error("the fake caster text never reached the screen"); // "parser" is in the text only, and has no space (ConPTY paints gaps as cursor moves)
+	await R.waitQuiet(1.0, 3.0);
+	for (const [n, cw] of [["w140", 140], ["w100", 100], ["w72", 72], ["w60", 60]] as const) {
+		if (cw !== 140) { await R.resize(cw, 45); await R.waitQuiet(1.0, 3.0); }
+		await R.snap(n, cw === 140 || cw === 60);
+	}
+}
+function checksCasterBox(C: Ctx) {
+	for (const n of ["w140", "w100", "w72"]) {
+		const s = snapOf(C, n), W = s.cols, yc = s.where("CASTER ·"), yh = s.where("CHRONICLE");
+		C.ck(`${n}: CASTER rule above the CHRONICLE rule`, yc >= 0 && yh > yc, `CASTER row ${yc}, CHRONICLE row ${yh}`, null, s);
+		C.ck(`${n}: CASTER rule ends ─…╢ at col ${W - 1}`, yc >= 0 && s.lastCol(yc) === W - 1 && s.at(yc, 0) === "╟" && s.at(yc, W - 1) === "╢", cut(s.row(yc), -12), "…─╢", s);
+		C.ck(`${n}: the caster text is in the box`, yc >= 0 && yh > yc && range(yc + 1, yh).some(y => s.row(y).includes("Squad alpha")), null, "Squad alpha …", s);
+		const bad = range(0, s.rows).filter(y => oneOf(s.at(y, 0), "╔║╟╚") && !oneOf(s.at(y, W - 1), "╗║╢╝"));
+		C.ck(`${n}: every framed row ends at col ${W - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, s);
+		const rows = yh >= 0 ? range(yh + 1, s.rows - 1) : [];
+		C.ck(`${n}: CHRONICLE keeps at least 6 rows`, rows.length >= 6, rows.length, ">= 6", s);
+	}
+	const c = snapOf(C, "w60"), y = c.where("caster:");
+	C.ck("w60: stacked, no top frame", !c.framed() && !c.rowsText.join("").includes("╔"), null, null, c);
+	C.ck("w60: caster: line carries the text", y >= 0 && c.row(y).startsWith("caster: Squad alpha"), y >= 0 ? c.row(y) : null, "caster: Squad alpha …", c);
+	const ys = c.rowsText.findIndex(r => r.includes("Skirmish"));
+	C.ck("w60: the caster line is right under the station row", ys >= 0 && y === ys + 1, [ys, y], "station row + 1", c);
+	C.ck("w60: nothing past col 59", c.cols === 60 && range(0, c.rows).every(r => c.lastCol(r) < 60), c.cols, 60, c);
 }
 
 async function stepsGlyphWidth(R: Run) {
@@ -1287,12 +1325,13 @@ function checksCockpitTranscript(C: Ctx) {
 	C.ck("narrow-closed: q closes from the narrow transcript", nc.type === "normal" && !nc.framed(), nc.type, "normal, no frame", nc);
 }
 
-// name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, settle (false: wait only for the first heartbeat), steps, checks
-type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
+// name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, caster (true: run with the fake caster on whatever --caster says), settle (false: wait only for the first heartbeat), steps, checks
+type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; caster?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
 export const REPLAYS: Record<string, Replay> = {
 	"fullscreen-height": { r: "R9", kind: "FIXED", seed: "scriptorium", steps: stepsFullscreenHeight, checks: checksFullscreenHeight },
 	"fullscreen-resize": { r: "R9/F6", kind: "FIXED", seed: "scriptorium", steps: stepsFullscreenResize, checks: checksFullscreenResize },
 	"frame-edges": { r: "R4,R5", kind: "FIXED", seed: "skirmish", steps: stepsFrameEdges, checks: checksFrameEdges },
+	"caster-box": { r: "#61", kind: "FIXED", seed: "skirmish", caster: true, steps: stepsCasterBox, checks: checksCasterBox },
 	"glyph-width": { r: "R2", kind: "FIXED", seed: "skirmish", steps: stepsGlyphWidth, checks: checksGlyphWidth },
 	"seal-row": { r: "R3,#82", kind: "FIXED", seed: "scriptorium", steps: stepsSealRow, checks: checksSealRow },
 	"seal-panel": { r: "#82", kind: "FIXED", seed: "seal-panel", steps: stepsSealPanel, checks: checksSealPanel },
@@ -1374,7 +1413,7 @@ async function replay(name: string): Promise<[string, string | null]> {
 		console.log(`SKIP ${name} (${sc.r}): ponytail plugin not found`);
 		return ["SKIP", "ponytail plugin not found"];
 	}
-	const R = new Run(sc.seed, sfx, sc.ext ?? false, pdir);
+	const R = new Run(sc.seed, sfx, sc.ext ?? false, pdir, sc.caster ? (A.caster ?? CASTER_TEXT) : A.caster);
 	console.log(`== ${name} (${sc.r}, ${sc.kind})\n   omp: ${R.cmd}`);
 	let err: string | null = null, C: Ctx;
 	try {
@@ -1474,7 +1513,7 @@ async function main(argv: string[]): Promise<number> {
 		return 1;
 	}
 	A = parsed;
-	SFX = A.suffix ?? (A.ponytail ? "-ponytail" : "") + (A.relic ? "-relic" : "");
+	SFX = A.suffix ?? (A.ponytail ? "-ponytail" : "") + (A.relic ? "-relic" : "") + (A.caster !== null ? "-caster" : "");
 	OUT = resolve(A.out);
 	mkdirSync(OUT, { recursive: true });
 	PLUGIN = resolve(A.plugin);
