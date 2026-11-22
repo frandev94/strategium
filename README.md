@@ -160,7 +160,7 @@ The Captain plans and delegates; every other role is an agent it starts. Each on
 | `inquisitor`, `security-reviewer` | Inquisitorial authority and auditor | Inquisition (external) |
 | `confessor` | Confessor | Ecclesiarchy (external) |
 
-The librarian, apothecary, inquisitor, confessor, archmagos and security-reviewer roles, and the `task` Adept, are thematic adaptations of their lore (the notes in [docs/chapter.md](docs/chapter.md) say how). The cockpit themes are colour schemes and change no term here. Rank, department and role are kept apart; the full roster is in [docs/chapter.md](docs/chapter.md).
+The librarian, apothecary, inquisitor, confessor, archmagos and security-reviewer roles, and the `task` Adept, are thematic adaptations of their lore (the notes in [docs/chapter.md](docs/chapter.md) say how). The cockpit themes are colour schemes and change no term here. Rank, department and role are kept apart; the full roster is in [docs/chapter.md](docs/chapter.md). `task` is the omp agent for general delegated work.
 
 #### Models
 

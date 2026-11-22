@@ -8,7 +8,7 @@ const files = readdirSync(dir).filter(f => f.endsWith(".md")).sort();
 describe("agents/*.md frontmatter", () => {
 	test("there are agent files", () => expect(files.length).toBeGreaterThan(0));
 	for (const f of files) {
-		test(`${f}: name matches the file and description is one clean line`, () => {
+		test(`${f}: frontmatter parses with one description value`, () => {
 			const raw = readFileSync(join(dir, f), "utf8").replace(/\r\n/g, "\n");
 			const m = raw.match(/^---\n([\s\S]*?)\n---\n/);
 			expect(m).not.toBeNull();
@@ -18,11 +18,14 @@ describe("agents/*.md frontmatter", () => {
 			expect(typeof d).toBe("string");
 			expect((d as string).length).toBeGreaterThan(0);
 			expect(d).not.toMatch(/[\r\n]/);
-			// the description line itself must carry no stray CR and no ": " (omp's strict parser rejects it)
-			const line = m![1].split("\n").find(l => l.startsWith("description:"))!;
-			expect(line).not.toContain("\r");
-			expect(line.slice("description:".length)).not.toContain(": ");
-			expect(Object.keys(fm).sort()).toContain("description");
+			const lines = m![1].split("\n");
+			const i = lines.findIndex(l => l.startsWith("description:"));
+			expect(i).toBeGreaterThanOrEqual(0);
+			// no continuation line under the description
+			expect(lines[i + 1] ?? "key:").not.toMatch(/^\s/);
+			// omp's strict parser rejects ": " in an unquoted value
+			const value = lines[i].slice("description:".length).trim();
+			if (!/^["']/.test(value)) expect(value).not.toContain(": ");
 		});
 	}
 });

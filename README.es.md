@@ -160,7 +160,7 @@ El Capitán planifica y delega; cada uno de los demás papeles es un agente que 
 | `inquisitor`, `security-reviewer` | Autoridad y auditor inquisitorial | Inquisition (externa) |
 | `confessor` | Confessor | Ecclesiarchy (externa) |
 
-Los papeles de librarian, apothecary, inquisitor, confessor, archmagos y security-reviewer, y el Adept de `task`, son adaptaciones temáticas de su lore (las notas de [docs/chapter.md](docs/chapter.md) explican cómo). Los temas del cockpit son esquemas de color y no cambian ningún término de aquí. Rango, departamento y papel van separados; el roster completo está en [docs/chapter.md](docs/chapter.md) (en inglés).
+Los papeles de librarian, apothecary, inquisitor, confessor, archmagos y security-reviewer, y el Adept de `task`, son adaptaciones temáticas de su lore (las notas de [docs/chapter.md](docs/chapter.md) explican cómo). Los temas del cockpit son esquemas de color y no cambian ningún término de aquí. Rango, departamento y papel van separados; el roster completo está en [docs/chapter.md](docs/chapter.md) (en inglés). Los nombres de rango y departamento se quedan en inglés, como en ese documento; solo se traducen Capitán y Maestro de Capítulo. `task` es el agente de omp para el trabajo delegado general.
 
 #### Modelos
 
