@@ -489,9 +489,11 @@ export function wrap(text: string, width: number): string[] {
 		curW = 0;
 		used = false;
 	};
-	for (const [, run, word] of text.matchAll(/(\s*)(\S+)/g)) {
+	let end = 0; // end of the previous word: the gap before the next is the text in between
+	for (const { 0: word, index } of text.matchAll(/\S+/g)) {
 		const ww = Bun.stringWidth(word);
-		const gap = " ".repeat(run.length);
+		const gap = " ".repeat(index - end);
+		end = index + word.length;
 		if (used && curW + gap.length + ww <= width) add(word, ww, gap);
 		else {
 			if (used) flush();

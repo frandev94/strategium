@@ -1941,6 +1941,13 @@ describe("wrap", () => {
 		expect(rows).toHaveLength(2000);
 		expect(performance.now() - t0).toBeLessThan(1000);
 	});
+	test("a long run of trailing whitespace is wrapped in linear time", () => {
+		for (const s of ["a" + " ".repeat(1e5), "a" + "\t ".repeat(5e4)]) {
+			const t0 = performance.now();
+			expect(wrap(s, 50)).toEqual(["a"]);
+			expect(performance.now() - t0).toBeLessThan(1000);
+		}
+	});
 	// properties: seeded walk standing in for fast-check.
 	test("property: every row fits the width and no character is lost", () => {
 		let s = 99;
