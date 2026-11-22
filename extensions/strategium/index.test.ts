@@ -5318,6 +5318,95 @@ describe("cockpit", () => {
 			expect(t).not.toContain("stalled");
 		});
 
+		describe("detail", () => {
+			const scout = (s: S, status: string) => s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "scout", task: "x" }] }, details: { progress: [{ index: 0, id: "S", status }] }, isError: false }, s.ctx));
+			const done = (s: S) => scout(s, "completed");
+			const show = (c: { render(w: number): string[] }) => plain(c.render(100).join("\n"));
+			// Tab through the lines, Enter on each, until the open detail says `word`.
+			const openDetail = (c: { render(w: number): string[]; handleInput?(d: string): void }, word: string) => {
+				for (let i = 0; i < 20; i++) {
+					c.handleInput!("\t");
+					c.handleInput!("\r");
+					if (show(c).includes(word)) return true;
+					c.handleInput!("\x7f");
+				}
+				return false;
+			};
+
+			test("q closes from a detail; Esc backs out of it and the next Esc closes; Back at the top does nothing", async () => {
+				const { s, ui } = await squad();
+				await s.sub("cockpit");
+				const c = ui.opened.at(-1)!.component;
+				const top = show(c);
+				c.handleInput!("\x7f");
+				expect(show(c)).toBe(top);
+				expect(ui.draws.closed).toBe(0);
+				expect(openDetail(c, "back · q close")).toBe(true);
+				c.handleInput!("\x1b");
+				expect(ui.draws.closed).toBe(0);
+				expect(show(c)).not.toContain("back · q close");
+				expect(openDetail(c, "back · q close")).toBe(true);
+				c.handleInput!("q");
+				expect(ui.draws.closed).toBe(1);
+				await s.sub("cockpit");
+				const again = ui.opened.at(-1)!.component;
+				expect(show(again)).not.toContain("back · q close");
+				again.handleInput!("\x1b");
+				expect(ui.draws.closed).toBe(2);
+			});
+
+			test("a keypress reads no file: the detail still opens after the run's files are gone", async () => {
+				const { s, ui } = await squad();
+				await s.sub("cockpit");
+				const c = ui.opened.at(-1)!.component;
+				rmSync(join(s.dir, "runs"), { recursive: true, force: true });
+				expect(openDetail(c, "back · q close")).toBe(true);
+				c.handleInput!("q");
+			});
+
+			test("the end of an agent is stored as `ended`, and a loaded state keeps it only as a number", async () => {
+				const { s, ui } = await squad();
+				scout(s, "running");
+				at(MIN);
+				done(s);
+				await peek(s, ui);
+				const file = join(s.dir, "runs", "sess-0001.cockpit");
+				const saved = JSON.parse(readFileSync(file, "utf8"));
+				expect(saved.deployed.find((d: unknown[]) => d[0] === "S")[1].ended).toBe(T0 + MIN);
+				const ran = async (ended: unknown) => {
+					saved.deployed.find((d: unknown[]) => d[0] === "S")[1].ended = ended;
+					writeFileSync(file, JSON.stringify(saved));
+					const r = setup("sess-0001", s.dir);
+					const rui = uiCtx(r);
+					await r.start();
+					at(10 * MIN);
+					await r.sub("cockpit");
+					const c = rui.opened.at(-1)!.component;
+					expect(openDetail(c, "ran ")).toBe(true);
+					const t = show(c);
+					c.handleInput!("q");
+					return t;
+				};
+				expect(await ran(T0 + MIN)).toContain("ran 1m");
+				expect(await ran("soon")).toContain("ran 10m");
+			});
+
+			test("a finished agent's last live row is read once, so its detail keeps the cost after the file is gone", async () => {
+				const { s, ui } = await squad();
+				scout(s, "running");
+				mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+				writeFileSync(liveFile(s, "S"), JSON.stringify({ since: T0, at: T0, busy: 0, cost: 0.42, line: "wrapping up" }));
+				at(MIN);
+				done(s);
+				rmSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true, force: true });
+				await s.sub("cockpit");
+				const c = ui.opened.at(-1)!.component;
+				expect(openDetail(c, "cost: $0.42")).toBe(true);
+				expect(show(c)).toContain("ran 1m");
+				c.handleInput!("q");
+			});
+		});
+
 		describe("stalled", () => {
 			test("5 min with no tool call logs one entry however often it is drawn, and a newer tool call clears the gold", async () => {
 				const { s, ui } = await squad();

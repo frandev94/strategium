@@ -23,7 +23,7 @@ import {
 import { debrief, type AgentCost, type Reported } from "./debrief";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, CHRONICLE_CAP, clean, cockpitView, closes, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, navKey, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
+import { activeStation, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -1059,6 +1059,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		dirty: false,
 		seal: undefined as { id: string; lines: string[] } | undefined, // what the Captain prepared for the seal that waits (the `seal` action)
 		deployed: new Map<string, Deployed>(),
+		final: new Map<string, Live>(), // a finished agent's live row, read once when it ended; memory only
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
 		input: undefined as ViewInput | undefined, // the last view input, so a cursor key recomputes the view without reading files
@@ -1074,6 +1075,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.chronicle = [];
 		cockpit.notes = {};
 		cockpit.deployed.clear();
+		cockpit.final.clear();
 		cockpit.clock = undefined;
 		cockpit.seal = undefined;
 		cockpit.nav = {};
@@ -1096,7 +1098,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			cockpit.notes = saved.notes;
 			for (const [id, job] of saved.deployed as [string, Deployed][]) {
 				// Hand-edited or damaged numbers are read as absent.
-				for (const k of ["at", "stalled"] as const) if (typeof job[k] !== "number") delete job[k];
+				for (const k of ["at", "ended", "stalled"] as const) if (typeof job[k] !== "number") delete job[k];
 				if (job.blocked !== true) delete job.blocked;
 				cockpit.deployed.set(id, job);
 			}
@@ -1112,10 +1114,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.dirty = true;
 	};
 	/** A deployed agent ended: log it once, keep it in the registry as done or failed, and note its squad as failed or not. */
-	const endJob = (key: string, id: string, ok: boolean) => {
+	const endJob = (key: string, sid: string, id: string, ok: boolean) => {
 		const job = cockpit.deployed.get(id);
 		if (job?.state !== "active") return;
 		job.state = ok ? "done" : "failed";
+		job.ended = Date.now();
+		// shortcut: the row is read once, so what the agent wrote after this read is lost and a parent restart forgets it; upgrade if the detail of a returned agent must survive a restart.
+		const row = readLive(sid, id);
+		if (row && row.since >= (job.at ?? 0)) cockpit.final.set(id, row);
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
 		log(key, job.who, ok ? "✓ returned" : "✗ failed", ok ? "ok" : "fail");
 	};
@@ -1165,7 +1171,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
 		}
 		cockpit.input = {
-			live: rows,
+			live: new Map([...cockpit.final, ...rows]),
 			now,
 			key: run.key,
 			untimed: cockpit.clock?.bk ? undefined : run.untimed,
@@ -1234,10 +1240,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 					return {
 						render: width => renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows),
 						handleInput: data => {
-							if (closes(data)) return close();
-							const key = navKey(data);
-							if (!key || !cockpit.view || !cockpit.input) return;
-							cockpit.nav = navigate(cockpit.view, key);
+							const act = keyAction(data, !!cockpit.nav.detail);
+							if (act === "close") return close();
+							if (!act || !cockpit.view || !cockpit.input) return;
+							cockpit.nav = navigate(cockpit.view, act);
 							cockpit.view = cockpitView({ ...cockpit.input, status: cockpit.status, nav: cockpit.nav });
 							cockpit.nav = cockpit.view.nav;
 							tui.requestRender();
@@ -2192,7 +2198,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} escalated to VETERAN` : `${ic.brother} battle-brother deployed`, veteran ? "fail" : undefined);
 				if (veteran) cockpit.notes[squad] = { ...cockpit.notes[squad], veteran: true };
 				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active", at: Date.now() });
-			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
+			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, run.sid, p.id, p.status === "completed");
 		}
 		drawCockpit(run, ctx);
 	});
@@ -2203,7 +2209,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const ends = jobEnds(asObj(e).messages).filter(j => cockpit.deployed.get(j.id)?.state === "active");
 		const run = ends.length ? ownRun(sidOf(ctx)) : undefined;
 		if (!run) return;
-		for (const j of ends) endJob(run.key, j.id, j.status === "completed");
+		for (const j of ends) endJob(run.key, run.sid, j.id, j.status === "completed");
 		drawCockpit(run, ctx);
 	});
 
