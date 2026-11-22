@@ -18,19 +18,21 @@ export const CASTER_SYSTEM = [
 	"Reply with nothing if nothing is worth saying.",
 ].join(" ");
 
-const chars = (s: string, n: number) => [...s].slice(0, n).join("");
+export const chars = (s: string, n: number) => [...s].slice(0, n).join("");
 /** At most n characters (never inside a surrogate pair); a cut ends in `…`. */
 const cut = (s: string, n: number) => ([...s].length > n ? `${chars(s, n - 1)}…` : s);
-const fact = (s: unknown) => cut(oneLine(s), FACT_CHARS);
+/** One printable line with the invisible format characters (zero-width, tag characters) gone: they can hide instructions from the reader. */
+const line = (s: unknown) => oneLine(s).replace(/\p{Cf}/gu, "");
+const fact = (s: unknown) => cut(line(s), FACT_CHARS);
 
-const liveRow = (l: Live) => [l.tool, l.intent, l.current, l.line].map(oneLine).filter(Boolean).join(" · ");
+const liveRow = (l: Live) => [l.tool, l.intent, l.current, l.line].map(line).filter(Boolean).join(" · ");
 
-/** The state as short lines for the model: station, box lines with their detail (elapsed, stalled), the newest chronicle entries, then the live rows. Agent text is untrusted: each line goes through oneLine and is capped. */
+/** The state as short lines for the model: station, the live rows, the newest chronicle entries, then the box lines with their detail (elapsed, stalled); the 60-line cap drops box lines first. Agent text is untrusted: each line goes through oneLine and is capped. */
 export function casterFacts(view: View, live: Map<string, Live> | undefined, chronicle: Entry[]): string[] {
 	const out = [`station: ${view.station.name}${view.station.note ? ` · ${view.station.note}` : ""}`];
-	for (const b of view.boxes) for (const l of b.lines) out.push(`${b.title}: ${l.kind} ${l.text}${l.detail ? ` — ${l.detail}` : ""}`);
-	for (const e of chronicle.slice(-FACT_ENTRIES)) out.push(`log ${e.who}: ${e.text}`);
 	for (const [id, l] of live ?? []) out.push(`${id} says: ${liveRow(l)}`);
+	for (const e of chronicle.slice(-FACT_ENTRIES)) out.push(`log ${e.who}: ${e.text}`);
+	for (const b of view.boxes) for (const l of b.lines) out.push(`${b.title}: ${l.kind} ${l.text}${l.detail ? ` — ${l.detail}` : ""}`);
 	return out.slice(0, FACT_LINES).map(fact);
 }
 
@@ -47,10 +49,10 @@ export function stateHash(view: View, live: Map<string, Live> | undefined, chron
 	return String(Bun.hash(JSON.stringify(state)));
 }
 
-export const casterPrompt = (station: string, facts: string[]) => `STATION: ${oneLine(station)}\nFACTS:\n${facts.join("\n")}`;
+export const casterPrompt = (station: string, facts: string[]) => `STATION: ${fact(station)}\nFACTS:\n${facts.join("\n")}`;
 
 /** The model's answer as one printable line of at most 400 characters; "" for anything that is not text. */
-export const casterText = (raw: unknown) => chars(oneLine(raw), TEXT_CHARS);
+export const casterText = (raw: unknown) => chars(line(raw), TEXT_CHARS);
 
 /** A call starts only when the caster is on, none is in flight, the interval has passed since the last attempt (none yet: at once) and the state changed. */
 export const due = (s: { on: boolean; now: number; everyMs: number; lastAt?: number; inFlight: boolean; hash: string; lastHash?: string }) =>
@@ -70,13 +72,14 @@ export function parseAlias(env?: string): { alias: string } | { error: string } 
 	return /^@\S+$/.test(v) && !clean(v).includes(" ") ? { alias: v } : { error: `not a role alias: ${chars(oneLine(v), 40)}` };
 }
 
-/** One summary, never throwing: a throw or a failed reply is `call failed`, an empty one `nothing new`; both dim. The reply is returned whenever there is one, so its cost is not lost. */
+/** One summary, never throwing: a throw is `call failed: <its message>` (one clean line, at most 40 characters; never headers or keys), a failed reply `call failed`, an empty one `nothing new`; all dim. The reply is returned whenever there is one, so its cost is not lost. */
 export async function summarize(complete: Complete, station: string, facts: string[], signal: AbortSignal): Promise<{ text: string; dim: boolean; reply?: CasterReply }> {
 	let reply: CasterReply;
 	try {
 		reply = await complete(CASTER_SYSTEM, casterPrompt(station, facts), signal);
-	} catch {
-		return { text: "call failed", dim: true };
+	} catch (e) {
+		const why = chars(line(e instanceof Error ? e.message : ""), 40);
+		return { text: why ? `call failed: ${why}` : "call failed", dim: true };
 	}
 	if (reply.failed) return { text: "call failed", dim: true, reply };
 	const text = casterText(reply.text);

@@ -3696,6 +3696,125 @@ describe("cockpit", () => {
 			expect(cockpitJson(s).caster).toEqual({ cost: 0.002, calls: 1, tokens_in: 130, tokens_out: 20 });
 		});
 
+		const cockpitPath = (s: { dir: string }) => join(s.dir, "runs", "sess-0001.cockpit");
+		const pending = (landing: { land?: (v: unknown) => void }) => (): Promise<unknown> => new Promise(r => (landing.land = r));
+
+		test("a reply that lands after `end` never recreates runs/<sid>.cockpit and its cost is written nowhere", async () => {
+			const landing: { land?: (v: unknown) => void } = {};
+			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: pending(landing) });
+			await tick();
+			expect(calls).toHaveLength(1);
+			await s.call({ action: "end" });
+			expect(existsSync(cockpitPath(s))).toBe(false);
+			landing.land!(reply("Too late."));
+			await Bun.sleep(0);
+			expect(existsSync(cockpitPath(s))).toBe(false);
+		});
+
+		test("a reply that lands after the run changed is ignored and its cost is not added to the new run", async () => {
+			const landing: { land?: (v: unknown) => void } = {};
+			const { s, ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: pending(landing) });
+			await tick();
+			await s.call({ action: "end" });
+			await s.call({ action: "begin", key: "K-2" });
+			landing.land!(reply("Stale."));
+			await Bun.sleep(0);
+			await s.sub("cockpit");
+			expect(shownText(ui)).not.toContain("Stale.");
+			expect(existsSync(cockpitPath(s)) ? cockpitJson(s).caster : undefined).toBeUndefined();
+		});
+
+		test("ending the run aborts the call in flight", async () => {
+			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			await tick();
+			expect(calls[0].options.signal.aborted).toBe(false);
+			await s.call({ action: "end" });
+			expect(calls[0].options.signal.aborted).toBe(true);
+		});
+
+		test("an abort caused by the close clears the attempt, so reopening calls again", async () => {
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			await tick();
+			ui.opened[0].component.handleInput!("q");
+			await s.sub("cockpit");
+			await tick();
+			expect(calls).toHaveLength(2);
+		});
+
+		test("a failed call keeps the attempt: no retry on the same state, however long it waits", async () => {
+			const { calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => Promise.reject(new Error("boom")) });
+			await tick();
+			for (const sec of [61, 122, 183]) {
+				t0(sec);
+				await tick();
+			}
+			expect(calls).toHaveLength(1);
+		});
+
+		test("a throw is shown as `call failed: <message>`, cut to 40 characters, and never carries headers", async () => {
+			const err = Object.assign(new Error(`bad ${"k".repeat(100)}`), { headers: { authorization: "Bearer SECRET" } });
+			const { ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => Promise.reject(err) });
+			await tick();
+			expect(shownText(ui)).toContain(`call failed: bad ${"k".repeat(36)}`);
+			expect(shownText(ui)).not.toContain("k".repeat(37));
+			expect(shownText(ui)).not.toContain("SECRET");
+		});
+
+		test("the 30 s timeout is a failed call with its reason", async () => {
+			const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort(new DOMException("The operation timed out.", "TimeoutError")));
+			try {
+				const { ui } = await casting({
+					env: { STRATEGIUM_CASTER: "1" },
+					answer: c => (c.options.signal.aborted ? Promise.reject(c.options.signal.reason) : new Promise(() => {})),
+				});
+				await tick();
+				expect(timeout).toHaveBeenCalledWith(30_000);
+				expect(shownText(ui)).toContain("call failed: The operation timed out.");
+			} finally {
+				timeout.mockRestore();
+			}
+		});
+
+		test("stopReason aborted is a failed call and its cost is added", async () => {
+			const { s, ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => reply("half an answer", { stopReason: "aborted" }) });
+			await tick();
+			expect(shownText(ui)).toContain("call failed");
+			expect(shownText(ui)).not.toContain("half an answer");
+			expect(cockpitJson(s).caster).toEqual({ cost: 0.002, calls: 1, tokens_in: 130, tokens_out: 20 });
+		});
+
+		test("a throw while building the facts leaves the caster not in flight", async () => {
+			const real = Bun.stripANSI;
+			const spy = spyOn(Bun, "stripANSI").mockImplementation(s => {
+				if (s.startsWith("station: ")) throw new Error("facts"); // only casterFacts builds such a line
+				return real(s);
+			});
+			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			try {
+				await tick();
+				expect(calls).toHaveLength(0);
+			} finally {
+				spy.mockRestore();
+			}
+			station(s, "Draft");
+			t0(300);
+			await tick();
+			expect(calls).toHaveLength(1);
+		});
+
+		test("a disposed old overlay does not abort the call of the current one", async () => {
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			await tick();
+			ui.opened[0].component.handleInput!("q");
+			await s.sub("cockpit");
+			await tick();
+			expect(calls).toHaveLength(2);
+			ui.opened[0].component.dispose!();
+			expect(calls[1].options.signal.aborted).toBe(false);
+			ui.opened[1].component.dispose!();
+			expect(calls[1].options.signal.aborted).toBe(true);
+		});
+
 		test("an alias that does not resolve is one reason row and no call", async () => {
 			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, resolve: () => undefined });
 			await tick();

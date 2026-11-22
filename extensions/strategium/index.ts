@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
+import type { completeSimple as completeSimpleFn } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import {
 	append,
@@ -21,7 +22,7 @@ import {
 	type Ev,
 } from "./timer";
 import { debrief, type AgentCost, type Reported } from "./debrief";
-import { casterFacts, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./caster";
+import { casterFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./caster";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
@@ -85,8 +86,8 @@ type SessionCtx = {
 	};
 	setInterval(fn: () => void, ms: number): unknown;
 	// The host's model APIs, used by the cockpit caster; a host without them leaves the caster with a reason row.
-	models?: { resolve?(spec: string): unknown };
-	modelRegistry?: { hasConfiguredAuth?(model: unknown): boolean; resolver?(model: unknown, sessionId: string): unknown };
+	models?: { resolve?(spec: string): HostModel | undefined };
+	modelRegistry?: { hasConfiguredAuth?(model: HostModel): boolean; resolver?(model: HostModel, sessionId: string): NonNullable<Parameters<CompleteSimple>[2]>["apiKey"] };
 	agent?: { kind?: string; id?: string };
 	isIdle(): boolean;
 	hasPendingMessages(): boolean;
@@ -168,16 +169,13 @@ const runFile = (sid: string) => path.join(runsDir(), `${sid}.json`);
 const beatFile = (sid: string) => path.join(runsDir(), `${sid}.beat`);
 // The cockpit's chronicle, agent registry and squad marks, saved beside the run (not in it: see drawCockpit).
 const cockpitFile = (sid: string) => path.join(runsDir(), `${sid}.cockpit`);
-/** What the cockpit caster spent in a run: omp's list price, calls that returned a reply, and tokens (input counts cache reads and writes). */
+/** What the cockpit caster spent in a run: omp's list price, the calls that came back with a reply (a failed or aborted one included, a throw is not), and tokens (input counts cache reads and writes). */
 type Spend = { cost: number; calls: number; tokens_in: number; tokens_out: number };
 /** The caster's memory for the run key: the summary shown, when the last attempt started, and the call in flight. */
 type CasterState = { text?: string; dim?: boolean; station?: string; at?: number; lastAt?: number; lastHash?: string; ctrl?: AbortController; spend?: Spend };
-/** completeSimple of @oh-my-pi/pi-ai as far as the caster uses it: the test seam; the real one is imported on the first call. */
-type CompleteSimple = (
-	model: unknown,
-	context: { systemPrompt: string[]; messages: { role: "user"; content: string; timestamp: number }[] },
-	options: { apiKey: unknown; disableReasoning: boolean; maxTokens: number; signal: AbortSignal },
-) => Promise<{ stopReason?: string; content?: { type: string; text?: string }[]; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } }>;
+/** completeSimple of @oh-my-pi/pi-ai: the test seam; the real one is imported on the first call. */
+type CompleteSimple = typeof completeSimpleFn;
+type HostModel = Parameters<CompleteSimple>[0];
 /** A saved spend, or none for anything that is not one (the file may be hand-edited). */
 const casterSpend = (v: unknown): Spend | undefined => {
 	const o = asObj(v);
@@ -1050,7 +1048,7 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple?: CompleteSimple } = {}) {
 	const spawn: Spawn = deps.spawn ?? Bun.spawn;
 	// Imported on the first real call, not at load: the extension and its tests never pull pi-ai in otherwise (omp resolves the bare name to its bundled copy).
-	const completeSimple: CompleteSimple = deps.completeSimple ?? (async (...a) => (await import("@oh-my-pi/pi-ai")).completeSimple(...(a as unknown as [never, never, never])) as never);
+	const completeSimple: CompleteSimple = deps.completeSimple ?? (async (model, context, options) => (await import("@oh-my-pi/pi-ai")).completeSimple(model, context, options));
 	const z = pi.zod;
 	// Set by the session handler; tool and command actions call it so the footer updates at once, not on the
 	// next minute. It belongs to this instance: a module loaded twice would cross the sessions.
@@ -1194,7 +1192,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const every = parseEvery(process.env.STRATEGIUM_CASTER_EVERY_MIN);
 		const alias = parseAlias(process.env.STRATEGIUM_CASTER_MODEL);
 		const raw = process.env.STRATEGIUM_CASTER?.trim() ?? "";
-		const ignored = [raw && raw !== "1" && raw !== "0" ? `STRATEGIUM_CASTER "${[...oneLine(raw)].slice(0, 40).join("")}"` : "", every.ignored === undefined ? "" : `STRATEGIUM_CASTER_EVERY_MIN "${every.ignored}"`].filter(Boolean);
+		const ignored = [raw && raw !== "1" && raw !== "0" ? `STRATEGIUM_CASTER "${chars(oneLine(raw), 40)}"` : "", every.ignored === undefined ? "" : `STRATEGIUM_CASTER_EVERY_MIN "${every.ignored}"`].filter(Boolean);
 		return `caster: ${caster.on ? "on" : "off"} (${caster.from}) · model ${"alias" in alias ? alias.alias : alias.error} · every ${every.min} min${ignored.length ? ` · ignored: ${ignored.join(", ")}` : ""}`;
 	};
 
@@ -1221,10 +1219,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	};
 	const SEAL_LINES = 200;
 	const SEAL_LINE_CHARS = 500;
-	/** Abort the caster's call in flight, if any: it no longer counts as in flight, and its reply is not shown. */
+	/** Abort the caster's call in flight, if any: it no longer counts as in flight, its reply is not shown, and its attempt is forgotten so a reopened cockpit calls again. */
 	const abortCaster = () => {
-		cockpit.caster.ctrl?.abort();
-		cockpit.caster.ctrl = undefined;
+		const c = cockpit.caster;
+		if (!c.ctrl) return;
+		c.ctrl.abort();
+		c.ctrl = undefined;
+		c.lastAt = undefined;
+		c.lastHash = undefined;
 	};
 	const resetCockpit = (key?: string) => {
 		abortCaster();
@@ -1387,7 +1389,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const a = parseAlias(process.env.STRATEGIUM_CASTER_MODEL);
 		if ("error" in a) return { reason: a.error };
 		// The host's model API is guarded: a missing or throwing one is a reason row, never an error in the timer.
-		let model: unknown;
+		let model: HostModel | undefined;
 		let authed = false;
 		try {
 			model = ctx.models?.resolve?.(a.alias);
@@ -1395,7 +1397,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		} catch {
 			// treated as unresolved
 		}
-		if (!model) return { reason: `no model for ${[...a.alias].slice(0, 40).join("")}` };
+		if (!model) return { reason: `no model for ${chars(a.alias, 40)}` };
 		if (!authed) return { reason: "no auth" };
 		const sid = sidOf(ctx);
 		return {
@@ -1423,19 +1425,24 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		c.lastAt = now;
 		c.lastHash = hash;
 		const station = view.station.name;
-		const redraw = () => drawCockpit(readRun(sidOf(ctx)) ?? run, ctx);
+		// The run may have ended while a call was in flight: then nothing is drawn and no file is written.
+		const redraw = () => {
+			const r = readRun(sidOf(ctx));
+			if (r) drawCockpit(r, ctx);
+		};
 		const prep = casterPrepare(ctx);
 		if ("reason" in prep) {
 			Object.assign(c, { text: prep.reason, dim: true, station, at: undefined });
 			return redraw();
 		}
 		const ctrl = new AbortController();
-		c.ctrl = ctrl;
 		const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(30_000)]);
-		summarize(prep.complete, station, casterFacts(view, cockpit.input.live, cockpit.chronicle), signal)
+		const facts = casterFacts(view, cockpit.input.live, cockpit.chronicle);
+		c.ctrl = ctrl; // set last: a throw above leaves no call in flight
+		summarize(prep.complete, station, facts, signal)
 			.then(r => {
 				if (c.ctrl === ctrl) c.ctrl = undefined;
-				if (cockpit.caster !== c) return; // the run was reset meanwhile
+				if (cockpit.caster !== c || !readRun(sidOf(ctx))) return; // the run was reset or has ended meanwhile: the reply is not counted or drawn
 				const n = (x: number | undefined) => (typeof x === "number" && Number.isSafeInteger(x) && x > 0 ? x : 0);
 				// A reply that arrives after an abort is not shown, but it was paid.
 				if (r.reply) {
@@ -1521,7 +1528,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						dispose: () => {
 							open = false;
 							clearInterval(timer);
-							abortCaster();
+							if (cockpit.close === close) abortCaster(); // an old overlay disposed late must not abort the current one's call
 						},
 					};
 				},

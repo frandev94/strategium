@@ -96,7 +96,7 @@ const agentUsd = (n: number) => (n > 0 && n < 0.01 ? (n < 0.0005 ? "<$0.001" : `
 /** A role as shown: one line cut at 60, and the totals' own names told apart. */
 const roleName = (s: string) => {
 	const n = oneLine(s).slice(0, 60);
-	return /^Total( \(agents\))?$/.test(n) ? `${n} (role)` : n;
+	return /^Total( \((agents|agents and caster)\))?$/.test(n) ? `${n} (role)` : n;
 };
 const bar = (sum: number, top: number) => (sum > 0 && top > 0 && Number.isFinite(sum / top) ? "█".repeat(Math.max(1, Math.round(10 * (sum / top)))) : "");
 
@@ -165,6 +165,8 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 	const models = counts(sp.map(e => e.model ?? "default"));
 	const total = (c: [string, number][]) => String(sum(c.map(x => x[1])));
 	const agents = input.agents ?? [];
+	const hasCaster = agents.some(a => a.id === "caster" && a.role === "caster");
+	const who = hasCaster ? "agents and caster" : "agents";
 	const spend = group(agents);
 	const byRole = [...Map.groupBy(agents, a => a.role)]
 		.map(([role, a]) => ({ role, n: a.length, ...group(a) }))
@@ -222,7 +224,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 		"",
 		"## Cost",
 		"",
-		`Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents'; cost does not. ${agents.some(a => a.id === "caster" && a.role === "caster") ? "Agents and the cockpit caster only" : "Agents only"}: the Captain's own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.`,
+		`Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents'; cost does not. ${hasCaster ? "Agents and the cockpit caster only" : "Agents only"}: the Captain's own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.`,
 		"",
 		...(agents.length
 			? [
@@ -234,9 +236,9 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 						}),
 					),
 					"",
-					...table(["Role", "Agents", "Cost", "Share"], [...byRole.map(r => [cell(roleName(r.role)), String(r.n), r.text, bar(r.sum, top)]), ["Total (agents)", String(agents.length), spend.text, "—"]]),
+					...table(["Role", "Agents", "Cost", "Share"], [...byRole.map(r => [cell(roleName(r.role)), String(r.n), r.text, bar(r.sum, top)]), [`Total (${who})`, String(agents.length), spend.text, "—"]]),
 					"",
-					...(rate ? [`Cost per booked hour: ${rate} (agents only; total ${spend.text} over ${booked} booked min${spend.some ? "; known agents only" : ""})`, ""] : []),
+					...(rate ? [`Cost per booked hour: ${rate} (${who} only; total ${spend.text} over ${booked} booked min${spend.some ? "; known agents only" : ""})`, ""] : []),
 				]
 			: ["None.", ""]),
 		...reported("Apothecary (reported)", ap, ["Mutants killed", "Survivors", "Fuzz crashes"], [ap?.killed, ap?.survived, ap?.crashes]),
@@ -251,7 +253,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 			seals.length ? `SEALS ${seals.map(s => `${oneLine(s.id)} ${s.wait === undefined ? "—" : `${s.wait}m`}`).join(", ")}` : "SEALS none",
 			`SPAWNS ${total(roles)}${roles.length ? `: ${list(roles)}` : ""}`,
 			agents.length
-				? `COST (agents, list price) ${spend.text} · ${byRole.map(r => `${roleName(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
+				? `COST (${who}, list price) ${spend.text} · ${byRole.map(r => `${roleName(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
 				: "COST none",
 		],
 	};
