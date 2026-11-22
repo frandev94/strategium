@@ -704,7 +704,7 @@ function tarnish(gold: string): { shades: string[]; twin: Map<string, string> } 
 	return { shades: [...twin.keys()], twin };
 }
 
-/** Iron mixed halfway toward the theme background, or without one dimmed to 0.6 (truecolor only), so a scratch is never the iron of the real text; else iron itself. */
+/** Truecolor only: iron mixed halfway toward the theme background, or without one dimmed to 0.6, so a scratch is fainter than the real text. In 256 colours there is no mixing and the scratch is the iron itself. */
 function dim(iron: string, bg?: string): string {
 	const f = FG_RGB.exec(iron);
 	const b = bg && /^\x1b\[48;2;(\d+);(\d+);(\d+)m$/.exec(bg);
@@ -741,17 +741,14 @@ function run(rc: Relic | undefined, ch: string, n: number, id: number, shaded = 
 	return shaded && rc.shades.length ? out + rc.gold : out;
 }
 
-/** `n` blank cells at column `col`, with at most one faint scratch (a `·`, a `╱`, a `╲` or a `╱╲` pair) on a cell with `gap` blank cells before it and one after it inside the run. A cell's scratch depends only on its absolute column, `a` (the row) and `salt`. */
+/** `n` blank cells at column `col`, with at most one faint scratch (a `·`, a `╱` or a `╲`) on a cell with `gap` blank cells before it and one after it inside the run. A cell's scratch depends only on its absolute column, `a` (the row) and `salt`. */
 function blanks(rc: Relic, n: number, a: number, salt: number, col: number, gap: number): string {
 	let out = "";
 	let done = false;
 	for (let c = 0; c < n; c++) {
 		const h = c >= gap && c < n - 1 && !done ? mix(rc.seed ^ salt, a, col + c) : 1;
 		if (h % 40) { out += " "; continue; }
-		const k = (h >>> 8) % 4;
-		const pair = k === 3 && c + 2 < n;
-		out += paint(rc.scratch, pair ? "╱╲" : SCRATCH[k % 3]);
-		if (pair) c++;
+		out += paint(rc.scratch, SCRATCH[(h >>> 8) % 3]);
 		done = true;
 	}
 	return out;
@@ -762,7 +759,7 @@ function drawBox(b: Box, w: number, pal: Palette, rc: Relic | undefined, bid: nu
 	const [tl, h, tr, v, bl, br] = "┌─┐│└┘";
 	const c = (s: string) => paint(pal[b.tone], s);
 	const title = fit(b.title, w - 5).replace(`…${RESET}`, "");
-	const rowId = (k: number) => 0x1000 + bid * 256 + k; // shortcut: a box past 254 lines shares seeds between rows; fine for a decoration
+	const rowId = (k: number) => 0x1000 + bid * 256 + k;
 	return [
 		c(`${tl}${h} ${title} ${run(rc, h, w - Bun.stringWidth(title) - 5, rowId(254))}${tr}`),
 		...b.lines.map((l, r) => {

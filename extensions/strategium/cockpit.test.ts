@@ -2824,7 +2824,7 @@ describe("relic", () => {
 		expect(rows.filter(d => a.at(-d) !== off.at(-d)).length).toBeGreaterThan(0); // not vacuous: some of them are scratched
 	});
 
-	test("scratches are sparse: at most one per row, about 1 in 140 blank cells, clustered as · ╱ ╲ or ╱╲", () => {
+	test("scratches are sparse: at most one per row, about 1 in 140 blank cells, a single · ╱ or ╲", () => {
 		let blank = 0;
 		let marks = 0;
 		for (let k = 0; k < 40; k++) {
@@ -2963,5 +2963,36 @@ describe("relic", () => {
 		expect(worn / run).toBeLessThan(0.2);
 		expect(marks / blank).toBeGreaterThan(1 / 200);
 		expect(marks / blank).toBeLessThan(1 / 80);
+	});
+
+	test("a scratch is a single ╱, ╲ or ·: the ╱╲ pair (which reads as ^) never appears", () => {
+		for (let k = 0; k < 40; k++) {
+			const on = render(cockpitView(DETAIL({ key: `pair-${k}`, chronicle: many(2) })), 140, BLOOD, true, 50).map(plain);
+			expect(on.join("\n")).not.toContain("╱╲");
+		}
+	});
+
+	test("after a tarnished top run the label and the joint return to gold", () => {
+		const top = render(cockpitView(DETAIL({ key: "stable", chronicle: many(3) })), 140)[0];
+		expect(top).toContain(`${BLOOD.gold} stable ═╗`);
+	});
+
+	test("the ║ of a relic frame carry at least two different tarnish shades", () => {
+		const shades = new Set(bars(shot(DETAIL({ key: "stable", chronicle: many(4) }))).flat().map(b => b.slice(0, -1)));
+		shades.delete(BLOOD.gold);
+		expect(shades.size).toBeGreaterThanOrEqual(2);
+	});
+
+	test("blank filler rows differ: their scratches sit in different columns", () => {
+		const on = render(cockpitView(DETAIL({ key: "stable", chronicle: many(4) })), 140, BLOOD, true, 40).map(plain);
+		expect(new Set([2, 3, 4, 5, 6, 7, 8, 9].map(d => on.at(-d))).size).toBeGreaterThan(1);
+	});
+
+	test.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 38])("rivets: a ═ run of %i cells has • only at index 1 and n-2 when n is 8 or more, else none", n => {
+		const top = render(cockpitView(DETAIL({ key: "k".repeat(39 - n) })), 72).map(plain)[0];
+		const body = /COGITATOR (.*) k+ ═╗$/.exec(top)![1];
+		expect([...body]).toHaveLength(n);
+		const at = [...body].flatMap((c, i) => (c === "•" ? [i] : []));
+		expect(at).toEqual(n >= 8 ? [1, n - 2] : []);
 	});
 });

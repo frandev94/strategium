@@ -3498,6 +3498,7 @@ describe("cockpit", () => {
 			const plainFrame = comp.render(100).join("\n");
 			await s.sub("config", "relic on");
 			expect(comp.render(100).join("\n")).not.toBe(plainFrame);
+			expect(comp.render(100).join("\n")).toMatch(/[╍┅╌┄•]/);
 			comp.handleInput!("q");
 		});
 
