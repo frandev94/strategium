@@ -99,6 +99,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_COCKPIT_KEY;
 	delete process.env.STRATEGIUM_COCKPIT_THEME;
 	delete process.env.STRATEGIUM_RELIC;
+	for (const k of Object.keys(process.env)) if (k.startsWith("STRATEGIUM_CASTER")) delete process.env[k];
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
@@ -140,7 +141,7 @@ const exitAlarm = (code: number) => {
 	alarm.impl = () => ({ exited: Promise.resolve(code), unref() {} });
 };
 
-function setup(sid = "sess-0001", shared?: string) {
+function setup(sid = "sess-0001", shared?: string, deps: Record<string, unknown> = {}) {
 	const dir = shared ?? mkdtempSync(join(tmpdir(), "st-index-"));
 	if (!shared) dirs.push(dir);
 	process.env.STRATEGIUM_STATE_DIR = dir;
@@ -157,7 +158,7 @@ function setup(sid = "sess-0001", shared?: string) {
 		seen.push({ via: "sendMessage", footer: footer.at(-1) ?? "", events: alertEvents(dir).length });
 		return sendMessage(m, o);
 	};
-	extension(pi as never, { spawn: alarm.spawn });
+	extension(pi as never, { spawn: alarm.spawn, ...deps });
 	const tool = tools.find(t => t.name === "strategium")!;
 	const notes: string[] = [];
 	const footer: string[] = [];
@@ -3416,7 +3417,7 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
@@ -3543,6 +3544,294 @@ describe("cockpit", () => {
 				expect(s.notes.at(-1)).toContain("config takes");
 			}
 			expect(existsSync(join(s.dir, "relic"))).toBe(false);
+		});
+	});
+
+	describe("the caster", () => {
+		type Call = { model: unknown; context: { systemPrompt: string[]; messages: { role: string; content: string }[] }; options: { apiKey: unknown; disableReasoning: boolean; maxTokens: number; signal: AbortSignal } };
+		const reply = (text: string, extra: object = {}) => ({ stopReason: "stop", content: [{ type: "text", text }], usage: { input: 100, output: 20, cacheRead: 30, cacheWrite: 0, totalTokens: 150, cost: { total: 0.002 } }, ...extra });
+		const timers: { fn: () => void; ms: number }[] = [];
+		const realSet = globalThis.setInterval;
+		afterEach(() => {
+			globalThis.setInterval = realSet;
+			timers.length = 0;
+		});
+		const t0 = (sec = 0) => setSystemTime(new Date(2026, 10, 16, 9, 0, sec));
+		// The completion is the seam: a fake completeSimple that records what it was asked. The alias, model, auth and text code run for real.
+		async function casting(o: { env?: Record<string, string>; answer?: (c: Call) => Promise<unknown>; resolve?: (spec: string) => unknown; auth?: boolean; open?: boolean } = {}) {
+			Object.assign(process.env, o.env);
+			const calls: Call[] = [];
+			const completeSimple = (model: unknown, context: Call["context"], options: Call["options"]) => {
+				const c = { model, context, options };
+				calls.push(c);
+				return (o.answer ?? (async () => reply("Alpha is green.")))(c);
+			};
+			t0();
+			const s = setup("sess-0001", undefined, { completeSimple });
+			const ui = uiCtx(s);
+			Object.assign(s.ctx, {
+				models: { resolve: o.resolve ?? ((spec: string) => ({ spec })) },
+				modelRegistry: { hasConfiguredAuth: () => o.auth !== false, resolver: (_m: unknown, sid: string) => ({ resolverFor: sid }) },
+			});
+			await s.call({ action: "begin", key: "K-1" });
+			await s.start();
+			globalThis.setInterval = ((fn: () => void, ms: number) => timers.push({ fn, ms })) as never;
+			if (o.open !== false) await s.sub("cockpit");
+			return { s, ui, calls };
+		}
+		// Two frames: the caster looks at every second one, like the children's files.
+		const tick = async () => {
+			timers.at(-1)!.fn();
+			timers.at(-1)!.fn();
+			await Bun.sleep(0);
+		};
+		const shownText = (ui: { opened: { component: { render(w: number): string[] } }[] }) => plain(ui.opened.at(-1)!.component.render(100).join("\n"));
+		const station = (s: { todo: (p: unknown) => void }, task: string) => s.todo([{ name: "Plan", tasks: [{ content: task, status: "in_progress" }] }]);
+		const cockpitJson = (s: { dir: string }) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8"));
+		const debriefOf = (s: { dir: string }) => readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8");
+
+		test("off: no call and no CASTER box, and the run report never mentions the caster", async () => {
+			const { s, ui, calls } = await casting();
+			await tick();
+			t0(300);
+			station(s, "Draft");
+			await tick();
+			expect(calls).toHaveLength(0);
+			expect(shownText(ui)).not.toContain("CASTER");
+			await s.call({ action: "end" });
+			expect(debriefOf(s)).not.toContain("caster");
+		});
+
+		test("on and open: one call through the resolved role alias, and the summary is drawn", async () => {
+			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			expect(shownText(ui)).toContain("listening…");
+			await tick();
+			expect(calls).toHaveLength(1);
+			expect(calls[0].model).toEqual({ spec: "@smol" });
+			expect(calls[0].options).toMatchObject({ disableReasoning: true, maxTokens: 200, apiKey: { resolverFor: "sess-0001" } });
+			expect(calls[0].options.signal.aborted).toBe(false);
+			expect(calls[0].context.messages[0].content).toContain("STATION: no station yet");
+			expect(shownText(ui)).toContain("CASTER · no station yet");
+			expect(shownText(ui)).toContain("Alpha is green.");
+		});
+
+		test("nothing changed for three intervals: still one call", async () => {
+			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			await tick();
+			for (const sec of [61, 122, 183, 244]) {
+				t0(sec);
+				await tick();
+			}
+			expect(calls).toHaveLength(1);
+			expect(shownText(ui)).toContain("Alpha is green.");
+		});
+
+		test("a changed state calls again only after the interval", async () => {
+			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			await tick();
+			t0(30);
+			station(s, "Draft");
+			await tick();
+			expect(calls).toHaveLength(1);
+			t0(61);
+			await tick();
+			expect(calls).toHaveLength(2);
+			expect(calls[1].context.messages[0].content).toContain("STATION: Plan");
+		});
+
+		test("STRATEGIUM_CASTER_EVERY_MIN=2 is respected", async () => {
+			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_EVERY_MIN: "2" } });
+			await tick();
+			station(s, "Draft");
+			t0(61);
+			await tick();
+			expect(calls).toHaveLength(1);
+			t0(121);
+			await tick();
+			expect(calls).toHaveLength(2);
+		});
+
+		test("one call at a time: a state change while a call is in flight starts none", async () => {
+			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			await tick();
+			station(s, "Draft");
+			t0(300);
+			await tick();
+			expect(calls).toHaveLength(1);
+		});
+
+		test("closing the cockpit aborts the call in flight and no call starts after", async () => {
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			await tick();
+			expect(calls[0].options.signal.aborted).toBe(false);
+			ui.opened[0].component.handleInput!("q");
+			expect(calls[0].options.signal.aborted).toBe(true);
+			station(s, "Draft");
+			t0(300);
+			await tick();
+			expect(calls).toHaveLength(1);
+		});
+
+		test("the host disposing the overlay aborts the call in flight and no call starts after", async () => {
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			await tick();
+			ui.opened[0].component.dispose!();
+			expect(calls[0].options.signal.aborted).toBe(true);
+			station(s, "Draft");
+			t0(300);
+			await tick();
+			expect(calls).toHaveLength(1);
+		});
+
+		test("a reply that lands after the close is not shown, but its cost is kept", async () => {
+			let land!: (v: unknown) => void;
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(r => (land = r)) });
+			await tick();
+			ui.opened[0].component.handleInput!("q");
+			land(reply("Too late."));
+			await Bun.sleep(0);
+			expect(calls).toHaveLength(1);
+			await s.sub("cockpit");
+			expect(shownText(ui)).not.toContain("Too late.");
+			expect(cockpitJson(s).caster).toEqual({ cost: 0.002, calls: 1, tokens_in: 130, tokens_out: 20 });
+		});
+
+		test("an alias that does not resolve is one reason row and no call", async () => {
+			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, resolve: () => undefined });
+			await tick();
+			expect(calls).toHaveLength(0);
+			expect(shownText(ui)).toContain("no model for @smol");
+		});
+
+		test("a host with no models API is the same reason row", async () => {
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, open: false });
+			delete (s.ctx as Record<string, unknown>).models;
+			await s.sub("cockpit");
+			await tick();
+			expect(calls).toHaveLength(0);
+			expect(shownText(ui)).toContain("no model for @smol");
+		});
+
+		test("no configured auth is one reason row and no call", async () => {
+			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, auth: false });
+			await tick();
+			expect(calls).toHaveLength(0);
+			expect(shownText(ui)).toContain("no auth");
+		});
+
+		test("a host with no model registry is no auth", async () => {
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, open: false });
+			delete (s.ctx as Record<string, unknown>).modelRegistry;
+			await s.sub("cockpit");
+			await tick();
+			expect(calls).toHaveLength(0);
+			expect(shownText(ui)).toContain("no auth");
+		});
+
+		test("a bare model id is not a role alias: reason row, nothing resolved", async () => {
+			let resolved = 0;
+			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_MODEL: "x/y" }, resolve: () => void resolved++ });
+			await tick();
+			expect(calls).toHaveLength(0);
+			expect(resolved).toBe(0);
+			expect(shownText(ui)).toContain("not a role alias: x/y");
+		});
+
+		test("a role alias from STRATEGIUM_CASTER_MODEL is the one resolved", async () => {
+			const { calls } = await casting({ env: { STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_MODEL: "@fast:low" } });
+			await tick();
+			expect(calls[0].model).toEqual({ spec: "@fast:low" });
+		});
+
+		for (const [name, answer] of [
+			["rejects", async () => Promise.reject(new Error("net down"))],
+			["returns stopReason error", async () => reply("", { stopReason: "error" })],
+		] as const) {
+			test(`completeSimple ${name}: call failed, and no second call for the same state`, async () => {
+				const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer });
+				await tick();
+				expect(shownText(ui)).toContain("call failed");
+				for (const sec of [61, 122, 183]) {
+					t0(sec);
+					await tick();
+				}
+				expect(calls).toHaveLength(1);
+			});
+		}
+
+		test("the cost is summed in runs/<sid>.cockpit, survives a restart and is a caster row in the run report", async () => {
+			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			await tick();
+			station(s, "Draft");
+			t0(61);
+			await tick();
+			expect(calls).toHaveLength(2);
+			expect(cockpitJson(s).caster).toEqual({ cost: 0.004, calls: 2, tokens_in: 260, tokens_out: 40 });
+			const again = setup("sess-0001", s.dir);
+			await again.start();
+			await again.call({ action: "end" });
+			expect(debriefOf(s)).toMatch(/\| caster \| caster \| — \| 260 \| 40 \| \? \| \$0\.004 \|/);
+			expect(debriefOf(s)).toContain("Agents and the cockpit caster only");
+		});
+
+		for (const bad of [{ cost: "x", calls: 1, tokens_in: 1, tokens_out: 1 }, { cost: 1, calls: 1.5, tokens_in: 1, tokens_out: 1 }, { cost: -1, calls: 1, tokens_in: 1, tokens_out: 1 }, { cost: 1, calls: 1, tokens_in: 1 }, "no", null]) {
+			test(`a malformed caster field ${JSON.stringify(bad)} reads as none and does not void the rest`, async () => {
+				const { s } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+				await tick();
+				writeFileSync(join(s.dir, "runs", "sess-0001.cockpit"), JSON.stringify({ ...cockpitJson(s), caster: bad }));
+				const again = setup("sess-0001", s.dir);
+				await again.start();
+				await again.call({ action: "end" });
+				expect(debriefOf(s)).not.toContain("| caster |");
+			});
+		}
+
+		test("STRATEGIUM_CASTER_FAKE shows its text with no completeSimple call, and still counts the call", async () => {
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_FAKE: "Fake commentary." }, resolve: () => undefined, auth: false });
+			await tick();
+			expect(calls).toHaveLength(0);
+			expect(shownText(ui)).toContain("Fake commentary.");
+			expect(cockpitJson(s).caster).toEqual({ cost: 0, calls: 1, tokens_in: 0, tokens_out: 0 });
+		});
+
+		test("/strategium-config caster on|off|default saves the choice, applies it at once and wins over the env", async () => {
+			const { s, ui } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain("caster: on (STRATEGIUM_CASTER) · model @smol · every 1 min");
+			await s.sub("config", "caster off");
+			expect(readFileSync(join(s.dir, "caster"), "utf8")).toBe("off");
+			expect(s.notes.at(-1)).toContain("caster: off (/strategium-config)");
+			await tick();
+			expect(shownText(ui)).not.toContain("CASTER");
+			await s.sub("config", "caster on");
+			expect(readFileSync(join(s.dir, "caster"), "utf8")).toBe("on");
+			expect(s.notes.at(-1)).toContain("caster: on (/strategium-config)");
+			await s.sub("config", "caster default");
+			expect(existsSync(join(s.dir, "caster"))).toBe(false);
+			expect(s.notes.at(-1)).toContain("caster: on (STRATEGIUM_CASTER)");
+		});
+
+		test("STRATEGIUM_CASTER=0 is off, any other value is ignored and said so; a bad interval or model is listed", async () => {
+			process.env.STRATEGIUM_CASTER = "0";
+			const s0 = setup();
+			await s0.sub("config");
+			expect(s0.notes.at(-1)).toContain("caster: off (STRATEGIUM_CASTER)");
+			process.env.STRATEGIUM_CASTER = "yes";
+			process.env.STRATEGIUM_CASTER_EVERY_MIN = "0";
+			process.env.STRATEGIUM_CASTER_MODEL = "x/y";
+			const s1 = setup();
+			await s1.sub("config");
+			const line = s1.notes.at(-1)!.split("\n").find(l => l.startsWith("caster:"))!;
+			expect(line).toBe('caster: off (default) · model not a role alias: x/y · every 1 min · ignored: STRATEGIUM_CASTER "yes", STRATEGIUM_CASTER_EVERY_MIN "0"');
+		});
+
+		test("a bad caster argument is refused and writes no file", async () => {
+			const s = setup();
+			for (const bad of ["caster maybe", "caster ON", "caster Default"]) {
+				await s.sub("config", bad);
+				expect(s.notes.at(-1)).toContain("config takes");
+			}
+			expect(existsSync(join(s.dir, "caster"))).toBe(false);
 		});
 	});
 

@@ -21,6 +21,7 @@ import {
 	type Ev,
 } from "./timer";
 import { debrief, type AgentCost, type Reported } from "./debrief";
+import { casterFacts, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./caster";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
@@ -83,6 +84,9 @@ type SessionCtx = {
 		custom?(factory: (tui: Tui, theme: unknown, keybindings: unknown, done: (result?: unknown) => void) => Component, options?: { overlay?: boolean; overlayOptions?: object }): unknown;
 	};
 	setInterval(fn: () => void, ms: number): unknown;
+	// The host's model APIs, used by the cockpit caster; a host without them leaves the caster with a reason row.
+	models?: { resolve?(spec: string): unknown };
+	modelRegistry?: { hasConfiguredAuth?(model: unknown): boolean; resolver?(model: unknown, sessionId: string): unknown };
 	agent?: { kind?: string; id?: string };
 	isIdle(): boolean;
 	hasPendingMessages(): boolean;
@@ -164,6 +168,29 @@ const runFile = (sid: string) => path.join(runsDir(), `${sid}.json`);
 const beatFile = (sid: string) => path.join(runsDir(), `${sid}.beat`);
 // The cockpit's chronicle, agent registry and squad marks, saved beside the run (not in it: see drawCockpit).
 const cockpitFile = (sid: string) => path.join(runsDir(), `${sid}.cockpit`);
+/** What the cockpit caster spent in a run: omp's list price, calls that returned a reply, and tokens (input counts cache reads and writes). */
+type Spend = { cost: number; calls: number; tokens_in: number; tokens_out: number };
+/** The caster's memory for the run key: the summary shown, when the last attempt started, and the call in flight. */
+type CasterState = { text?: string; dim?: boolean; station?: string; at?: number; lastAt?: number; lastHash?: string; ctrl?: AbortController; spend?: Spend };
+/** completeSimple of @oh-my-pi/pi-ai as far as the caster uses it: the test seam; the real one is imported on the first call. */
+type CompleteSimple = (
+	model: unknown,
+	context: { systemPrompt: string[]; messages: { role: "user"; content: string; timestamp: number }[] },
+	options: { apiKey: unknown; disableReasoning: boolean; maxTokens: number; signal: AbortSignal },
+) => Promise<{ stopReason?: string; content?: { type: string; text?: string }[]; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } }>;
+/** A saved spend, or none for anything that is not one (the file may be hand-edited). */
+const casterSpend = (v: unknown): Spend | undefined => {
+	const o = asObj(v);
+	const n = (x: unknown): x is number => typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
+	return isCost(o.cost) && n(o.calls) && o.calls > 0 && n(o.tokens_in) && n(o.tokens_out) ? { cost: o.cost, calls: o.calls, tokens_in: o.tokens_in, tokens_out: o.tokens_out } : undefined;
+};
+const savedSpend = (sid: string): Spend | undefined => {
+	try {
+		return casterSpend(asObj(JSON.parse(readFileSync(cockpitFile(sid), "utf8"))).caster);
+	} catch {
+		return undefined; // no saved cockpit
+	}
+};
 // What each subagent writes about itself, one file per agent id, and the pointer that tells a child (same pid) which session to write for.
 const liveDir = (sid: string) => path.join(runsDir(), `${sid}.live`);
 const pidFile = () => path.join(runsDir(), `${process.pid}.pid`);
@@ -587,7 +614,7 @@ function savedRoles(sid: string): Map<string, { role: string; squad?: string }> 
 }
 
 /** Build the run's debrief and save it under <state>/debriefs (kept after the run): the result lines for `end`. A failure never stops the end. */
-function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed> } | undefined, clamp: boolean): string[] {
+function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } } | undefined, clamp: boolean): string[] {
 	try {
 		const evs = eventsSince(run.key, run.since);
 		// A run stopped before `end` has no pause tail: its last interval closes at the stop (or at a later station entry). A takeover keeps it: the crash gap is real.
@@ -609,6 +636,8 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 			const { cost, tokens_in, tokens_out, cache_read, cache_write } = rows.get(id) ?? {};
 			return { id, role: r.role, ...(r.squad ? { squad: r.squad } : {}), cost, tokens_in, tokens_out, cache_read, cache_write };
 		});
+		const spend = live?.key === run.key ? live.caster?.spend : savedSpend(run.sid);
+		if (spend?.calls) costs.push({ id: "caster", role: "caster", cost: spend.cost, tokens_in: spend.tokens_in, tokens_out: spend.tokens_out });
 		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported, agents: costs });
 		const file = path.join(stateDir(), "debriefs", `${safeName(run.key)}-${nowIso(now).slice(0, 19).replace(/:/g, "-")}.md`);
 		try {
@@ -623,7 +652,7 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 }
 
 /** End this session's run, or another session's run of `key` by naming that crashed session's id in `takeover`. */
-function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed> }): string {
+function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } }): string {
 	// ownRun() may drop the run file, so ask for it once.
 	const mine = ownRun(sid);
 	const run = key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine;
@@ -1018,8 +1047,10 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 	return pad >= 2 ? `${line}${"\u00a0".repeat(pad)}\x1b[2m${hint}\x1b[22m` : line;
 }
 
-export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
+export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple?: CompleteSimple } = {}) {
 	const spawn: Spawn = deps.spawn ?? Bun.spawn;
+	// Imported on the first real call, not at load: the extension and its tests never pull pi-ai in otherwise (omp resolves the bare name to its bundled copy).
+	const completeSimple: CompleteSimple = deps.completeSimple ?? (async (...a) => (await import("@oh-my-pi/pi-ai")).completeSimple(...(a as unknown as [never, never, never])) as never);
 	const z = pi.zod;
 	// Set by the session handler; tool and command actions call it so the footer updates at once, not on the
 	// next minute. It belongs to this instance: a module loaded twice would cross the sessions.
@@ -1144,6 +1175,29 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 	};
 	let relic = relicSetting();
 
+	// The caster: /strategium-config caster saves "on" or "off" in the state dir, which wins over STRATEGIUM_CASTER (1/0, anything else ignored); off by default.
+	const casterFile = () => path.join(stateDir(), "caster");
+	const casterSetting = (): { on: boolean; from: string } => {
+		let saved = "";
+		try {
+			saved = readFileSync(casterFile(), "utf8").trim().toLowerCase();
+		} catch {
+			// no saved choice: fall through to the env and the default
+		}
+		const fromEnv = process.env.STRATEGIUM_CASTER?.trim() ?? "";
+		if (saved === "on" || saved === "off") return { on: saved === "on", from: "/strategium-config" };
+		if (fromEnv === "1" || fromEnv === "0") return { on: fromEnv === "1", from: "STRATEGIUM_CASTER" };
+		return { on: false, from: "default" };
+	};
+	let caster = casterSetting();
+	const casterConfigLine = () => {
+		const every = parseEvery(process.env.STRATEGIUM_CASTER_EVERY_MIN);
+		const alias = parseAlias(process.env.STRATEGIUM_CASTER_MODEL);
+		const raw = process.env.STRATEGIUM_CASTER?.trim() ?? "";
+		const ignored = [raw && raw !== "1" && raw !== "0" ? `STRATEGIUM_CASTER "${[...oneLine(raw)].slice(0, 40).join("")}"` : "", every.ignored === undefined ? "" : `STRATEGIUM_CASTER_EVERY_MIN "${every.ignored}"`].filter(Boolean);
+		return `caster: ${caster.on ? "on" : "off"} (${caster.from}) · model ${"alias" in alias ? alias.alias : alias.error} · every ${every.min} min${ignored.length ? ` · ignored: ${ignored.join(", ")}` : ""}`;
+	};
+
 	// The cockpit: an overlay on demand while this session has a run. Everything it shows beyond the run file
 	// (chronicle, squad notes, agent ids) lives in memory, keyed by run key, and drawCockpit saves it beside the run in
 	// runs/<sid>.cockpit when it changed (dirty), so the plan-approval move and an omp restart both keep it.
@@ -1163,10 +1217,18 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		overlay: undefined as Tui | undefined,
 		status: undefined as "working" | "awaiting" | undefined,
 		close: undefined as (() => void) | undefined,
+		caster: {} as CasterState,
 	};
 	const SEAL_LINES = 200;
 	const SEAL_LINE_CHARS = 500;
+	/** Abort the caster's call in flight, if any: it no longer counts as in flight, and its reply is not shown. */
+	const abortCaster = () => {
+		cockpit.caster.ctrl?.abort();
+		cockpit.caster.ctrl = undefined;
+	};
 	const resetCockpit = (key?: string) => {
+		abortCaster();
+		cockpit.caster = {};
 		cockpit.key = key;
 		cockpit.chronicle = [];
 		cockpit.notes = {};
@@ -1210,6 +1272,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				cockpit.deployed.set(id, job);
 			}
 			cockpit.seal = saved.seal && { id: saved.seal.id, lines: saved.seal.lines.slice(0, SEAL_LINES).map((l: string) => l.slice(0, SEAL_LINE_CHARS)) };
+			cockpit.caster.spend = casterSpend(saved.caster); // a malformed field is none; it never voids the rest
 			cockpit.dirty = false;
 		} catch {
 			resetCockpit(key);
@@ -1302,19 +1365,93 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
 			seal: cockpit.seal,
+			caster: caster.on ? { station: cockpit.caster.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.caster.text ?? "listening…", dim: cockpit.caster.text === undefined || cockpit.caster.dim === true, at: cockpit.caster.at } : undefined,
 			transcript: cockpit.transcript,
 		};
 		cockpit.view = cockpitView({ ...cockpit.input, nav: cockpit.nav });
 		cockpit.nav = cockpit.view.nav; // normalized: a browsed station is dropped when the active one moved
 		if (cockpit.dirty) {
 			try {
-				writeAtomic(cockpitFile(run.sid), JSON.stringify({ key: cockpit.key, chronicle: cockpit.chronicle, notes: cockpit.notes, deployed: [...cockpit.deployed], ...(cockpit.seal ? { seal: cockpit.seal } : {}) }));
+				writeAtomic(cockpitFile(run.sid), JSON.stringify({ key: cockpit.key, chronicle: cockpit.chronicle, notes: cockpit.notes, deployed: [...cockpit.deployed], ...(cockpit.seal ? { seal: cockpit.seal } : {}), ...(cockpit.caster.spend?.calls ? { caster: cockpit.caster.spend } : {}) }));
 				cockpit.dirty = false;
 			} catch {
 				// Kept dirty: the next draw tries again.
 			}
 		}
 		cockpit.overlay?.requestRender();
+	};
+	/** The call itself: STRATEGIUM_CASTER_FAKE answers with that text (replays); otherwise the role alias is resolved through the host and completeSimple is asked. A reason string means no call is made. */
+	const casterPrepare = (ctx: SessionCtx): { complete: Complete } | { reason: string } => {
+		const fake = process.env.STRATEGIUM_CASTER_FAKE;
+		if (fake) return { complete: async () => ({ text: fake, cost: 0, tokens_in: 0, tokens_out: 0 }) };
+		const a = parseAlias(process.env.STRATEGIUM_CASTER_MODEL);
+		if ("error" in a) return { reason: a.error };
+		// The host's model API is guarded: a missing or throwing one is a reason row, never an error in the timer.
+		let model: unknown;
+		let authed = false;
+		try {
+			model = ctx.models?.resolve?.(a.alias);
+			authed = !!model && ctx.modelRegistry?.hasConfiguredAuth?.(model) === true;
+		} catch {
+			// treated as unresolved
+		}
+		if (!model) return { reason: `no model for ${[...a.alias].slice(0, 40).join("")}` };
+		if (!authed) return { reason: "no auth" };
+		const sid = sidOf(ctx);
+		return {
+			complete: async (system, user, signal) => {
+				const m = await completeSimple(model, { systemPrompt: [system], messages: [{ role: "user", content: user, timestamp: Date.now() }] }, { apiKey: ctx.modelRegistry!.resolver!(model, sid), disableReasoning: true, maxTokens: 200, signal });
+				const u = m.usage;
+				return {
+					text: (m.content ?? []).filter(p => p.type === "text").map(p => p.text ?? "").join(" "),
+					cost: u?.cost?.total,
+					tokens_in: (u?.input ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0),
+					tokens_out: u?.output,
+					...(m.stopReason === "error" || m.stopReason === "aborted" ? { failed: true as const } : {}),
+				};
+			},
+		};
+	};
+	/** On a caster tick of the open cockpit: start one summary when it is due (see `due`). The attempt is stamped when it starts, so a failure waits for a new state and a new interval and never loops. */
+	const casterTick = (ctx: SessionCtx, run: Run) => {
+		const c = cockpit.caster;
+		if (!caster.on || !cockpit.input) return;
+		const view = cockpitView({ ...cockpit.input });
+		const hash = stateHash(view, cockpit.input.live, cockpit.chronicle);
+		const now = Date.now();
+		if (!due({ on: true, now, everyMs: parseEvery(process.env.STRATEGIUM_CASTER_EVERY_MIN).min * 60_000, lastAt: c.lastAt, inFlight: !!c.ctrl, hash, lastHash: c.lastHash })) return;
+		c.lastAt = now;
+		c.lastHash = hash;
+		const station = view.station.name;
+		const redraw = () => drawCockpit(readRun(sidOf(ctx)) ?? run, ctx);
+		const prep = casterPrepare(ctx);
+		if ("reason" in prep) {
+			Object.assign(c, { text: prep.reason, dim: true, station, at: undefined });
+			return redraw();
+		}
+		const ctrl = new AbortController();
+		c.ctrl = ctrl;
+		const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(30_000)]);
+		summarize(prep.complete, station, casterFacts(view, cockpit.input.live, cockpit.chronicle), signal)
+			.then(r => {
+				if (c.ctrl === ctrl) c.ctrl = undefined;
+				if (cockpit.caster !== c) return; // the run was reset meanwhile
+				const n = (x: number | undefined) => (typeof x === "number" && Number.isSafeInteger(x) && x > 0 ? x : 0);
+				// A reply that arrives after an abort is not shown, but it was paid.
+				if (r.reply) {
+					const spend = (c.spend ??= { cost: 0, calls: 0, tokens_in: 0, tokens_out: 0 });
+					spend.cost += isCost(r.reply.cost) ? r.reply.cost : 0;
+					spend.calls++;
+					spend.tokens_in += n(r.reply.tokens_in);
+					spend.tokens_out += n(r.reply.tokens_out);
+					cockpit.dirty = true;
+				}
+				if (!ctrl.signal.aborted) Object.assign(c, { text: r.text, dim: r.dim, station, at: r.dim ? undefined : Date.now() });
+				redraw();
+			})
+			.catch(() => {
+				// A summary never throws into the host; the next attempt waits for a new state.
+			});
 	};
 	const openCockpit = (ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
@@ -1327,6 +1464,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		cockpit.transcript = undefined;
 		drawCockpit(run, ctx);
 		const closed = () => {
+			abortCaster();
 			cockpit.close = undefined;
 			cockpit.overlay = undefined;
 			cockpit.nav = {}; // a closed cockpit reads no transcript on a later redraw
@@ -1337,20 +1475,26 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			ctx.ui.custom(
 				(tui, _theme, _keys, done) => {
 					let frame = 0;
+					let open = true; // a timer callback the host still holds after close does nothing
 					const timer = setInterval(() => {
 						try {
+							if (!open) return;
 							frame++;
 							if (live) setAgentStatus(live); // the host's idle flag lags agent_end, and the last job ending sends no event
 							// Every second frame the children's files are read again: at most once a second.
 							// readRun, not ownRun: a transient lock read failure must not drop the run.
 							const own = frame % 2 === 0 ? readRun(sidOf(ctx)) : undefined;
-							if (own) drawCockpit(own, ctx);
+							if (own) {
+								drawCockpit(own, ctx);
+								casterTick(ctx, own);
+							}
 							tui.requestRender();
 						} catch {
 							// A timer never throws; the next frame tries again.
 						}
 					}, 500);
 					const close = () => {
+						open = false;
 						clearInterval(timer);
 						closed();
 						done();
@@ -1374,7 +1518,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 							cockpit.nav = cockpit.view.nav;
 							tui.requestRender();
 						},
-						dispose: () => clearInterval(timer),
+						dispose: () => {
+							open = false;
+							clearInterval(timer);
+							abortCaster();
+						},
 					};
 				},
 				{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true, mouseTracking: false } },
@@ -1762,7 +1910,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look; caster on|off|default sets the cockpit's model commentator", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
 		let preview = false;
 		if (arg !== undefined) {
@@ -1776,7 +1924,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			const k = arg.match(/^cockpit-key\s+(\S+)$/);
 			const th = arg.match(/^cockpit-theme\s+(\S+)$/);
 			const re = arg.match(/^relic\s+(on|off|default)$/);
-			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			const ca = arg.match(/^caster\s+(on|off|default)$/);
+			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re && !ca) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
 			else if (to) toastBySession.set(sid, to[1] === "on");
@@ -1807,6 +1956,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 					writeFileSync(relicFile(), v);
 				}
 				relic = relicSetting();
+			} else if (ca) {
+				const v = ca[1];
+				if (v === "default") rmSync(casterFile(), { force: true });
+				else {
+					mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
+					writeFileSync(casterFile(), v);
+				}
+				caster = casterSetting();
 			} else if (k) {
 				const v = k[1].toLowerCase();
 				if (v === "default") rmSync(keyFile(), { force: true });
@@ -1835,6 +1992,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				`cockpit-key: ${cockpitKey.key} (${cockpitKey.from})${next.key !== cockpitKey.key || next.from !== cockpitKey.from ? `; next omp start: ${next.key} (${next.from})` : ""}`,
 				`cockpit-theme: ${theme.name} (${theme.from})`,
 				`relic: ${relic.on ? "on" : "off"} (${relic.from})`,
+				casterConfigLine(),
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
 				`state: ${stateDir()}`,

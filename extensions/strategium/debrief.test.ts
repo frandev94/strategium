@@ -445,6 +445,17 @@ describe("cost", () => {
 		expect(section(cost([ag("A", "scout", { cost: 1 })]).markdown, "Cost")).not.toContain("’");
 	});
 
+	test("a caster row names the caster in the note and is a role of its own; without one the note says agents only", () => {
+		const none = cost([ag("A", "scout", { cost: 1 })]).markdown;
+		expect(section(none, "Cost")).toContain("Agents only: the Captain's own session is not included.");
+		expect(section(none, "Cost")).not.toContain("caster");
+		const r = cost([ag("A", "scout", { cost: 1 }), ag("caster", "caster", { cost: 0.5, tokens_in: 300, tokens_out: 40 })]);
+		expect(section(r.markdown, "Cost")).toContain("Agents and the cockpit caster only: the Captain's own session is not included.");
+		expect(section(r.markdown, "Cost")).not.toContain("Agents only");
+		expect(section(r.markdown, "Cost")).toContain("| caster | caster | — | 300 | 40 | ? | $0.50 |");
+		expect(r.summary.find(l => l.startsWith("COST"))).toContain("caster $0.50");
+	});
+
 	test("a role named Total is not the totals row", () => {
 		const rows = lines(cost([ag("A", "Total", { cost: 1 }), ag("B", "Total (agents)", { cost: 2 })]).markdown);
 		expect(rows).toContain("| Total (role) | 1 | $1.00 | █████ |");

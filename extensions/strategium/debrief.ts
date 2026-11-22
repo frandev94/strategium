@@ -222,7 +222,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 		"",
 		"## Cost",
 		"",
-		"Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents'; cost does not. Agents only: the Captain's own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.",
+		`Costs are omp's list-price estimates: each agent's own spend as omp prices it (its cost minus its nested subagents', computed as omp's agent view computes it). Tokens include nested subagents'; cost does not. ${agents.some(a => a.id === "caster" && a.role === "caster") ? "Agents and the cockpit caster only" : "Agents only"}: the Captain's own session is not included. A subscription plan pays differently. ?: no usage recorded, or a model without a price in omp.`,
 		"",
 		...(agents.length
 			? [
