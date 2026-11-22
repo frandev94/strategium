@@ -60,6 +60,12 @@ describe("runOutcomes (D3)", () => {
 		expect(o[0]).toMatchObject({ kind: "saved", penances: 1 });
 		expect(applyRun(map({}), o, false).Lorenzo).toEqual(svc({ passed: 2, squads: 1, penances: 1, halo: 1 }));
 	});
+	test("a veteran named but never spawned, with a Penitent passing, is a penance, no Iron Halo", () => {
+		const names = [builder("a", "Lorenzo"), { ...builder("a", "Lorenzo"), name: "PenitentLorenzo" }, veteran("a", "Lorenzo", { spawned: undefined })];
+		const o = runOutcomes({ names, builds: { a: 2 }, ended: { a: "ok" } });
+		expect(o[0]).toMatchObject({ kind: "penance", penances: 1 });
+		expect(applyRun(map({}), o, false).Lorenzo.halo).toBe(0);
+	});
 	test("failed: +1 fall, +1 squad, nothing passed", () => {
 		const names = [builder("a", "Lorenzo"), veteran("a", "Lorenzo")];
 		const o = runOutcomes({ names, builds: { a: 2 }, ended: { a: "failed" } });

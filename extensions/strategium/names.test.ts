@@ -4,6 +4,24 @@ import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./
 // Seeded LCG so draws are reproducible.
 const seeded = (seed: number) => () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
 
+describe("prefer with names already issued (CB1)", () => {
+	test("a preferred surname whose bare name is in avoid is kept with an epithet", () => {
+		const r = allocateName([], { agent: "battle-brother", squad: "a" }, new Set(["BrotherLorenzo"]), undefined, { prefer: ["Lorenzo"] });
+		expect("error" in r ? r.error : r.entry.name).toBe("BrotherLorenzoUnbroken");
+		expect("error" in r ? "" : r.entry.surname).toBe("Lorenzo");
+	});
+	test("pass 2 honours prefer too: with every surname held by retired builders", () => {
+		const entries: NameEntry[] = [];
+		for (let i = 0; i < 49; i++) {
+			const r = allocateName(entries, { agent: "battle-brother", squad: `p${i}` });
+			if ("error" in r) break;
+			entries.push({ ...r.entry, spawned: true, old: true });
+		}
+		const r = allocateName(entries, { agent: "battle-brother", squad: "a" }, new Set(), undefined, { prefer: ["Gideon"] });
+		expect("error" in r ? r.error : r.entry.surname).toBe("Gideon");
+	});
+});
+
 /** Allocate and append, like the wiring does. */
 function give(entries: NameEntry[], req: Parameters<typeof allocateName>[1], avoid?: ReadonlySet<string>, rand?: () => number) {
 	const r = allocateName(entries, req, avoid, rand);

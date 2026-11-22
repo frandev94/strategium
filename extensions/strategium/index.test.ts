@@ -8176,8 +8176,8 @@ describe("service record (#134)", () => {
 		});
 
 		test("only a command that starts with gh pr merge or glab mr merge, after cd steps, is a merge", async () => {
-			const yes = ["gh pr merge 7 --merge --delete-branch", "glab mr merge 3 --yes", "cd /repo && gh pr merge 7", "cd a && cd b && glab mr merge 3", "gh pr merge 7 && echo done"];
-			const no = ["echo gh pr merge 7", "gh pr merge 7 --auto", "gh pr merge --auto 7", "gh pr merge --help", "gh pr merge -h", "gh pr merge 7 | tail", "gh pr merge 7 || true", "gh pr merge 7; echo hi", "git log && gh pr merge 7", "gh pr view 7 # gh pr merge"];
+			const yes = ["gh pr merge 7 --merge --delete-branch", "glab mr merge 3 --yes", "cd /repo && gh pr merge 7", "cd a && cd b && glab mr merge 3", "gh pr merge 7 && echo done", "gh pr merge 7 2>&1", "gh pr merge 7 >&2"];
+			const no = ["echo gh pr merge 7", "gh pr merge 7 --auto", "gh pr merge --auto 7", "gh pr merge --help", "gh pr merge -h", "gh pr merge 7 | tail", "gh pr merge 7 || true", "gh pr merge 7; echo hi", "git log && gh pr merge 7", "gh pr view 7 # gh pr merge", "gh pr merge 7 &", "gh pr merge 7 & echo hi"];
 			for (const [list, want] of [[yes, true], [no, undefined]] as const) {
 				for (const command of list) {
 					const s = await open();
@@ -8215,6 +8215,27 @@ describe("service record (#134)", () => {
 				expect(runFile(t, `sess-${status}`).ended, status).toBeUndefined();
 				expect(await t.call({ action: "end" }), status).not.toContain("ROSTER");
 			}
+		});
+
+		test("a blocking builder that returns cancelled leaves its squad without an outcome", async () => {
+			const s = await open();
+			const name = await nameFor(s, "battle-brother", "S1");
+			spawn(s, "battle-brother", name);
+			edit(s, run => {
+				run.ended = { S1: "ok" };
+			});
+			returned(s, "battle-brother", name, "S1", "cancelled");
+			expect(runFile(s).ended).toBeUndefined();
+		});
+
+		test("a run file whose ended is not an object is read as no outcomes", async () => {
+			const s = await open();
+			await build(s, "S1");
+			edit(s, run => {
+				run.ended = "ok";
+			});
+			expect(await s.call({ action: "end" })).not.toContain("ROSTER");
+			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
 		});
 
 		test("a squad that failed and then was aborted has no outcome either", async () => {
@@ -8261,6 +8282,39 @@ describe("service record (#134)", () => {
 			const s = await open({ brothers: { Alpha: svc({ passed: 9 }), Bravo: svc({ passed: 5, falls: 1 }), Cyril: svc({ passed: 5 }) } });
 			expect(s.slices).toContain("NAMES S1=BrotherAlpha, S2=BrotherCyril");
 			expect(await nameFor(s, "battle-brother", "S3")).toBe("BrotherBravo");
+		});
+
+		test("a ranked free brother comes back in the next run of the same omp session, with an epithet (CB1)", async () => {
+			const s = await open({ brothers: { Alpha: svc({ passed: 9 }), Bravo: svc({ passed: 5 }), Cyril: svc({ passed: 1 }) } });
+			const bySquad = () => Object.fromEntries((runFile(s).names ?? []).filter(n => n.squad).map(n => [n.squad, n.surname]));
+			await nameFor(s, "battle-brother", "S3");
+			expect(bySquad()).toEqual({ S1: "Alpha", S2: "Bravo", S3: "Cyril" });
+			await s.call({ action: "end" });
+			await s.call({ action: "begin", key: "K-2" });
+			await s.call({ action: "repo", repo: s.dir });
+			const second = await s.call({ action: "slices", slices: SQ });
+			const third = await nameFor(s, "battle-brother", "S3");
+			expect(bySquad()).toEqual({ S1: "Alpha", S2: "Bravo", S3: "Cyril" });
+			expect(second).toMatch(/S1=BrotherAlpha[A-Z]/);
+			expect(second).toMatch(/S2=BrotherBravo[A-Z]/);
+			expect(third).toMatch(/^BrotherCyril[A-Z]/);
+		});
+
+		test("a run file holding JSON null or a non-object is skipped when other runs are scanned", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "st-roster-junk-"));
+			dirs.push(dir);
+			mkdirSync(join(dir, "runs"));
+			for (const [f, body] of [["null.json", "null"], ["str.json", '"x"'], ["num.json", "7"]]) writeFileSync(join(dir, "runs", f), body);
+			const s = await open({ dir, brothers: { Alpha: svc({ passed: 9 }) } });
+			expect(s.slices).toContain("S1=BrotherAlpha");
+		});
+
+		test("a quiet run file does not free a brother while the heartbeat is fresh", async () => {
+			const a = await open({ brothers: { Alpha: svc({ passed: 9 }) } });
+			const old = new Date(Date.now() - 25 * 3_600_000);
+			utimesSync(join(a.dir, "runs", "sess-0001.json"), old, old);
+			writeFileSync(join(a.dir, "runs", "sess-0001.beat"), new Date().toISOString());
+			expect((await open({ dir: a.dir, sid: "sess-0002", key: "K-2" })).slices).not.toContain("Alpha");
 		});
 
 		test("with the record used up, a squad recruits a name nobody has recorded", async () => {
@@ -8392,6 +8446,22 @@ describe("service record (#134)", () => {
 			expect(await s.call({ action: "end" })).toEndWith("ROSTER 1 squad(s) recorded");
 			expect(roster(s.dir)[surname(name)].squads).toBe(1);
 		}, 15000);
+	});
+
+	describe("names off, context", () => {
+		test("a builder job that completes records no outcome", async () => {
+			delete process.env.STRATEGIUM_NAMES;
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			await s.call({ action: "slices", slices: SQ });
+			s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: "S1" }, s.ctx);
+			const event = { toolName: "task", input: { tasks: [{ agent: "battle-brother", name: "S1", task: "build squad S1" }] }, details: { progress: [{ index: 0, id: "S1", status: "running" }] }, isError: false };
+			for (const h of s.handlers.tool_result) h(event, s.ctx);
+			const job = { type: "context", messages: [{ role: "custom", details: { jobs: [{ jobId: "j1", type: "task", status: "completed", label: "S1" }] } }] };
+			for (const h of s.handlers.context) h(job, s.ctx);
+			expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")).ended).toBeUndefined();
+		});
 	});
 
 	describe("names off", () => {

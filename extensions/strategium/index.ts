@@ -409,7 +409,7 @@ function allRuns(): Run[] {
 				return undefined;
 			}
 		})
-		.filter((r): r is Run => r !== undefined);
+		.filter((r): r is Run => typeof r === "object" && r !== null);
 }
 
 // Session ids share a time prefix, so the tail tells sessions apart.
@@ -858,7 +858,7 @@ const outcomeOf = (status: unknown): "ok" | "failed" | undefined => (status === 
 function isMerge(command: string): boolean {
 	const segs = command.split("&&").map(s => s.trim());
 	const seg = segs.find(s => !/^cd(\s|$)/.test(s)) ?? "";
-	return /^(?:gh\s+pr|glab\s+mr)\s+merge(?:\s|$)/.test(seg) && !/\s--auto\b|\s(?:--help|-h)(?:\s|$)|[|;\n]/.test(command);
+	return /^(?:gh\s+pr|glab\s+mr)\s+merge(?:\s|$)/.test(seg) && !/\s--auto\b|\s(?:--help|-h)(?:\s|$)|[|;\n]|(?<![&>])&(?![&>])/.test(command);
 }
 
 /** Fold the run's outcomes into the shared roster at `end`: the line to print, undefined with nothing to record. A roster failure never stops the end. */
@@ -2579,7 +2579,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			launched.push(slice);
 			// A blocking call returns once its agents are done: those never count as running.
 			if (p.status === "pending" || p.status === "running") agents[p.id] = slice;
-			else if (["completed", "failed", "aborted"].includes(String(p.status))) done.push([slice.id, outcomeOf(p.status)]);
+			else if (["completed", "failed", "aborted", "cancelled"].includes(String(p.status))) done.push([slice.id, outcomeOf(p.status)]);
 		}
 		let next: Run = run;
 		if (launched.length) next = settle(next, agents, launched);
