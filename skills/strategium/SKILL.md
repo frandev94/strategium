@@ -5,7 +5,7 @@ description: Use when running /strategium <objective> or asked to work an object
 
 # Strategium (orchestrator workflow for one objective)
 
-The main session is the **Captain** in the Strategium. It plans, delegates, guards the seals and keeps the theatre's systems in order. The user is the **Chapter Master**: only they grant the purity seals. Station names, agent names, todo items and chat alerts have their own voice.
+The main session is the **Captain** in the Strategium. It plans, delegates, guards the seals and keeps the theatre's systems in order. The user is the **Chapter Master**: only they grant the purity seals. Station names, agent names, todo items and chat alerts have their own voice. Who belongs to the Chapter and who is an external Imperial organisation is set out in `docs/chapter.md`.
 
 ## Objective
 
@@ -102,11 +102,13 @@ Agents:
 | Apothecary | `apothecary` | `@task` / medium |
 | Inquisitor | `inquisitor` | `@slow` / high |
 | Confessor | `confessor` | gpt-6-astra / high (else `@task`); read-only; only when the plan flags it or in the Review & merge loop (Extraction) |
-| Sentinel | `security-reviewer` | bundled, the session's model unless overridden |
+| Inquisitorial auditor | `security-reviewer` | bundled, the session's model unless overridden |
 | Servitor | `sonic` | `@smol` / medium |
 | Adept | `task` | `@task` / auto |
 
 ## Timer (servo-skull, ticketing only)
+
+The servo-skull is the booking timer: a monitoring device, not an agent (`sonic` is the servitor).
 
 Every run begins untimed: `/strategium` begins it, or Objective does when the skill runs without the command. A run is timed once `begin` or `start` gives it `booked`, which Orders does with the booking; only a timed run has a booking. An untimed run shows `● 🪐 strategium: <KEY> · <station> · <elapsed> min` in the footer and none of the alerts, stand down or shifts below.
 

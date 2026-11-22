@@ -1,6 +1,6 @@
 ---
 name: veteran
-description: Strategium escalation implementer. Same job as battle-brother at high effort; used only when a squad failed twice at medium. Never commits.
+description: Strategium escalation implementer. Same job as battle-brother at high effort; used only when a squad failed twice at medium. Never commits. Lore identity: Veteran Battle-Brother of a battle company; veteran status grants no other title. See docs/chapter.md.
 spawns: scout
 model: ["@task"]
 thinkingLevel: high

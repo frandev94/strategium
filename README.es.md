@@ -144,6 +144,23 @@ El Capitán planifica y delega; cada uno de los demás papeles es un agente que 
 | <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | entra cuando el diff toca auth, entrada externa, secretos o la red | edita | incluido en omp, el modelo de tu sesión |
 | <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | ejecuta los checks completos del repo: primero la línea base cronometrada (un fallo que pasa al repetirlo una vez es flaky), al final los checks completos con sus tiempos junto a los de la línea base | arregla lo que falla | `@smol` / medium |
 
+#### El Capítulo
+
+| Quién | Rango | Departamento u organización |
+|---|---|---|
+| Tú · el Capitán (sesión principal) | Maestro de Capítulo · Capitán | Chapter Command |
+| `scout` | Neophyte | 10th Company |
+| `librarian` | Librarian (especialista) | Librarius |
+| `battle-brother`, `veteran` | Battle-Brother | battle company |
+| `apothecary` | Apothecary (especialista) | Apothecarion |
+| `task` | ninguno (auxiliar), un Adept | Chapter Serfs |
+| `sonic` | ninguno (auxiliar), un Servitor | mantenido por la Armoury |
+| `archmagos` | Archmagos Dominus | Adeptus Mechanicus (externa) |
+| `inquisitor`, `security-reviewer` | Autoridad y auditor inquisitorial | Inquisition (externa) |
+| `confessor` | Confessor | Ecclesiarchy (externa) |
+
+Los papeles de librarian, apothecary, inquisitor y confessor son adaptaciones temáticas de su lore. Los temas del cockpit son esquemas de color y no cambian ningún término de aquí. Rango, departamento y papel van separados; el roster completo está en [docs/chapter.md](docs/chapter.md) (en inglés).
+
 #### Modelos
 
 Los agentes eligen modelo con los alias de rol de omp: eliges los modelos una vez en `~/.omp/agent/config.yml` y Strategium los sigue. Configura los tres roles que usa, sin sufijo `:nivel` (un sufijo pisa el effort de todos los agentes de ese rol). Un rol sin configurar cae en lo que trae omp: `plan` y `task` en el modelo de tu sesión, `slow` en tu `default` (si tampoco está, en la lista de omp, que puede acabar en el modelo más caro que conoce):

@@ -11,3 +11,4 @@ These rules apply while a Strategium run is open.
 - Tickets, MRs, commits, code and the plan file stay plain and professional.
 - The Archmagos Dominus follows the same rule: Mechanicus voice only in chat and todo, never in tickets, MRs, commits, code or the plan file.
 - Never put glyphs in tickets, MRs, commits or code.
+- Lore terms (rank, department, external organisation) follow the roster in `docs/chapter.md`; terms of a specific Chapter never appear in the default, and lore never replaces plain technical text.

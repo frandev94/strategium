@@ -144,6 +144,23 @@ The Captain plans and delegates; every other role is an agent it starts. Each on
 | <img src="docs/icons/shield-search.svg" width="18" alt=""> `security-reviewer` | Inquisition | joins when the diff touches auth, external input, secrets or the network | edits | bundled, your session's model |
 | <img src="docs/icons/skull.svg" width="18" alt=""> `sonic` | Auspex, Inquisition | runs the repo's full checks: the timed baseline first (a failure that passes on one rerun is flaky), the full checks at the end with their times next to the baseline's | fixes what fails | `@smol` / medium |
 
+#### The Chapter
+
+| Who | Rank | Department or organisation |
+|---|---|---|
+| You · the Captain (main session) | Chapter Master · Captain | Chapter Command |
+| `scout` | Neophyte | 10th Company |
+| `librarian` | Librarian (specialist) | Librarius |
+| `battle-brother`, `veteran` | Battle-Brother | battle company |
+| `apothecary` | Apothecary (specialist) | Apothecarion |
+| `task` | none (auxiliary), an Adept | Chapter Serfs |
+| `sonic` | none (auxiliary), a Servitor | maintained by the Armoury |
+| `archmagos` | Archmagos Dominus | Adeptus Mechanicus (external) |
+| `inquisitor`, `security-reviewer` | Inquisitorial authority and auditor | Inquisition (external) |
+| `confessor` | Confessor | Ecclesiarchy (external) |
+
+The librarian, apothecary, inquisitor and confessor roles are thematic adaptations of their lore. The cockpit themes are colour schemes and change no term here. Rank, department and role are kept apart; the full roster is in [docs/chapter.md](docs/chapter.md).
+
 #### Models
 
 Agents pick their model through omp's role aliases, so you choose the models once in `~/.omp/agent/config.yml` and Strategium follows. Set the three roles it uses, without a `:level` suffix (a suffix overrides the effort of every agent on that role). A role you leave unset falls back to omp's built-ins: `plan` and `task` to your session's model, `slow` to your `default` (with neither set, to omp's slow list, which can mean the costliest model omp knows):
