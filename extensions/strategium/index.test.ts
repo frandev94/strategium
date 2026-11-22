@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test, vi } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { keyOf, parseTiers, whereFrom } from "./index";
@@ -5362,6 +5362,146 @@ describe("cockpit", () => {
 				rmSync(join(s.dir, "runs"), { recursive: true, force: true });
 				expect(openDetail(c, "back · q close")).toBe(true);
 				c.handleInput!("q");
+			});
+
+			describe("transcript", () => {
+				const msg = (role: string, content: unknown, extra: object = {}) => JSON.stringify({ type: "message", message: { role, content, ...extra } });
+				const say = (text: string) => msg("assistant", [{ type: "text", text }]);
+				// The session file omp would report; a child's files sit in the dir named like it.
+				const session = (s: S) => {
+					const dir = join(s.dir, "sessions", "main");
+					mkdirSync(dir, { recursive: true });
+					(s.ctx.sessionManager as { getSessionFile?: () => string }).getSessionFile = () => join(s.dir, "sessions", "main.jsonl");
+					return dir;
+				};
+				// Tab to the first line, ↓ to "squad a forging", Enter for its detail, Enter again for its newest agent's transcript.
+				const open = (c: { render(w: number): string[]; handleInput?(d: string): void }) => {
+					for (const k of ["\t", "\x1b[B", "\r"]) c.handleInput!(k);
+					expect(show(c)).toContain("enter transcript");
+					c.handleInput!("\r");
+				};
+				const ended = (s: S) => s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [brother("A")] }, details: { progress: [{ index: 0, id: "A", status: "completed" }] }, isError: false }, s.ctx));
+
+				test("Enter on a squad's detail opens its newest agent's transcript from the session's child file; Back returns to the detail", async () => {
+					const { s, ui } = await squad();
+					writeFileSync(join(session(s), "A.jsonl"), [msg("user", [{ type: "text", text: "Build squad a" }]), say("EDITING-NOW"), msg("assistant", [{ type: "thinking", thinking: "SECRET-THINKING" }, { type: "toolCall", name: "read", intent: "Reading a.ts", arguments: { path: "a.ts" } }]), msg("toolResult", [{ type: "text", text: "line one\nline two" }], { toolName: "read", isError: false })].join("\n") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					const t = show(c);
+					expect(t).toContain("TRANSCRIPT A");
+					expect(t).toContain("user: Build squad a");
+					expect(t).toContain("EDITING-NOW");
+					expect(t).toContain("→ read Reading a.ts");
+					expect(t).toContain("← read ok: line one");
+					expect(t).not.toContain("SECRET-THINKING");
+					c.handleInput!("\x7f");
+					expect(show(c)).toContain("back · q close");
+					expect(show(c)).not.toContain("TRANSCRIPT");
+					c.handleInput!("q");
+				});
+
+				test("a missing file, a directory in its place and an unsafe agent id each give one reason row and read nothing outside the session dir", async () => {
+					const { s, ui } = await squad();
+					const dir = session(s);
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					expect(show(c)).toContain("no transcript yet");
+					c.handleInput!("\x7f");
+					mkdirSync(join(dir, "A.jsonl"));
+					c.handleInput!("\r");
+					expect(show(c)).toContain("no transcript yet");
+					c.handleInput!("q");
+					// An id that climbs out of the dir: its file exists outside, and is not shown.
+					writeFileSync(join(s.dir, "sessions", "evil.jsonl"), say("OUTSIDE") + "\n");
+					taskResult(s, "../evil");
+					await s.sub("cockpit");
+					const e = ui.opened.at(-1)!.component;
+					open(e);
+					expect(show(e)).toContain("TRANSCRIPT ../evil");
+					expect(show(e)).not.toContain("OUTSIDE");
+					e.handleInput!("q");
+				});
+
+				test("only the last 512 KiB of the file are read: the partial first line is dropped and the head is not shown", async () => {
+					const { s, ui } = await squad();
+					const pad = "x".repeat(900);
+					const lines = [say("HEAD-MARK")];
+					for (let i = 0; i < 700; i++) lines.push(say(`${i} ${pad}`));
+					lines.push(say("TAIL-MARK"));
+					writeFileSync(join(session(s), "A.jsonl"), lines.join("\n") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					const t = show(c);
+					expect(t).toContain("TAIL-MARK");
+					expect(t).not.toContain("HEAD-MARK");
+					c.handleInput!("q");
+				});
+
+				test("a finished agent shows its final answer from the .md, an active one none", async () => {
+					const { s, ui } = await squad();
+					const dir = session(s);
+					writeFileSync(join(dir, "A.jsonl"), say("WORKING") + "\n");
+					writeFileSync(join(dir, "A.md"), "FINAL-ANSWER-TEXT\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					expect(show(c)).not.toContain("final answer:");
+					c.handleInput!("q");
+					ended(s);
+					await s.sub("cockpit");
+					const d = ui.opened.at(-1)!.component;
+					open(d);
+					expect(show(d)).toContain("final answer:");
+					expect(show(d)).toContain("FINAL-ANSWER-TEXT");
+					d.handleInput!("q");
+				});
+
+				test("scrolling inside the open transcript reads no file, and the 500 ms redraw re-reads it only when its size or mtime changed", async () => {
+					vi.useFakeTimers();
+					const { s, ui } = await squad();
+					const file = join(session(s), "A.jsonl");
+					writeFileSync(file, say("ROW-AAAA") + "\n");
+					utimesSync(file, 1e9, 1e9); // a whole-second mtime, so it can be put back exactly
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					expect(show(c)).toContain("ROW-AAAA");
+					// The one keypress that reads a file was Enter: scrolling still works with the file gone.
+					rmSync(file);
+					c.handleInput!("\x1b[A");
+					c.handleInput!("\x1b[B");
+					expect(show(c)).toContain("ROW-AAAA");
+					// Same size, same mtime, other text: not re-read.
+					writeFileSync(file, say("ROW-BBBB") + "\n");
+					utimesSync(file, 1e9, 1e9);
+					vi.advanceTimersByTime(2000);
+					expect(show(c)).toContain("ROW-AAAA");
+					expect(show(c)).not.toContain("ROW-BBBB");
+					// Appended: re-read within a second.
+					appendFileSync(file, say("ROW-CCCC") + "\n");
+					vi.advanceTimersByTime(2000);
+					expect(show(c)).toContain("ROW-BBBB");
+					expect(show(c)).toContain("ROW-CCCC");
+					c.handleInput!("q");
+				});
+
+				test("with no transcript open the redraw never reads the child's file", async () => {
+					vi.useFakeTimers();
+					const { s, ui } = await squad();
+					const dir = session(s);
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					for (const k of ["\t", "\x1b[B", "\r"]) c.handleInput!(k);
+					writeFileSync(join(dir, "A.jsonl"), say("LATE-ROW") + "\n");
+					vi.advanceTimersByTime(2000);
+					expect(show(c)).not.toContain("LATE-ROW");
+					c.handleInput!("\r");
+					expect(show(c)).toContain("LATE-ROW");
+					c.handleInput!("q");
+				});
 			});
 
 			test("the end of an agent is stored as `ended`, and a loaded state keeps it only as a number", async () => {

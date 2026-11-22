@@ -12,7 +12,7 @@ export type Live = { since: number; at: number; tool?: string; intent?: string; 
 export type Depth = "truecolor" | "256";
 type Ansi = `\x1b[${string}`; // an escape sequence, not a hex: keeps a Theme out of renderCockpit
 export type Palette = Record<Tone, Ansi> & { bg?: Ansi }; // a foreground sequence per tone, bg a background one
-export type Nav = { cursor?: { id: string; at: number }; shown?: { phase: number; from: number }; tops?: Record<string, number>; detail?: { id: string } }; // cursor: the selected line by identity and its position; shown: a browsed station and the active one it was taken at; tops: the first line a windowed box shows, by box title, and the first row of an open detail under `detail` (renderCockpit writes it, as only it knows the room); detail: the line whose detail is open, by identity. In memory only (see cockpitView)
+export type Nav = { cursor?: { id: string; at: number }; shown?: { phase: number; from: number }; tops?: Record<string, number>; detail?: { id: string; transcript?: string } }; // cursor: the selected line by identity and its position; shown: a browsed station and the active one it was taken at; tops: the first line a windowed box shows, by box title, and the first row of an open detail under `detail`, and under `transcript` the rows an open transcript is scrolled up from its bottom (renderCockpit writes them, as only it knows the room); detail: the line whose detail is open, by identity, and `transcript` the agent id whose transcript replaces it. In memory only (see cockpitView)
 type SliceIn = { id: string; parallel?: boolean; files?: string[]; tier?: string };
 export type ViewInput = {
 	nav?: Nav;
@@ -31,6 +31,7 @@ export type ViewInput = {
 	status?: "working" | "awaiting"; // what the main agent is doing: a turn runs, or the prompt is free for the user's orders
 	live?: Map<string, Live>; // agent id → what that agent last wrote about itself; text in it is untrusted
 	now?: number; // ms; the elapsed time of a live row counts to it. No now, no live rows
+	transcript?: { id: string; lines: string[] }; // the rows index.ts read for that agent's transcript (transcriptLines, or one reason line); shown while nav.detail.transcript is that id. Untrusted: the view cleans and caps them again
 };
 export type View = ReturnType<typeof cockpitView>;
 
@@ -118,6 +119,63 @@ export function palette(depth: Depth, theme: Theme = THEMES[DEFAULT_THEME]): Pal
 
 /** Text from the model or a file, made safe to print: control characters (ESC, TAB, CR, LF, DEL, C1), bidi overrides and line/paragraph separators become spaces. */
 export const clean = (s: string) => s.replace(/[\p{Cc}\u202a-\u202e\u2066-\u2069\u2028\u2029\u200e\u200f\u061c]/gu, " ");
+
+const ROW_CAP = 400; // chars a transcript row keeps
+const TEXT_LINES = 40; // lines a text block keeps
+const KEEP_ROWS = 1000; // newest rows a transcript keeps
+/** One transcript row as printable text: ANSI stripped, controls to spaces, at most ROW_CAP chars (a cut ends in `…`, never inside a surrogate pair). */
+const rowOf = (s: string) => {
+	const t = clean(Bun.stripANSI(s)).trimEnd();
+	if (t.length <= ROW_CAP) return t;
+	const end = (t.charCodeAt(ROW_CAP - 2) & 0xfc00) === 0xd800 ? ROW_CAP - 2 : ROW_CAP - 1;
+	return `${t.slice(0, end)}…`;
+};
+/** The lines of a text, at most TEXT_LINES, then `… k more lines`. */
+const blockOf = (text: string): string[] => {
+	const ls = Bun.stripANSI(text).trimEnd().split("\n");
+	return [...ls.slice(0, TEXT_LINES).map(rowOf), ...(ls.length > TEXT_LINES ? [`… ${ls.length - TEXT_LINES} more lines`] : [])];
+};
+const textOf = (content: unknown): string =>
+	typeof content === "string" ? content : Array.isArray(content) ? content.map(b => (obj(b).type === "text" && typeof obj(b).text === "string" ? (obj(b).text as string) : "")).filter(Boolean).join("\n") : "";
+
+/** The rows of a subagent's transcript, from the tail of its `.jsonl` (`cut`: bytes before it were skipped, so its first line is partial) and, once it finished, its final answer (`final`: the `.md` text; null: it has none; undefined: not finished). Rows come from `message` entries only: `user: …`, assistant text lines, `→ tool intent`, `← tool ok|error: first line`; thinking and every other entry are skipped. Untrusted input, never throws: each line is parsed in try/catch, every row is cleaned and capped (ROW_CAP chars, TEXT_LINES per text block, the newest KEEP_ROWS rows, plus a leading `… earlier entries not shown` when anything is dropped). Nothing at all gives `no messages yet`. Linear in the input. */
+export function transcriptLines(tail: string, cut: boolean, final?: string | null): string[] {
+	const out: string[] = [];
+	const lines = tail.split("\n");
+	for (const line of cut ? lines.slice(1) : lines) {
+		if (line.charCodeAt(0) !== 123) continue; // every entry is a JSON object
+		let entry: unknown;
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			continue; // malformed, truncated or too deep
+		}
+		const e = obj(entry);
+		const m = obj(e.message);
+		if (e.type !== "message") continue;
+		if (m.role === "user") {
+			const [first, ...rest] = blockOf(textOf(m.content));
+			if (first !== undefined) out.push(rowOf(`user: ${first}`), ...rest);
+		} else if (m.role === "toolResult") {
+			const first = rowOf(textOf(m.content).split("\n", 1)[0]);
+			out.push(`← ${oneLine(m.toolName) || "?"} ${m.isError === true ? "error" : "ok"}: ${first}`.trimEnd().slice(0, ROW_CAP));
+		} else if (m.role === "assistant") {
+			for (const b of Array.isArray(m.content) ? m.content.map(obj) : typeof m.content === "string" ? [{ type: "text", text: m.content }] : []) {
+				if (b.type === "text" && typeof b.text === "string") {
+					if (b.text.trim()) out.push(...blockOf(b.text));
+				} else if (b.type === "toolCall") {
+					const args = obj(b.arguments);
+					const intent = [b.intent, args.i, ...Object.values(args)].find((v): v is string => typeof v === "string" && !!oneLine(v));
+					out.push(rowOf(`→ ${oneLine(b.name) || "?"} ${oneLine(intent)}`));
+				}
+			}
+		}
+	}
+	const finale = final === undefined ? [] : final === null ? ["no final answer file"] : ["final answer:", ...blockOf(final)];
+	if (!out.length && !finale.length) return ["no messages yet"];
+	const all = [...out, ...finale];
+	return all.length > KEEP_ROWS || cut ? ["… earlier entries not shown", ...all.slice(-KEEP_ROWS)] : all;
+}
 
 export function sealsFrom(phases: Phase[]): Seal[] {
 	const out: Seal[] = [];
@@ -271,6 +329,14 @@ const MARK: Record<Kind, string> = { active: "▶", done: "✓", failed: "✗", 
 const RANK: Record<Kind, number> = { active: 0, failed: 1, idle: 2, done: 3 };
 const HIDE: Kind[] = ["done", "idle", "failed", "active"]; // the order a +N more line names what it hides
 
+/** The agent id Enter opens a transcript for from the detail of line `id`: the agent itself, or a squad's newest (last deployed) agent. None for other lines, or an agent that is not deployed. */
+function targetOf(id: string, deployed: ViewInput["deployed"]): string | undefined {
+	const rest = id.slice(id.indexOf(":") + 1);
+	if (id.startsWith("agent:")) return deployed?.has(rest) ? rest : undefined;
+	if (id.startsWith("squad:")) return [...(deployed ?? [])].findLast(([, d]) => d.squad === rest)?.[0];
+	return undefined;
+}
+
 export function cockpitView(input: ViewInput) {
 	const ic = icons(!!input.glyphs);
 	const phases = input.phases ?? [];
@@ -371,8 +437,11 @@ export function cockpitView(input: ViewInput) {
 	const to = was && items.length ? (found >= 0 ? found : Math.min(Math.max(0, Math.trunc(was.at) || 0), items.length - 1)) : -1;
 	const want = input.nav?.detail?.id;
 	const detailId = want !== undefined && items.some(i => i.id === want) ? want : undefined;
-	const tops = Object.fromEntries(Object.entries(input.nav?.tops ?? {}).filter(([k, n]) => (k === "seal" ? !!panel : k === "detail" ? detailId !== undefined : boxes.some(b => b.title === k)) && Number.isInteger(n) && n > 0));
-	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }), ...(Object.keys(tops).length ? { tops } : {}), ...(detailId === undefined ? {} : { detail: { id: detailId } }) };
+	// The transcript stays only while it is the one the open detail would open: that agent is still deployed, and still the squad's newest.
+	const target = detailId === undefined ? undefined : targetOf(detailId, input.deployed);
+	const transcript = target !== undefined && input.nav?.detail?.transcript === target ? target : undefined;
+	const tops = Object.fromEntries(Object.entries(input.nav?.tops ?? {}).filter(([k, n]) => (k === "seal" ? !!panel : k === "detail" ? detailId !== undefined : k === "transcript" ? transcript !== undefined : boxes.some(b => b.title === k)) && Number.isInteger(n) && n > 0));
+	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }), ...(Object.keys(tops).length ? { tops } : {}), ...(detailId === undefined ? {} : { detail: { id: detailId, ...(transcript === undefined ? {} : { transcript }) } }) };
 
 	// The second brother of a squad is its penance (the skill names it after the squad).
 	const roleOf = (id: string, d: Deployed) => (d.role === "battle-brother" && d.squad && [...(input.deployed ?? [])].find(([, x]) => x.role === d.role && x.squad === d.squad)?.[0] !== id ? "penance" : d.role);
@@ -406,7 +475,9 @@ export function cockpitView(input: ViewInput) {
 		const t = tasks.find(x => x.id === id);
 		return t && phase && { title: `${clean(t.role).toUpperCase()} TASK`, lines: [clean(t.text), `status: ${clean(t.status)}`, `station: ${clean(phase.name)}`] };
 	};
-	const detail = detailId === undefined ? undefined : detailOf(detailId);
+	const shownDetail = detailId === undefined ? undefined : detailOf(detailId);
+	const rows = transcript !== undefined && input.transcript?.id === transcript ? input.transcript.lines.slice(-KEEP_ROWS - 1).map(rowOf) : [];
+	const detail: { title: string; lines: string[]; target?: string; transcript?: true } | undefined = transcript !== undefined ? { title: `TRANSCRIPT ${oneLine(transcript)}`, lines: rows, transcript: true } : shownDetail && { ...shownDetail, ...(target === undefined ? {} : { target }) };
 
 	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav, detail };
 }
@@ -414,7 +485,7 @@ export function cockpitView(input: ViewInput) {
 /** A cursor move or a station browse, as `navigate` takes them. */
 export type NavKey = "up" | "down" | "left" | "right" | "home" | "tab" | "enter" | "back";
 
-/** The next Nav after `key`, from the view's own (normalized) nav. Pure: ↑/↓ one item, clamped; Tab the first item of the next group, wrapping; ←/→ the shown station ∓1, clamped, landing on the active one clears `shown`; Home clears `shown`. The first ↑, ↓ or Tab selects the first item. Enter opens the detail of the selected line (one level: none with no cursor or inside a detail), Back closes it with the cursor untouched; inside a detail ↑/↓ scroll it (never below 0; renderCockpit clamps the bottom) and the other keys do nothing. */
+/** The next Nav after `key`, from the view's own (normalized) nav. Pure: ↑/↓ one item, clamped; Tab the first item of the next group, wrapping; ←/→ the shown station ∓1, clamped, landing on the active one clears `shown`; Home clears `shown`. The first ↑, ↓ or Tab selects the first item. Enter opens the detail of the selected line (none with no cursor), and in a detail that has a transcript target (an agent, or a squad with agents) opens that transcript in place of the detail; Back closes the transcript, then the detail, with the cursor and the detail's scroll untouched; inside a detail ↑/↓ scroll it (never below 0; renderCockpit clamps the bottom; in a transcript the scroll is the distance from its bottom) and the other keys do nothing. */
 export function navigate(view: View, key: NavKey): Nav {
 	const { items, stations, nav } = view;
 	const from = nav.cursor?.at ?? -1;
@@ -422,12 +493,18 @@ export function navigate(view: View, key: NavKey): Nav {
 	const go = (i: number): Nav => ({ ...nav, ...(items.length ? { cursor: { id: items[i].id, at: i } } : {}) });
 	const { detail: top = 0, ...others } = nav.tops ?? {};
 	const shape = (tops: Record<string, number>, detail?: Nav["detail"]): Nav => ({ ...(nav.cursor ? { cursor: nav.cursor } : {}), ...(nav.shown ? { shown: nav.shown } : {}), ...(Object.keys(tops).length ? { tops } : {}), ...(detail ? { detail } : {}) });
-	if (key === "enter") return nav.cursor && !nav.detail ? shape(others, { id: nav.cursor.id }) : nav;
-	if (key === "back") return nav.detail ? shape(others) : nav;
+	const withTop = (k: string, n: number) => {
+		const { [k]: _, ...rest } = nav.tops ?? {};
+		return n > 0 ? { ...rest, [k]: n } : rest;
+	};
+	const open = nav.detail?.transcript !== undefined; // a transcript replaces the detail
+	if (key === "enter") return nav.cursor && !nav.detail ? shape(others, { id: nav.cursor.id }) : nav.detail && !open && view.detail?.target !== undefined ? shape(nav.tops ?? {}, { id: nav.detail.id, transcript: view.detail.target }) : nav;
+	if (key === "back") return nav.detail ? (open ? shape(withTop("transcript", 0), { id: nav.detail.id }) : shape(others)) : nav;
 	if (nav.detail) {
 		if (key !== "up" && key !== "down") return nav;
-		const to = Math.max(0, top + (key === "up" ? -1 : 1));
-		return shape(to > 0 ? { ...others, detail: to } : others, nav.detail);
+		// the transcript counts from its bottom: up moves away from it, down back
+		if (open) return shape(withTop("transcript", Math.max(0, (nav.tops?.transcript ?? 0) + (key === "up" ? 1 : -1))), nav.detail);
+		return shape(withTop("detail", Math.max(0, top + (key === "up" ? -1 : 1))), nav.detail);
 	}
 	switch (key) {
 		case "up":
@@ -511,12 +588,15 @@ export function wrap(text: string, width: number): string[] {
 	return rows;
 }
 
-/** The rows [from, to) of an `n`-row detail that fit under `bodyRows` rows of header and the footer, from the scroll `win` holds clamped to the bottom (written back), and the ` · a–b/n` suffix the title takes when rows are hidden. No height: every row. */
-function detailWindow(n: number, bodyRows: number, height: number | undefined, win: Win): { from: number; to: number; suffix: string } {
+/** The rows [from, to) of an `n`-row detail that fit under `bodyRows` rows of header and the footer, from the scroll `win` holds clamped to the bottom (written back; `bottom`: a transcript, anchored to its last row instead of its first), and the ` · a–b/n` suffix the title takes when rows are hidden. No height: every row. */
+function detailWindow(n: number, bodyRows: number, height: number | undefined, win: Win, bottom = false): { from: number; to: number; suffix: string } {
 	if (height === undefined) return { from: 0, to: n, suffix: "" };
 	const room = Math.max(0, height - bodyRows - 1);
-	const from = Math.min(Math.max(0, win.get("detail")), Math.max(0, n - room));
-	win.set("detail", from);
+	// bottom: a transcript's scroll is the distance of its window's end from the last row (0 follows the newest)
+	const up = Math.min(Math.max(0, win.get("transcript")), Math.max(0, n - room));
+	const from = bottom ? Math.max(0, n - up - room) : Math.min(Math.max(0, win.get("detail")), Math.max(0, n - room));
+	if (bottom) win.set("transcript", up);
+	else win.set("detail", from);
 	const to = Math.min(n, from + room);
 	return { from, to, suffix: n > room && to > from ? ` · ${from + 1}–${to}/${n}` : "" };
 }
@@ -685,8 +765,10 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 		];
 		if (view.detail) {
 			const rows = view.detail.lines.flatMap(l => wrap(l, width - 2));
-			const sc = detailWindow(rows.length, head.length + 1, height, win);
-			return withHeight([...head, paint(pal.gold, fit(view.detail.title, width - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix))], rows.slice(sc.from, sc.to).map(r => `  ${paint(pal.parchment, r)}`), "", paint(pal.iron, "esc back · q close"), height).map(l => fit(l, width));
+			const sc = detailWindow(rows.length, head.length + 1, height, win, view.detail.transcript);
+			const back = "esc back · q close";
+			const foot = view.detail.target !== undefined && width >= Bun.stringWidth(`${back} · enter transcript`) ? `${back} · enter transcript` : back;
+			return withHeight([...head, paint(pal.gold, fit(view.detail.title, width - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix))], rows.slice(sc.from, sc.to).map(r => `  ${paint(pal.parchment, r)}`), "", paint(pal.iron, foot), height).map(l => fit(l, width));
 		}
 		const body = [
 			...head,
@@ -714,9 +796,10 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 
 	if (view.detail) {
 		const rows = view.detail.lines.flatMap(l => wrap(l, inner - 2));
-		const sc = detailWindow(rows.length, head.length + 2, height, win);
+		const sc = detailWindow(rows.length, head.length + 2, height, win, view.detail.transcript);
 		const dt = paint(pal.gold, fit(view.detail.title, inner - 4 - Bun.stringWidth(sc.suffix))) + (sc.suffix && paint(pal.gold, sc.suffix)); // the title is cut, not the scroll position; keeps at least one cell of rule
-		const back = "esc/bksp back · q close · ↑↓ scroll";
+		const base = "esc/bksp back · q close · ↑↓ scroll";
+		const back = view.detail.target !== undefined && inner - 3 - Bun.stringWidth(`${base} · enter transcript`) >= 1 ? `${base} · enter transcript` : base;
 		return withHeight([g(fit(top, width)), ...head, `${g("╟─ ")}${dt}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(dt))}╢`)}`], rows.slice(sc.from, sc.to).map(r => row(` ${paint(pal.parchment, r)}`)), row(""), g(`╚═ ${back} ${"═".repeat(inner - 3 - Bun.stringWidth(back))}╝`), height);
 	}
 	const si = view.chronicle.findIndex(e => e.id === sel);

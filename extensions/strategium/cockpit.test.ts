@@ -3,6 +3,7 @@ import {
 	activePhase,
 	closes,
 	clean,
+	transcriptLines,
 	cockpitView,
 	cockpitKey,
 	detailKey,
@@ -1979,8 +1980,8 @@ describe("wrap", () => {
 	});
 });
 
-describe("never trap: Esc twice closes from any state", () => {
-	test("property: from any nav, at most two Esc presses reach close", () => {
+describe("never trap: Esc closes from any state", () => {
+	test("property: from any nav, at most three Esc presses reach close (transcript, detail, top)", () => {
 		let s = 4242;
 		const rnd = (n: number) => ((s = (Math.imul(s, 1103515245) + 12345) | 0), ((s >>> 8) >>> 0) % n);
 		const keys: NavKey[] = ["up", "down", "left", "right", "home", "tab", "enter", "back"];
@@ -1989,7 +1990,7 @@ describe("never trap: Esc twice closes from any state", () => {
 				let nav: Nav = {};
 				for (let i = 0; i < 25; i++) nav = navigate(cockpitView({ ...base, nav }), keys[rnd(keys.length)]);
 				let closed = false;
-				for (let press2 = 0; press2 < 2 && !closed; press2++) {
+				for (let press2 = 0; press2 < 3 && !closed; press2++) {
 					const k = cockpitKey("\x1b", !!cockpitView({ ...base, nav }).nav.detail);
 					if (k === "close") closed = true;
 					else if (k) nav = navigate(cockpitView({ ...base, nav }), k);
@@ -2018,11 +2019,11 @@ describe("detail rendering", () => {
 					if (width >= 72) {
 						expect(rows.some(l => l.startsWith("╟─ ") && l.includes(title.slice(0, 12)))).toBe(true);
 						expect(rows.some(l => /^╟─ CHRONICLE ─/.test(l))).toBe(false);
-						expect(rows.at(-1)).toMatch(/^╚═ esc\/bksp back · q close · ↑↓ scroll ═+╝$/);
+						expect(rows.at(-1)).toMatch(v.detail!.target === undefined ? /^╚═ esc\/bksp back · q close · ↑↓ scroll ═+╝$/ : /^╚═ esc\/bksp back · q close · ↑↓ scroll · enter transcript ═+╝$/); // an agent or squad detail also hints the transcript
 					} else {
 						expect(rows.some(l => l.includes(title.slice(0, 12)))).toBe(true);
 						expect(rows.includes("CHRONICLE")).toBe(false);
-						expect(rows.at(-1)).toBe("esc back · q close");
+						expect(rows.at(-1)).toBe(v.detail!.target === undefined ? "esc back · q close" : "esc back · q close · enter transcript");
 					}
 				}
 	});
@@ -2176,5 +2177,258 @@ describe("review fixes", () => {
 			expect(wrap("  abcdefghij", 6)).toEqual(["  abcd", "  efgh", "  ij"]);
 			expect(wrap("漢字", 1)).toEqual(["漢", "字"]);
 		});
+	});
+});
+
+// --- transcript view (#125) ---
+const jl = (...o: unknown[]) => o.map(x => JSON.stringify(x)).join("\n");
+const msg = (role: string, content: unknown, extra: Record<string, unknown> = {}) => ({ type: "message", message: { role, content, ...extra } });
+const CTRL = /[\p{Cc}\u202a-\u202e\u2066-\u2069\u2028\u2029\u200e\u200f\u061c]/u;
+const rnd0 = (seed: number) => {
+	let s = seed;
+	return (n: number) => ((s = (Math.imul(s, 1103515245) + 12345) | 0), ((s >>> 8) >>> 0) % n);
+};
+
+describe("transcriptLines", () => {
+	test("maps every row kind of a message in file order; thinking and other entries are skipped", () => {
+		const tail = jl(
+			{ type: "session_init", systemPrompt: "SECRET-PROMPT" },
+			msg("user", "do it"),
+			msg("assistant", [
+				{ type: "thinking", thinking: "SECRET-THINKING" },
+				{ type: "text", text: "hello\nworld" },
+				{ type: "toolCall", name: "read", intent: "scan files", arguments: { path: "a", i: "ignored" } },
+				{ type: "toolCall", name: "bash", arguments: { n: 3, i: "list dir", cmd: "ls" } },
+				{ type: "toolCall", name: "find", arguments: { n: 3, pat: "*.ts" } },
+			]),
+			msg("toolResult", [{ type: "text", text: "first\nsecond" }], { toolName: "read" }),
+			msg("toolResult", [{ type: "text", text: "boom\nmore" }], { toolName: "bash", isError: true }),
+			{ type: "custom", customType: "x", data: 1 },
+			{ type: "model_change", model: "m" },
+		);
+		expect(transcriptLines(tail, false)).toEqual(["user: do it", "hello", "world", "→ read scan files", "→ bash list dir", "→ find *.ts", "← read ok: first", "← bash error: boom"]);
+	});
+	test("a finished agent shows its final answer, or says there is no file; an unfinished one shows neither", () => {
+		const tail = jl(msg("user", "go"));
+		expect(transcriptLines(tail, false, "line a\nline b")).toEqual(["user: go", "final answer:", "line a", "line b"]);
+		expect(transcriptLines(tail, false, null)).toEqual(["user: go", "no final answer file"]);
+		expect(transcriptLines(tail, false)).toEqual(["user: go"]);
+		expect(transcriptLines("", false, "only the answer")).toEqual(["final answer:", "only the answer"]);
+	});
+	test("a cut tail drops its first partial line and leads with the notice", () => {
+		const tail = `ial"}}\n${jl(msg("user", "kept"))}`;
+		expect(transcriptLines(tail, true)).toEqual(["… earlier entries not shown", "user: kept"]);
+		expect(transcriptLines(jl(msg("user", "first"), msg("user", "second")), false)).toEqual(["user: first", "user: second"]);
+		expect(transcriptLines("x".repeat(1000), true)).toEqual(["no messages yet"]);
+	});
+	test("a text block is capped at 40 lines and each row at 400 chars", () => {
+		const rows = transcriptLines(jl(msg("assistant", [{ type: "text", text: Array.from({ length: 50 }, (_, i) => `l${i}`).join("\n") }])), false);
+		expect(rows).toHaveLength(41);
+		expect(rows[39]).toBe("l39");
+		expect(rows[40]).toBe("… 10 more lines");
+		const [long] = transcriptLines(jl(msg("user", "é".repeat(900))), false);
+		expect(long.length).toBeLessThanOrEqual(400);
+		expect(long.endsWith("…")).toBe(true);
+	});
+	test("only the newest 1000 rows stay, behind the notice", () => {
+		const rows = transcriptLines(jl(...Array.from({ length: 1500 }, (_, i) => msg("user", `m${i}`))), false);
+		expect(rows).toHaveLength(1001);
+		expect(rows[0]).toBe("… earlier entries not shown");
+		expect(rows[1]).toBe("user: m500");
+		expect(rows.at(-1)).toBe("user: m1499");
+	});
+	test("no message at all is one reason line", () => {
+		for (const t of ["", "\n\n", "garbage", jl({ type: "custom" }), "[1,2]\nnull\n7\n\"s\""]) expect(transcriptLines(t, false)).toEqual(["no messages yet"]);
+	});
+	test("a hostile tail: no throw, no control character, capped, linear", () => {
+		const hostile = [
+			"x".repeat(512 * 1024),
+			jl(msg("user", `a\x1b[2Jb\u202ec\u2028d\x00e\x9bf`)),
+			"[".repeat(100_000),
+			`{"type":"message","message":{"role":"user","content":${"[".repeat(100_000)}}}`,
+			`{"type":"message"`,
+			`{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"\x1b[31mx\u202e","arguments":{"a":"\x1b]0;t\x07zz"}}]}}`,
+			jl(msg("toolResult", "plain string content", { toolName: 5 }), msg("assistant", "str"), msg("assistant", [null, 3, "s", { type: "text", text: 9 }, { type: "toolCall" }])),
+		];
+		for (const h of hostile) {
+			const t0 = performance.now();
+			const rows = transcriptLines(h, false, h);
+			expect(performance.now() - t0).toBeLessThan(1000);
+			expect(rows.length).toBeLessThanOrEqual(1001);
+			for (const r of rows) {
+				expect(r).not.toMatch(CTRL);
+				expect(r.length).toBeLessThanOrEqual(400);
+			}
+		}
+		expect(transcriptLines(hostile[1], false)[0]).toBe("user: ab c d e"); // \x1b[2J and the C1 CSI \x9bf are stripped, the rest become spaces
+	});
+	test("512 KiB of messages parse in under 200 ms", () => {
+		const line = jl(msg("assistant", [{ type: "text", text: "word ".repeat(20) }, { type: "toolCall", name: "read", arguments: { i: "x" } }]));
+		const tail = Array(Math.ceil((512 * 1024) / (line.length + 1))).fill(line).join("\n");
+		const t0 = performance.now();
+		const rows = transcriptLines(tail, true);
+		const ms = performance.now() - t0;
+		console.log(`transcriptLines(512 KiB): ${ms.toFixed(1)} ms`);
+		expect(ms).toBeLessThan(200);
+		expect(rows).toHaveLength(1001);
+	});
+	// properties: no property-test library in the repo, so a seeded walk over hostile atoms stands in for fast-check.
+	test("property: never throws; rows are clean, ≤ 400 chars, and at most 1001", () => {
+		const r = rnd0(77);
+		const atoms = ['{"type":"message","message":{"role":"user","content":"', '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"', '"}}', "\n", "\x1b[31m", "\x1b", "\u202e", "\u2028", "\x00", "\x9b", "[[[[", '{"type":"toolCall"', "漢字", "é", "x".repeat(500), "\ud800", "\\u202e", '","name":"n","arguments":{"i":"q"}}]}}', "\r\n", "null", "{", "}"];
+		for (let i = 0; i < 1500; i++) {
+			const mk = () => Array.from({ length: r(30) }, () => atoms[r(atoms.length)]).join("");
+			const rows = transcriptLines(mk(), r(2) === 1, r(3) === 0 ? null : r(3) === 1 ? undefined : mk());
+			expect(rows.length).toBeLessThanOrEqual(1001);
+			for (const row of rows) {
+				expect(row).not.toMatch(CTRL);
+				expect(row.length).toBeLessThanOrEqual(400);
+			}
+		}
+	});
+});
+
+const TR_ROWS = Array.from({ length: 60 }, (_, i) => `row ${i + 1}`);
+const TR_BASE = () => DETAIL({ transcript: { id: "ApothecaryBeta", lines: TR_ROWS } });
+const trNav = (id: string, extra: Nav = {}, transcript?: string): Nav => ({ cursor: { id, at: 0 }, detail: { id, ...(transcript ? { transcript } : {}) }, ...extra });
+const trView = (nav: Nav, over: Partial<ViewInput> = {}): View => cockpitView({ ...TR_BASE(), ...over, nav });
+const BIGBG = palette("truecolor", THEMES.ultramarines); // a themed background pads every row to the full width
+
+describe("transcript navigation", () => {
+	test("enter from an agent detail opens its transcript; back, back returns the exact nav", () => {
+		const v0 = trView(trNav("agent:ApothecaryBeta", { tops: { detail: 2 } }));
+		expect(v0.detail!.target).toBe("ApothecaryBeta");
+		const n1 = navigate(v0, "enter");
+		expect(n1.detail).toEqual({ id: "agent:ApothecaryBeta", transcript: "ApothecaryBeta" });
+		const v1 = trView(n1);
+		expect(v1.detail!.title).toBe("TRANSCRIPT ApothecaryBeta");
+		expect(v1.nav).toEqual(n1);
+		const v2 = trView(navigate(v1, "back"));
+		expect(v2.nav).toEqual(v0.nav);
+		expect(v2.nav.tops).toEqual({ detail: 2 });
+		const top = navigate(v2, "back");
+		expect(top.detail).toBeUndefined();
+		expect(top.cursor).toEqual(v0.nav.cursor);
+	});
+	test("enter from a squad detail opens the transcript of its newest agent", () => {
+		const v = trView(navigate(trView(trNav("squad:alpha")), "enter"), { transcript: { id: "AlphaVet", lines: ["a", "b"] } });
+		expect(v.nav.detail).toEqual({ id: "squad:alpha", transcript: "AlphaVet" });
+		expect(v.detail!.title).toBe("TRANSCRIPT AlphaVet");
+		expect(v.detail!.lines).toEqual(["a", "b"]);
+	});
+	test("enter does nothing on a squad with no agent, and on seal, task and chronicle details", () => {
+		const ids = ["squad:beta", "seal:Demo:0", longId(), ...cockpitView(DETAIL()).items.map(i => i.id).filter(id => id.startsWith("task:"))];
+		for (const id of ids) {
+			const v = trView(trNav(id));
+			expect(v.detail).toBeDefined();
+			expect(v.detail!.target).toBeUndefined();
+			expect(navigate(v, "enter")).toEqual(v.nav);
+		}
+	});
+	test("a transcript opened with enter inside a transcript changes nothing", () => {
+		const v = trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta"));
+		expect(navigate(v, "enter")).toEqual(v.nav);
+		for (const k of ["tab", "left", "right", "home"] as const) expect(navigate(v, k)).toEqual(v.nav);
+	});
+	test("the transcript is dropped when its agent leaves deployed, or is no longer the squad's newest", () => {
+		const gone = trView(trNav("agent:ApothecaryBeta", { tops: { transcript: 4 } }, "ApothecaryBeta"), { deployed: new Map(), live: undefined });
+		expect(gone.detail).toBeUndefined();
+		expect(gone.nav.detail).toBeUndefined();
+		expect(gone.nav.tops).toBeUndefined();
+		const newer = new Map(DETAIL().deployed!).set("AlphaNew", dep({ role: "battle-brother", station: "Skirmish", squad: "alpha" }));
+		const v = trView(trNav("squad:alpha", { tops: { transcript: 4, detail: 1 } }, "AlphaVet"), { deployed: newer });
+		expect(v.nav.detail).toEqual({ id: "squad:alpha" });
+		expect(v.nav.tops).toEqual({ detail: 1 });
+		expect(v.detail!.title).toContain("SQUAD alpha");
+	});
+	test("opens at the bottom; up moves away from it, down returns and never goes below 0", () => {
+		let v = trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta"));
+		expect(v.nav.tops).toBeUndefined();
+		expect(navigate(v, "down").tops).toBeUndefined();
+		for (let i = 0; i < 3; i++) v = trView(navigate(v, "up"));
+		expect(v.nav.tops).toEqual({ transcript: 3 });
+		v = trView(navigate(v, "down"));
+		expect(v.nav.tops).toEqual({ transcript: 2 });
+		const rows = draw(trView(trNav("agent:ApothecaryBeta", { tops: { transcript: 3 } }, "ApothecaryBeta")), 100, 20);
+		expect(rows.join("\n")).toContain("row 57");
+		expect(rows.join("\n")).not.toContain("row 58 ");
+		const bottom = draw(trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta")), 100, 20);
+		expect(bottom.join("\n")).toContain("row 60 ");
+		expect(bottom.find(l => l.startsWith("╟─ TRANSCRIPT"))).toMatch(/· \d+–60\/60/);
+	});
+	test("the transcript scroll is clamped to the first row once written back", () => {
+		const v = trView(trNav("agent:ApothecaryBeta", { tops: { transcript: 9999 } }, "ApothecaryBeta"));
+		const rows = draw(v, 100, 20);
+		expect(rows.find(l => l.startsWith("╟─ TRANSCRIPT"))).toMatch(/· 1–\d+\/60/);
+		expect(v.nav.tops!.transcript).toBeLessThan(9999);
+		expect(rows.join("\n")).toContain("row 1 ");
+	});
+	// properties: seeded walk standing in for fast-check.
+	test("property: enter then back returns the nav, from any detail with a target", () => {
+		const r = rnd0(31337);
+		const keys: NavKey[] = ["up", "down", "left", "right", "home", "tab", "enter", "back"];
+		let hits = 0;
+		for (let round = 0; round < 300; round++) {
+			const starts: Nav[] = [{}, trNav("agent:ApothecaryBeta"), trNav("squad:alpha", { tops: { detail: 2 } }), trNav("squad:beta"), trNav("seal:Demo:0")];
+			let nav: Nav = starts[r(starts.length)];
+			for (let i = 0; i < r(8); i++) nav = navigate(trView(nav), keys[r(keys.length)]);
+			const v = trView(nav);
+			if (v.detail?.target === undefined || v.nav.detail?.transcript) continue;
+			hits++;
+			const v2 = trView(navigate(v, "enter"));
+			expect(v2.nav.detail?.transcript).toBe(v.detail.target);
+			expect(trView(navigate(v2, "back")).nav).toEqual(v.nav);
+			expect(navigate(v2, "back")).toEqual(v.nav);
+		}
+		expect(hits).toBeGreaterThan(20);
+	});
+});
+
+describe("transcript rendering", () => {
+	const big = Array.from({ length: 1000 }, (_, i) => `user: message ${i} ${"漢字 wide ".repeat(i % 7)}${"Q".repeat(i % 5 === 0 ? 300 : 3)}`);
+	test("every row is exactly width cells at 60 and 120 cols, any height, with a 1000-row transcript", () => {
+		for (const width of [60, 120])
+			for (const height of [undefined, 12, 40])
+				for (const tops of [{}, { transcript: 7 }, { transcript: 5000 }] as Record<string, number>[]) {
+					const v = trView(trNav("agent:ApothecaryBeta", { tops }, "ApothecaryBeta"), { transcript: { id: "ApothecaryBeta", lines: big } });
+					const rows = renderCockpit(v, width, 0, BIGBG, height).map(plain);
+					if (height) expect(rows).toHaveLength(height);
+					for (const l of rows) expect(Bun.stringWidth(l)).toBe(width);
+				}
+	});
+	test("hostile rows from the reader are cleaned before they are drawn", () => {
+		const v = trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta"), { transcript: { id: "ApothecaryBeta", lines: ["a\x1b[2Jb\u202ec", "z".repeat(5000)] } });
+		for (const l of v.detail!.lines) {
+			expect(l).not.toMatch(CTRL);
+			expect(l.length).toBeLessThanOrEqual(400);
+		}
+	});
+	test("rows from another agent's read are not shown", () => {
+		const v = trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta"), { transcript: { id: "Other", lines: ["WRONG"] } });
+		expect(v.detail!.lines).toEqual([]);
+	});
+	test("footers: agent and squad details with a target hint enter transcript; the transcript and other details do not", () => {
+		const wide = (id: string, t?: string) => draw(trView(trNav(id, {}, t)), 120).at(-1)!;
+		const narrow = (id: string, t?: string) => draw(trView(trNav(id, {}, t)), 50).at(-1)!;
+		expect(wide("agent:ApothecaryBeta")).toMatch(/^╚═ esc\/bksp back · q close · ↑↓ scroll · enter transcript ═+╝$/);
+		expect(wide("squad:alpha")).toMatch(/· enter transcript ═+╝$/);
+		expect(wide("squad:beta")).toMatch(/^╚═ esc\/bksp back · q close · ↑↓ scroll ═+╝$/);
+		expect(wide("seal:Demo:0")).toMatch(/^╚═ esc\/bksp back · q close · ↑↓ scroll ═+╝$/);
+		expect(wide("agent:ApothecaryBeta", "ApothecaryBeta")).toMatch(/^╚═ esc\/bksp back · q close · ↑↓ scroll ═+╝$/);
+		expect(narrow("agent:ApothecaryBeta")).toBe("esc back · q close · enter transcript");
+		expect(narrow("squad:beta")).toBe("esc back · q close");
+		expect(narrow("agent:ApothecaryBeta", "ApothecaryBeta")).toBe("esc back · q close");
+	});
+	test("the title names the agent and carries a–b/n only when rows are hidden", () => {
+		const short = trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta"), { transcript: { id: "ApothecaryBeta", lines: ["one"] } });
+		const t = draw(short, 120, 30).find(l => l.startsWith("╟─ TRANSCRIPT"))!;
+		expect(t).toMatch(/^╟─ TRANSCRIPT ApothecaryBeta ─+╢$/);
+		const long = draw(trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta")), 120, 14).find(l => l.startsWith("╟─ TRANSCRIPT"))!;
+		expect(long).toMatch(/^╟─ TRANSCRIPT ApothecaryBeta · \d+–60\/60 ─+╢$/);
+	});
+	test("the narrow layout is bottom-anchored too", () => {
+		const rows = draw(trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta")), 50, 14);
+		expect(rows.join("\n")).toContain("row 60");
+		expect(rows.some(l => l.startsWith("TRANSCRIPT ApothecaryBeta"))).toBe(true);
 	});
 });
