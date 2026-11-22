@@ -31,6 +31,7 @@ export type ViewInput = {
 	status?: "working" | "awaiting"; // what the main agent is doing: a turn runs, or the prompt is free for the user's orders
 	live?: Map<string, Live>; // agent id → what that agent last wrote about itself; text in it is untrusted
 	now?: number; // ms; the elapsed time of a live row counts to it. No now, no live rows
+	caster?: { station: string; text: string; dim: boolean; at?: number }; // the caster's summary box; absent when the caster is off. text: the summary or an empty-state row (dim: true); at: the summary time in ms. Untrusted: the view cleans it again
 	transcript?: { id: string; lines: string[] }; // the rows index.ts read for that agent's transcript (transcriptLines, or one reason line); shown while nav.detail.transcript is that id. Untrusted: the view cleans and caps them again
 };
 export type View = ReturnType<typeof cockpitView>;
@@ -102,6 +103,8 @@ const ROLE_TAG = /^\s*(?:\[([\w-]+)\]|[^\w\s[]+\s*([\w-]+)\s*·)\s*(.*?)\s*$/su;
 const BAR = 14;
 const BOX_CAP = 8; // most lines a box shows
 const CHRONICLE_MIN = 5; // chronicle rows a height keeps before the boxes give up lines
+const CASTER_CHRONICLE_MIN = 6; // the same with the caster shown
+const CASTER_ROWS = 5; // most rows the caster box shows
 const RESET = "\x1b[39m";
 
 export function colorDepth(env: Record<string, string | undefined> = process.env): Depth {
@@ -502,7 +505,9 @@ export function cockpitView(input: ViewInput) {
 	const rows = transcript !== undefined && input.transcript?.id === transcript ? keepRows(input.transcript.lines).map(rowOf) : [];
 	const detail: { title: string; lines: string[]; target?: string; transcript?: true } | undefined = transcript !== undefined ? { title: `TRANSCRIPT ${oneLine(transcript)}`, lines: rows, transcript: true } : shownDetail && { ...shownDetail, ...(target === undefined ? {} : { target }) };
 
-	return { key: input.key, status: input.status, ic, clock, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav, detail };
+	const caster = input.caster && { title: `CASTER · ${oneLine(input.caster.station)}${input.caster.at !== undefined && input.now !== undefined ? ` · ${span(minutes(input.now - input.caster.at))}` : ""}`, text: oneLine(input.caster.text), dim: input.caster.dim };
+
+	return { key: input.key, status: input.status, ic, clock, caster, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav, detail };
 }
 
 /** A cursor move or a station browse, as `navigate` takes them. */
@@ -801,8 +806,8 @@ function withHeight(body: string[], entries: ((d: number) => string)[], blank: (
 
 // shortcut: a box keeps at least 1 line, so a window too short for every box at 1 line still cuts the chronicle; upgrade with the navigable cockpit (#13).
 /** Lines a box may show: BOX_CAP, fewer when `height` must keep CHRONICLE_MIN chronicle rows after `fixed` rows and `blocks` rows of boxes that each add `chrome` rows; never under 1. */
-const boxCap = (height: number | undefined, fixed: number, blocks: number, chrome: number) =>
-	height === undefined || !blocks ? BOX_CAP : Math.max(1, Math.min(BOX_CAP, Math.floor((height - fixed - CHRONICLE_MIN) / blocks) - chrome));
+const boxCap = (height: number | undefined, fixed: number, blocks: number, chrome: number, reserve = CHRONICLE_MIN) =>
+	height === undefined || !blocks ? BOX_CAP : Math.max(1, Math.min(BOX_CAP, Math.floor((height - fixed - reserve) / blocks) - chrome));
 
 /** The lines [start, end) a box past its cap shows in cap - 1 rows (`rows`: the rows of each line): from `top` (the window's last start), moved only as far as the selected line `sel` (-1: none) needs, pulled back up while room is left below, and always including the selected line even when it alone is taller than the room. */
 function windowOf(rows: number[], cap: number, sel: number, top = 0): [number, number] {
@@ -890,8 +895,9 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 		}
 		const body = [
 			...head,
+			...(view.caster ? [paint(view.caster.dim ? pal.iron : pal.parchment, fit(`caster: ${view.caster.text.split(/(?<=[.!?])\s/, 1)[0]}`, width))] : []),
 			...(box ? [paint(pal.gold, box.title), ...ind(box)] : []),
-			...boxes(boxCap(height, 5 + (view.seals.length ? 1 : 0) + (box ? box.lines.length + 1 : 0) + statusText(view.status, pal, frame).length, view.boxes.length, 1)).flatMap(b => [paint(pal.gold, b.title), ...ind(b)]),
+			...boxes(boxCap(height, 5 + (view.seals.length ? 1 : 0) + (box ? box.lines.length + 1 : 0) + statusText(view.status, pal, frame).length + (view.caster ? 1 : 0), view.boxes.length, 1, view.caster ? CASTER_CHRONICLE_MIN : CHRONICLE_MIN)).flatMap(b => [paint(pal.gold, b.title), ...ind(b)]),
 			paint(pal.gold, "CHRONICLE"),
 		];
 		const entries = view.chronicle.map((e, i) => () => (i === si ? `${paint(pal.gold, "▸")} ${selected(entryLine(e, pal), width - 2)}` : entryLine(e, pal)));
@@ -924,10 +930,29 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 		return withHeight([g(fit(top, width)), ...head, `${g("╟─ ")}${dt}${g(` ${run(rc, "─", inner - 3 - Bun.stringWidth(dt), 1, true)}╢`)}`], rows.slice(sc.from, sc.to).map(r => (d: number) => row(` ${paint(pal.parchment, r)}`, 0x20000 + d)), blankRow, g(`╚═ ${back} ${run(rc, "═", inner - 3 - Bun.stringWidth(back), 3, true)}╝`), height);
 	}
 	const si = view.chronicle.findIndex(e => e.id === sel);
+	const fixed = head.length + 4 + (box ? box.lines.length + 2 : 0);
+	const cv = view.caster;
+	const reserve = cv ? CASTER_CHRONICLE_MIN : CHRONICLE_MIN;
+	let casterRows: string[] = [];
+	if (cv) {
+		const all = wrap(cv.text, inner - 2);
+		const wanted = Math.min(CASTER_ROWS, all.length);
+		// the grid at its normal cap: a block of boxes is as tall as its tallest box (its lines, a detail being two rows, at most BOX_CAP) plus its frame
+		const tall = view.boxes.map(b => Math.min(BOX_CAP, b.lines.reduce((n, l) => n + (l.detail ? 2 : 1), 0)));
+		const gridRows = Array.from({ length: Math.ceil(tall.length / cols) }, (_, i) => Math.max(...tall.slice(i * cols, (i + 1) * cols)) + 2).reduce((a, b) => a + b, 0);
+		const n = height === undefined ? wanted : Math.min(wanted, Math.max(1, height - fixed - 1 - gridRows - reserve));
+		casterRows = all.slice(0, n).map((r, i) => (i === n - 1 && all.length > n ? fit(`${r}…`, inner - 2) : r));
+	}
+	const casterBlock = cv
+		? (() => {
+				const t = paint(pal.gold, fit(cv.title, inner - 4)); // keeps at least one cell of rule
+				return [`${g("╟─ ")}${t}${g(` ${run(rc, "─", inner - 3 - Bun.stringWidth(t), 4, true)}╢`)}`, ...casterRows.map((r, i) => row(` ${paint(cv.dim ? pal.iron : pal.parchment, r)}`, 0xc00 + i))];
+			})()
+		: [];
 	const base = "esc/q close · ↑↓ line · ←→ station · tab box · home active";
 	const hint = inner - 3 - Bun.stringWidth(`${base} · enter open`) >= 1 ? `${base} · enter open` : base;
 	return withHeight(
-		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${run(rc, "─", inner - 3 - Bun.stringWidth(title), 1, true)}╢`)}`, ...(box ? grid([box], 1, inner, pal, rc, 0).map((l, r) => row(l, 0x400 + r)) : []), ...grid(boxes(boxCap(height, head.length + 4 + (box ? box.lines.length + 2 : 0), Math.ceil(view.boxes.length / cols), 2)), cols, inner, pal, rc, 100).map((l, r) => row(l, 0x800 + r)), g(`╟─ CHRONICLE ${run(rc, "─", inner - 12, 2, true)}╢`)],
+		[g(fit(top, width)), ...head, `${g("╟─ ")}${title}${g(` ${run(rc, "─", inner - 3 - Bun.stringWidth(title), 1, true)}╢`)}`, ...(box ? grid([box], 1, inner, pal, rc, 0).map((l, r) => row(l, 0x400 + r)) : []), ...grid(boxes(boxCap(height, fixed + casterBlock.length, Math.ceil(view.boxes.length / cols), 2, reserve)), cols, inner, pal, rc, 100).map((l, r) => row(l, 0x800 + r)), ...casterBlock, g(`╟─ CHRONICLE ${run(rc, "─", inner - 12, 2, true)}╢`)],
 		view.chronicle.map((e, i) => (d: number) => row(i === si ? `${g("▸")}${selected(entryLine(e, pal), inner - 1)}` : ` ${entryLine(e, pal)}`, 0x20000 + d)),
 		blankRow,
 		g(`╚═ ${hint} ${run(rc, "═", inner - 3 - Bun.stringWidth(hint), 3, true)}╝`),

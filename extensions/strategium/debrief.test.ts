@@ -445,6 +445,29 @@ describe("cost", () => {
 		expect(section(cost([ag("A", "scout", { cost: 1 })]).markdown, "Cost")).not.toContain("’");
 	});
 
+	test("a caster row names the caster in the note and is a role of its own; without one the note says agents only", () => {
+		const none = cost([ag("A", "scout", { cost: 1 })]).markdown;
+		expect(section(none, "Cost")).toContain("Agents only: the Captain's own session is not included.");
+		expect(section(none, "Cost")).not.toContain("caster");
+		const r = cost([ag("A", "scout", { cost: 1 }), ag("caster", "caster", { calls: 3, model: "fast-1", cost: 0.5, tokens_in: 300, tokens_out: 40, cache_read: 20, cache_write: 5 })]);
+		expect(section(r.markdown, "Cost")).toContain("Agents and the cockpit caster only: the Captain's own session is not included.");
+		expect(section(r.markdown, "Cost")).not.toContain("Agents only");
+		expect(section(r.markdown, "Cost")).toContain("| caster | caster | 3 calls · fast-1 | 300 | 40 | 25 | $0.50 |");
+		expect(cost([ag("caster", "caster", { calls: 1, cost: 0.5 })]).markdown).toContain("| caster | caster | 1 call | ? | ? | ? | $0.50 |");
+		expect(r.summary.find(l => l.startsWith("COST"))).toContain("caster $0.50");
+	});
+
+	test("with a caster row the Total, rate and COST labels say agents and caster; without one they say agents", () => {
+		const withCaster = cost([ag("A", "scout", { cost: 1 }), ag("caster", "caster", { cost: 0.5 })], [start(0, { booked: 60 })]);
+		expect(withCaster.markdown).toContain("| Total (agents and caster) | 1 + caster | $1.50 | — |");
+		expect(withCaster.markdown).toContain("Cost per booked hour: $1.50 (agents and caster only; total $1.50 over 60 booked min)");
+		expect(withCaster.summary.find(l => l.startsWith("COST"))).toStartWith("COST (agents and caster, list price) $1.50");
+		const none = cost([ag("A", "scout", { cost: 1 })], [start(0, { booked: 60 })]);
+		expect(none.markdown).toContain("| Total (agents) | 1 | $1.00 | — |");
+		expect(none.markdown).toContain("(agents only; total $1.00 over 60 booked min)");
+		expect(none.summary.find(l => l.startsWith("COST"))).toStartWith("COST (agents, list price) $1.00");
+	});
+
 	test("a role named Total is not the totals row", () => {
 		const rows = lines(cost([ag("A", "Total", { cost: 1 }), ag("B", "Total (agents)", { cost: 2 })]).markdown);
 		expect(rows).toContain("| Total (role) | 1 | $1.00 | █████ |");
