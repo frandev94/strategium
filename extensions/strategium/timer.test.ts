@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +19,7 @@ import {
 	openKeys,
 	overlapMin,
 	release,
+	writeAtomic,
 } from "./timer";
 
 const base = new Date(2026, 10, 16, 9, 0, 0);
@@ -396,4 +397,35 @@ describe("the rules behind the numbers", () => {
 		const today = new Date(2026, 10, 16, 12, 0, 0);
 		expect(blocks(evs, today)[0]).toMatchObject({ end: "23:59", min: 119 });
 	});
+});
+
+describe("writeAtomic", () => {
+	const withDir = (fn: (dir: string) => void) => {
+		const dir = mkdtempSync(join(tmpdir(), "st-atomic-"));
+		try {
+			fn(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	};
+
+	test("creates missing parent directories and writes the data", () =>
+		withDir(dir => {
+			const file = join(dir, "a", "b", "f.json");
+			writeAtomic(file, "one");
+			expect(readFileSync(file, "utf8")).toBe("one");
+		}));
+	test("replaces an existing file and leaves no temp file behind", () =>
+		withDir(dir => {
+			const file = join(dir, "f.json");
+			writeAtomic(file, "one");
+			writeAtomic(file, "two");
+			expect(readFileSync(file, "utf8")).toBe("two");
+			expect(readdirSync(dir)).toEqual(["f.json"]);
+		}));
+	test("throws when the target cannot be replaced (a directory)", () =>
+		withDir(dir => {
+			mkdirSync(join(dir, "f.json"));
+			expect(() => writeAtomic(join(dir, "f.json"), "x")).toThrow();
+		}));
 });

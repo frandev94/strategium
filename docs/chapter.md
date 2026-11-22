@@ -111,6 +111,33 @@ With `STRATEGIUM_NAMES` on, the plugin gives every agent a name for the run: a t
 - A surname belongs to one squad or one role in a run; a taken name gets an epithet (`InquisitorEisenhornSteadfast`). A name is at most 28 characters, so omp's `-N` suffix keeps the id within 32.
 - A redraft retires the old builder names; the re-planned squads get new surnames.
 
+## Service record and honours
+
+With `STRATEGIUM_NAMES` on, each builder surname (the `Lorenzo` of `BrotherLorenzo`, `PenitentLorenzo` and `VeteranLorenzo`) is one Battle-Brother with a service record. Every builder of a squad serves under that squad's surname, so the squad's outcome goes to one record. Other roles (librarian, inquisitor and so on) keep no record. With names off nothing is recorded.
+
+The record is filled only from what the plugin observes, and is written when the run ends:
+
+| Event | Effect |
+|---|---|
+| Squad passes on the first build | +1 passed, Purity Seal |
+| Squad passes after a penance | +1 passed, no honour |
+| Squad saved by the veteran | +2 passed, Iron Halo |
+| Each fix round | +1 penance |
+| Squad ends failed (the veteran failed, or a builder failed with no later builder) | +1 fall |
+| Every squad with an outcome | +1 squad served |
+| Run merged, every squad passed on the first build | Laurel Imperialis to every brother with an outcome in the run |
+| 10 passed | Crux Terminatus |
+
+- Reading: the plugin sees the agent's job status, not the reviewers' verdict, so a builder that returns `completed` counts as passed and only `failed` is a fall. A builder that ends `aborted` or `cancelled` is neither: the squad is left with no outcome (and records nothing) until a later builder ends it. A veteran is an escalation, not a penance. A squad still running or never built records nothing.
+- Laurel: the merge counts only when the Captain's own command succeeds and starts, after any `cd … &&` steps, with `gh pr merge` or `glab mr merge`. A command with `--auto`, `--help` or `-h`, one with a pipe, `;`, a newline or a lone `&` (the exit code would not be the merge's; `&&` and `2>&1` are fine), an `echo`, one a subagent ran, and one that went to the background (a result with an `async` detail, whatever started it) earn no Laurel. A merge done elsewhere (the web page, another tool) earns none. Limit: a merge that only schedules (glab auto-merge, a merge queue) still counts, because the plugin sees only that the command succeeded. A merge while a spawned builder has not finished earns none either.
+- Honours are decorations, not ranks, titles or posts, and a name never changes with them. They are counters that only grow: nothing removes one, and Crux Terminatus is read from the passed count.
+- Corrupted: a brother with 3 falls, or with more penances than passes after 5 squads served, is corrupted and kept in reserve. It is read from the counters, never stored, and it only decides who is sent: the honours stay.
+- On campaign: a brother whose squad sits in another session's open run is on campaign. He is released when that run ends or is redrafted, when its claim is gone, or when the run has been silent for 24 h (neither its heartbeat nor its run file touched). A paused run may not beat, so a short pause keeps its brothers, but a run abandoned for a day does not hold them for ever.
+- Allocation: a new squad's surname goes to the best available brother (most passed, then fewest falls, then fewest penances, then name order), skipping the corrupted and those on campaign. A name from the pool nobody has recorded is recruited only when no such brother is left. A ranked brother whose bare name was already issued in this omp process (an earlier run of the session) comes back with an epithet (`BrotherLorenzoUnbroken`), and the preference holds in the pool-exhausted second pass too. With every pool name skipped the run gets the usual "no free name" error.
+- Roster: the records live in one file, `roster.json` in the state directory, shared by every omp session and guarded by a lock (`roster.lock`), so two sessions allocating or ending at once never take the same brother and lose no result. A file the plugin cannot read is left untouched, with a warning, and names come from the pool.
+- Lock: the lock holds its owner's pid. A lock whose process is gone is taken at once; any other lock older than 10 s is taken as stale. A busy lock at allocation (waited 2 s) gives names from the pool with a `WARN roster busy`. The end waits 12 s, longer than the stale age, because it has no second chance: if the roster is still busy then, that run's record is lost, with a `WARN ROSTER not written`, and the end goes on. The record is written before the run's claim is released.
+- Takeover: a `begin` takeover drops the old run, so its record is lost; end it with `end` plus takeover first if it should count.
+
 ## Stations and the chronicle voice
 
 Station names are unchanged. One line each:
@@ -136,6 +163,7 @@ No agent holds either today. They are defined here so that a later use (#62) has
 
 - Ancient: a post, not a rank. The Ancient is the standard-bearer of a company (the Chapter Ancient is of the 1st) and is a post held by a veteran. It is not earned by service, and a veteran does not become an Ancient by being a veteran.
 - Venerable: an honorific, not a rank and not a post. In the lore it is given mostly to Dreadnoughts, the entombed heroes. It is never a promotion for an ordinary agent.
+- Honours (Purity Seal, Iron Halo, Laurel Imperialis, Crux Terminatus; see Service record and honours) are none of the three: they are decorations on a brother's record. They change no name, rank, title or post.
 
 ## Using these terms
 

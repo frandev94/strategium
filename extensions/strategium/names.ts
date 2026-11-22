@@ -75,6 +75,7 @@ export function allocateName(
 	req: NameRequest,
 	avoid: ReadonlySet<string> = new Set(),
 	rand: () => number = Math.random,
+	opts: { prefer?: readonly string[]; skip?: ReadonlySet<string> } = {},
 ): { entry: NameEntry; fresh: boolean } | { error: string } {
 	const { agent, squad, again } = req;
 	if (!NAMED_AGENTS.includes(agent)) return { error: `unknown agent ${agent}: names are for ${NAMED_AGENTS.join(", ")}` };
@@ -123,18 +124,25 @@ export function allocateName(
 		return name ? make(surname, name) : { error: NO_FREE(agent) };
 	}
 	const holders = (s: string) => entries.filter((e) => e.surname === s);
-	// Pass 1: a surname nobody holds and a bare composed name; pass 2 (pool exhausted): a surname only
-	// retired builders or this role hold, made unique with an epithet.
-	const passes: [(s: string) => boolean, (base: string) => string | undefined][] = [
-		[(s) => holders(s).length === 0, (base) => (base.length <= MAX_NAME && !taken.has(base) ? base : undefined)],
-		[(s) => holders(s).every((e) => e.old || (!builder && e.agent === agent)), (base) => freeName(base, taken)],
+	// Both passes honour `prefer`. Pass 1: a surname nobody holds; pass 2 (pool exhausted): a surname only retired
+	// builders or this role hold. Either way the surname is kept and the name made unique with an epithet, so a brother
+	// whose bare name was issued earlier in this omp process (`avoid`) still comes back.
+	const passes: ((s: string) => boolean)[] = [
+		(s) => holders(s).length === 0,
+		(s) => holders(s).every((e) => e.old || (!builder && e.agent === agent)),
 	];
-	for (const [eligible, compose] of passes) {
+	// `prefer` surnames lead the candidates, so the first free one wins; otherwise draw from the pool.
+	const prefer = opts.prefer ?? [];
+	const candidates = [...new Set([...prefer, ...pool])].filter((s) => !opts.skip?.has(s));
+	for (const eligible of passes) {
 		const options: [string, string][] = [];
-		for (const s of pool) {
-			const name = eligible(s) ? compose(title + s) : undefined;
+		for (const s of candidates) {
+			const base = title + s;
+			// Only a preferred surname is kept with an epithet; the rest need their bare name free.
+			const name = !eligible(s) ? undefined : prefer.includes(s) || eligible === passes[1] ? freeName(base, taken) : base.length <= MAX_NAME && !taken.has(base) ? base : undefined;
 			if (name) options.push([s, name]);
 		}
+		if (options.length && prefer.includes(options[0][0])) return make(...options[0]);
 		if (options.length) {
 			const [s, name] = options[draw(options.length, rand)];
 			return make(s, name);

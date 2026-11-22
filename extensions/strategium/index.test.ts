@@ -4,9 +4,9 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readd
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { keyOf, parseTiers, readTranscript, ROSTER, whereFrom } from "./index";
-import { NAMED_AGENTS } from "./names";
+import { allocateName, NAMED_AGENTS, type NameEntry } from "./names";
 import { cockpitView } from "./cockpit";
-import { append, claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
+import { append, claim, type Ev, load, lockPath, nowIso, openKeys, release } from "./timer";
 
 // The extension registers itself on a host. A fake one is enough: it hands back the tool it
 // registered and does nothing else.
@@ -8004,6 +8004,519 @@ describe("agent names (#133)", () => {
 				expect(s.notes.at(-1)).toContain("config takes");
 			}
 			expect(existsSync(join(s.dir, "names"))).toBe(false);
+		});
+	});
+});
+
+// The service record (#134): what a squad's builders did goes in the run file, and `end` folds it into the shared roster.
+describe("service record (#134)", () => {
+	type S = ReturnType<typeof setup>;
+	type Counters = { passed: number; penances: number; falls: number; squads: number; purity: number; halo: number; laurel: number };
+	const SQ = [
+		{ id: "S1", parallel: true, files: ["a.ts"] },
+		{ id: "S2", parallel: true, files: ["b.ts"] },
+		{ id: "S3", parallel: false, files: ["c.ts"] },
+	];
+	const svc = (o: Partial<Counters> = {}): Counters => ({ passed: 0, penances: 0, falls: 0, squads: 0, purity: 0, halo: 0, laurel: 0, ...o });
+	const seed = (dir: string, brothers: object) => writeFileSync(join(dir, "roster.json"), JSON.stringify({ version: 1, brothers }));
+	const roster = (dir: string) => JSON.parse(readFileSync(join(dir, "roster.json"), "utf8")).brothers as Record<string, Counters>;
+	// Names on, a run with the three squads declared; `brothers` seeds the roster before the squads get their names.
+	const open = async (o: { sid?: string; dir?: string; key?: string; brothers?: object; raw?: string } = {}) => {
+		process.env.STRATEGIUM_NAMES = "1";
+		const dir = o.dir ?? mkdtempSync(join(tmpdir(), "st-roster-"));
+		if (!o.dir) dirs.push(dir);
+		if (o.brothers) seed(dir, o.brothers);
+		if (o.raw !== undefined) writeFileSync(join(dir, "roster.json"), o.raw);
+		const s = setup(o.sid ?? "sess-0001", dir);
+		await s.call({ action: "begin", key: o.key ?? "K-1" });
+		await s.call({ action: "repo", repo: dir });
+		const slices = await s.call({ action: "slices", slices: SQ });
+		return { ...s, slices };
+	};
+	type Opened = Awaited<ReturnType<typeof open>>;
+	const surname = (name: string) => name.replace(/^(Brother|Penitent|Veteran)/, "");
+	const lastLine = (out: string) => out.split("\n").at(-1)!;
+	const nameFor = async (s: S, agent: string, squad: string) => lastLine(await s.call({ action: "name", agent, squad })).slice(5);
+	const spawn = (s: S, agent: string, spawnKey: string) => s.handlers.before_subagent_spawn[0]({ agent, spawnKey }, s.ctx);
+	// The task call's result: `status` running is a background builder, anything else a blocking one that returned.
+	const returned = (s: S, agent: string, name: string, squad: string, status: string) => {
+		const event = { toolName: "task", input: { tasks: [{ agent, name, task: `build squad ${squad}` }] }, details: { progress: [{ index: 0, id: name, status }] }, isError: false };
+		for (const h of s.handlers.tool_result) h(event, s.ctx);
+	};
+	// One builder of `squad` is named, spawned and returns with `status`.
+	const build = async (s: S, squad: string, status = "completed", agent = "battle-brother") => {
+		const name = await nameFor(s, agent, squad);
+		spawn(s, agent, name);
+		returned(s, agent, name, squad, status);
+		return name;
+	};
+	const bash = (s: S, command: string, extra: object = {}, ctx: object = s.ctx) => {
+		for (const h of s.handlers.tool_result) h({ toolName: "bash", input: { command }, isError: false, details: {}, ...extra }, ctx);
+	};
+	const merge = (s: S, extra: object = {}, ctx: object = s.ctx) => bash(s, "gh pr merge 7 --merge --delete-branch", extra, ctx);
+	const runFile = (s: S, sid = "sess-0001") => JSON.parse(readFileSync(join(s.dir, "runs", `${sid}.json`), "utf8")) as { ended?: Record<string, string>; merged?: unknown; names?: { surname: string; squad?: string; old?: true }[] };
+	const edit = (s: S, change: (run: Record<string, unknown>) => void) => {
+		const file = join(s.dir, "runs", "sess-0001.json");
+		const run = JSON.parse(readFileSync(file, "utf8"));
+		change(run);
+		writeFileSync(file, JSON.stringify(run));
+	};
+
+	describe("record events", () => {
+		test("a squad that passes on its first build earns a Purity Seal", async () => {
+			const s = await open();
+			const name = await build(s, "S1");
+			expect(runFile(s).ended).toEqual({ S1: "ok" });
+			expect(await s.call({ action: "end" })).toEndWith("ROSTER 1 squad(s) recorded");
+			expect(roster(s.dir)[surname(name)]).toEqual(svc({ passed: 1, squads: 1, purity: 1 }));
+		});
+
+		test("a pass after a failed first build is one penance and no honour; a new builder clears the failure", async () => {
+			const s = await open();
+			const first = await build(s, "S1", "failed");
+			expect(runFile(s).ended).toEqual({ S1: "failed" });
+			const again = await nameFor(s, "battle-brother", "S1");
+			expect(again).toBe(`Penitent${surname(first)}`);
+			spawn(s, "battle-brother", again);
+			expect(runFile(s).ended).toBeUndefined();
+			returned(s, "battle-brother", again, "S1", "completed");
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(first)]).toEqual(svc({ passed: 1, penances: 1, squads: 1 }));
+		});
+
+		test("a builder still running at end leaves no outcome and no roster file", async () => {
+			const s = await open();
+			const name = await build(s, "S1", "running");
+			expect(runFile(s).ended).toBeUndefined();
+			expect(await s.call({ action: "end" })).not.toContain("ROSTER");
+			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
+		});
+
+		test("a background builder's end comes through the context message", async () => {
+			const s = await open();
+			const name = await build(s, "S1", "running");
+			const job = (status: string) => ({ type: "context", messages: [{ role: "custom", details: { jobs: [{ jobId: "j1", type: "task", status, label: name }] } }] });
+			for (const h of s.handlers.context) h(job("failed"), s.ctx);
+			expect(runFile(s).ended).toEqual({ S1: "failed" });
+		});
+
+		test("a veteran that saves the squad is worth two passes and an Iron Halo", async () => {
+			const s = await open();
+			const first = await build(s, "S1", "failed");
+			await build(s, "S1", "completed", "veteran");
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(first)]).toEqual(svc({ passed: 2, squads: 1, halo: 1 }));
+		});
+
+		test("a veteran that fails leaves the squad fallen", async () => {
+			const s = await open();
+			const first = await build(s, "S1", "failed");
+			await build(s, "S1", "failed", "veteran");
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(first)]).toEqual(svc({ falls: 1, squads: 1 }));
+		});
+
+		test("a redraft forgets the squads' outcomes: retired brothers earn no record", async () => {
+			const s = await open();
+			await build(s, "S2");
+			await s.call({ action: "redraft" });
+			expect(runFile(s).ended).toBeUndefined();
+			expect(await s.call({ action: "end" })).not.toContain("ROSTER");
+			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
+		});
+
+		test("a merge by the Captain's gh pr merge crowns every brother when all passed first", async () => {
+			const s = await open();
+			const a = await build(s, "S1");
+			const b = await build(s, "S2");
+			merge(s);
+			expect(runFile(s).merged).toBe(true);
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(a)].laurel).toBe(1);
+			expect(roster(s.dir)[surname(b)].laurel).toBe(1);
+		});
+
+		test("glab mr merge counts too", async () => {
+			const s = await open();
+			const a = await build(s, "S1");
+			bash(s, "glab mr merge 3 --yes");
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(a)].laurel).toBe(1);
+		});
+
+		test("no Laurel when one squad needed a penance", async () => {
+			const s = await open();
+			const a = await build(s, "S1");
+			await build(s, "S2", "failed");
+			await build(s, "S2");
+			merge(s);
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(a)].laurel).toBe(0);
+		});
+
+		test("no Laurel without a merge, or when the merge failed, was a subagent's or only started in the background", async () => {
+			const sub = { ...({} as object), agent: { kind: "sub", id: "x" } };
+			const cases: [string, (s: Opened) => void][] = [
+				["no merge", () => {}],
+				["another command", s => bash(s, "gh pr view 7")],
+				["isError", s => merge(s, { isError: true })],
+				["exit code", s => merge(s, { details: { exitCode: 1 } })],
+				["async", s => bash(s, "gh pr merge 7", { input: { command: "gh pr merge 7", async: true } })],
+				["background by the host", s => merge(s, { details: { async: { state: "running", jobId: "bg_1" } } })],
+				["subagent", s => merge(s, {}, { ...s.ctx, ...sub })],
+			];
+			for (const [label, act] of cases) {
+				const s = await open();
+				const a = await build(s, "S1");
+				act(s);
+				expect(runFile(s).merged, label).toBeUndefined();
+				await s.call({ action: "end" });
+				expect(roster(s.dir)[surname(a)].laurel, label).toBe(0);
+			}
+		});
+
+		test("only a command that starts with gh pr merge or glab mr merge, after cd steps, is a merge", async () => {
+			const yes = ["gh pr merge 7 --merge --delete-branch", "glab mr merge 3 --yes", "cd /repo && gh pr merge 7", "cd a && cd b && glab mr merge 3", "gh pr merge 7 && echo done", "gh pr merge 7 2>&1", "gh pr merge 7 >&2"];
+			const no = ["echo gh pr merge 7", "gh pr merge 7 --auto", "gh pr merge --auto 7", "gh pr merge --help", "gh pr merge -h", "gh pr merge 7 | tail", "gh pr merge 7 || true", "gh pr merge 7; echo hi", "git log && gh pr merge 7", "gh pr view 7 # gh pr merge", "gh pr merge 7 &", "gh pr merge 7 & echo hi"];
+			for (const [list, want] of [[yes, true], [no, undefined]] as const) {
+				for (const command of list) {
+					const s = await open();
+					await build(s, "S1");
+					bash(s, command);
+					expect(runFile(s).merged, command).toBe(want as true | undefined);
+				}
+			}
+		}, 20000);
+
+		test("a hand-edited run file is sanitized on load: junk outcomes and a non-true merge are ignored", async () => {
+			const s = await open();
+			const a = await build(s, "S1");
+			edit(s, run => {
+				run.merged = "yes";
+				run.ended = { S1: "ok", S2: "bogus", S3: 5, ["__proto__"]: "ok" };
+			});
+			await s.call({ action: "end" });
+			expect(roster(s.dir)).toEqual({ [surname(a)]: svc({ passed: 1, squads: 1, purity: 1 }) });
+		});
+	});
+
+	describe("outcomes", () => {
+		test("an aborted or cancelled builder is no fall: the squad ends without an outcome and the record stays empty", async () => {
+			const s = await open();
+			await build(s, "S1", "aborted");
+			expect(runFile(s).ended).toBeUndefined();
+			expect(await s.call({ action: "end" })).not.toContain("ROSTER");
+			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
+			for (const status of ["aborted", "cancelled"]) {
+				const t = await open({ sid: `sess-${status}` });
+				const name = await build(t, "S1", "running");
+				const job = { type: "context", messages: [{ role: "custom", details: { jobs: [{ jobId: "j1", type: "task", status, label: name }] } }] };
+				for (const h of t.handlers.context) h(job, t.ctx);
+				expect(runFile(t, `sess-${status}`).ended, status).toBeUndefined();
+				expect(await t.call({ action: "end" }), status).not.toContain("ROSTER");
+			}
+		});
+
+		test("a blocking builder that returns cancelled leaves its squad without an outcome", async () => {
+			const s = await open();
+			const name = await nameFor(s, "battle-brother", "S1");
+			spawn(s, "battle-brother", name);
+			edit(s, run => {
+				run.ended = { S1: "ok" };
+			});
+			returned(s, "battle-brother", name, "S1", "cancelled");
+			expect(runFile(s).ended).toBeUndefined();
+		});
+
+		test("a run file whose ended is not an object is read as no outcomes", async () => {
+			const s = await open();
+			await build(s, "S1");
+			edit(s, run => {
+				run.ended = "ok";
+			});
+			expect(await s.call({ action: "end" })).not.toContain("ROSTER");
+			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
+		});
+
+		test("a builder end over a junk ended rewrites the run file with a clean object (M18)", async () => {
+			const s = await open();
+			await build(s, "S1");
+			edit(s, run => {
+				run.ended = "ok";
+			});
+			await build(s, "S2", "failed");
+			expect(runFile(s).ended).toEqual({ S2: "failed" });
+		});
+
+		test("a squad that failed and then was aborted has no outcome either", async () => {
+			const s = await open();
+			await build(s, "S1", "failed");
+			const again = await nameFor(s, "battle-brother", "S1");
+			spawn(s, "battle-brother", again);
+			returned(s, "battle-brother", again, "S1", "aborted");
+			expect(runFile(s).ended).toBeUndefined();
+			await s.call({ action: "end" });
+			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
+		});
+
+		test("a merge with a builder still unfinished earns no Laurel for the squads that did finish", async () => {
+			const s = await open();
+			const a = await build(s, "S1");
+			await build(s, "S2", "running");
+			merge(s);
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(a)]).toEqual(svc({ passed: 1, squads: 1, purity: 1 }));
+		});
+
+		test("the roster is written before the claim is released", async () => {
+			const s = await open();
+			await build(s, "S1");
+			let heldAtWrite: boolean | undefined;
+			const real = fs.renameSync;
+			const sp = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+				if (String(to).endsWith("roster.json")) heldAtWrite = existsSync(lockPath(s.dir, "K-1"));
+				return real(from, to);
+			}) as typeof fs.renameSync);
+			try {
+				await s.call({ action: "end" });
+			} finally {
+				sp.mockRestore();
+			}
+			expect(heldAtWrite).toBe(true);
+			expect(existsSync(lockPath(s.dir, "K-1"))).toBe(false);
+		});
+	});
+
+	describe("allocation", () => {
+		test("two parallel squads get the best available brothers in rank order, the next squad recruits", async () => {
+			const s = await open({ brothers: { Alpha: svc({ passed: 9 }), Bravo: svc({ passed: 5, falls: 1 }), Cyril: svc({ passed: 5 }) } });
+			expect(s.slices).toContain("NAMES S1=BrotherAlpha, S2=BrotherCyril");
+			expect(await nameFor(s, "battle-brother", "S3")).toBe("BrotherBravo");
+		});
+
+		test("a ranked free brother comes back in the next run of the same omp session, with an epithet (CB1)", async () => {
+			const s = await open({ brothers: { Alpha: svc({ passed: 9 }), Bravo: svc({ passed: 5 }), Cyril: svc({ passed: 1 }) } });
+			const bySquad = () => Object.fromEntries((runFile(s).names ?? []).filter(n => n.squad).map(n => [n.squad, n.surname]));
+			await nameFor(s, "battle-brother", "S3");
+			expect(bySquad()).toEqual({ S1: "Alpha", S2: "Bravo", S3: "Cyril" });
+			await s.call({ action: "end" });
+			await s.call({ action: "begin", key: "K-2" });
+			await s.call({ action: "repo", repo: s.dir });
+			const second = await s.call({ action: "slices", slices: SQ });
+			const third = await nameFor(s, "battle-brother", "S3");
+			expect(bySquad()).toEqual({ S1: "Alpha", S2: "Bravo", S3: "Cyril" });
+			expect(second).toMatch(/S1=BrotherAlpha[A-Z]/);
+			expect(second).toMatch(/S2=BrotherBravo[A-Z]/);
+			expect(third).toMatch(/^BrotherCyril[A-Z]/);
+		});
+
+		test("a run file holding JSON null or a non-object is skipped when other runs are scanned", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "st-roster-junk-"));
+			dirs.push(dir);
+			mkdirSync(join(dir, "runs"));
+			for (const [f, body] of [["null.json", "null"], ["str.json", '"x"'], ["num.json", "7"]]) writeFileSync(join(dir, "runs", f), body);
+			const s = await open({ dir, brothers: { Alpha: svc({ passed: 9 }) } });
+			expect(s.slices).toContain("S1=BrotherAlpha");
+		});
+
+		test("a run file that is an object without key and sid is skipped (N7)", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "st-roster-empty-"));
+			dirs.push(dir);
+			mkdirSync(join(dir, "runs"));
+			writeFileSync(join(dir, "runs", "empty.json"), "{}");
+			const s = await open({ dir, brothers: { Alpha: svc({ passed: 9 }) } });
+			expect(s.slices).toContain("S1=BrotherAlpha");
+			expect(await nameFor(s, "battle-brother", "S3")).toStartWith("Brother");
+		});
+
+		test("a quiet run file does not free a brother while the heartbeat is fresh", async () => {
+			const a = await open({ brothers: { Alpha: svc({ passed: 9 }) } });
+			const old = new Date(Date.now() - 25 * 3_600_000);
+			utimesSync(join(a.dir, "runs", "sess-0001.json"), old, old);
+			writeFileSync(join(a.dir, "runs", "sess-0001.beat"), new Date().toISOString());
+			expect((await open({ dir: a.dir, sid: "sess-0002", key: "K-2" })).slices).not.toContain("Alpha");
+		});
+
+		test("with the record used up, a squad recruits a name nobody has recorded", async () => {
+			const s = await open({ brothers: { Alpha: svc({ passed: 9 }) } });
+			expect(s.slices).toContain("S1=BrotherAlpha");
+			const third = surname(await nameFor(s, "battle-brother", "S3"));
+			expect(third).not.toBe("Alpha");
+			expect(runFile(s).names?.map(n => n.surname)).toContain(third);
+		});
+
+		test("a roster read leaves no lock behind", async () => {
+			const s = await open({ brothers: { Alpha: svc({ passed: 1 }) } });
+			expect(existsSync(join(s.dir, "roster.lock"))).toBe(false);
+		});
+	});
+
+	describe("reserve", () => {
+		test("a corrupted brother is never handed out", async () => {
+			const s = await open({ brothers: { Dire: svc({ passed: 99, falls: 3 }), Good: svc({ passed: 1 }) } });
+			expect(s.slices).toContain("S1=BrotherGood");
+			expect(await s.call({ action: "slices", slices: SQ })).not.toContain("Dire");
+			expect(runFile(s).names?.some(n => n.surname === "Dire")).toBe(false);
+		});
+
+		test("a brother in another session's open run is skipped, and handed out again once that run ends", async () => {
+			const a = await open({ brothers: { Alpha: svc({ passed: 9 }) } });
+			expect(a.slices).toContain("S1=BrotherAlpha");
+			const b = await open({ dir: a.dir, sid: "sess-0002", key: "K-2" });
+			expect(b.slices).not.toContain("Alpha");
+			await a.call({ action: "end" });
+			expect(await nameFor(b, "battle-brother", "S3")).toBe("BrotherAlpha");
+		});
+
+		test("a brother of a run that redrafted is free again", async () => {
+			const a = await open({ brothers: { Alpha: svc({ passed: 9 }) } });
+			await a.call({ action: "redraft" });
+			const b = await open({ dir: a.dir, sid: "sess-0002", key: "K-2" });
+			expect(b.slices).toContain("S1=BrotherAlpha");
+		});
+
+		test("a brother whose run no longer holds its claim is free again", async () => {
+			const a = await open({ brothers: { Alpha: svc({ passed: 9 }) } });
+			release(a.dir, "K-1", "sess-0001");
+			const b = await open({ dir: a.dir, sid: "sess-0002", key: "K-2" });
+			expect(b.slices).toContain("S1=BrotherAlpha");
+		});
+
+		test("a held run quiet for 25 h is free; one quiet for 23 h still holds its brothers (a paused run may not beat)", async () => {
+			const quiet = async (hours: number) => {
+				const a = await open({ brothers: { Alpha: svc({ passed: 9 }) } });
+				const old = new Date(Date.now() - hours * 3_600_000);
+				for (const f of ["sess-0001.json", "sess-0001.beat"]) if (existsSync(join(a.dir, "runs", f))) utimesSync(join(a.dir, "runs", f), old, old);
+				return (await open({ dir: a.dir, sid: "sess-0002", key: "K-2" })).slices;
+			};
+			expect(await quiet(25)).toContain("S1=BrotherAlpha");
+			expect(await quiet(23)).not.toContain("Alpha");
+		});
+
+		test("with 48 of the 49 pool surnames corrupted in the roster, the squad gets the 49th", async () => {
+			const pool: string[] = [];
+			const held: NameEntry[] = [];
+			for (;;) {
+				const r = allocateName(held, { agent: "battle-brother", squad: `p${pool.length}` });
+				if ("error" in r) break;
+				held.push(r.entry);
+				pool.push(r.entry.surname);
+			}
+			expect(pool.length).toBe(49);
+			const brothers = Object.fromEntries(pool.slice(0, 48).map(n => [n, svc({ falls: 3 })]));
+			const s = await open({ brothers });
+			expect(s.slices).toContain(`S1=Brother${pool[48]}`);
+		});
+	});
+
+	describe("restart", () => {
+		test("facts set before an omp restart still land in the roster", async () => {
+			const before = await open();
+			const name = await build(before, "S1");
+			merge(before);
+			const after = setup("sess-0001", before.dir);
+			expect(await after.call({ action: "end" })).toEndWith("ROSTER 1 squad(s) recorded");
+			expect(roster(before.dir)[surname(name)]).toEqual(svc({ passed: 1, squads: 1, purity: 1, laurel: 1 }));
+		});
+	});
+
+	describe("corrupt roster", () => {
+		test("names are still handed out with a WARN, and the file stays byte-identical after end", async () => {
+			const raw = '{"version":1,"brothers":{"lower":{}}}';
+			const s = await open({ raw });
+			expect(s.slices).toMatch(/WARN roster .*roster\.json unreadable \(.+\): names come from the pool; fix or delete it/);
+			expect(s.slices).toMatch(/NAMES S1=Brother[A-Z]/);
+			const name = await build(s, "S1");
+			expect(await s.call({ action: "name", agent: "battle-brother", squad: "S3" })).toContain("WARN roster");
+			expect(await s.call({ action: "end" })).toMatch(/\nWARN ROSTER not written: roster unreadable/);
+			expect(readFileSync(join(s.dir, "roster.json"), "utf8")).toBe(raw);
+			expect(name).toMatch(/^Brother/);
+		});
+
+		test("a busy lock never stops a name or the end, and a roster that stays busy loses only that run's record", async () => {
+			const s = await open();
+			// A directory is a lock nobody can take over, however old: the end waits out its whole budget.
+			mkdirSync(join(s.dir, "roster.lock"));
+			const out = await s.call({ action: "name", agent: "battle-brother", squad: "S3" });
+			expect(out).toMatch(/^WARN roster busy.*\nNAME Brother/);
+			await build(s, "S1");
+			expect(await s.call({ action: "end" })).toEndWith("WARN ROSTER not written: roster busy");
+			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
+		}, 30000);
+
+		test("a lock left by a dead process is taken at once, at a name and at the end", async () => {
+			const s = await open();
+			const dead = Bun.spawnSync({ cmd: [process.execPath, "-e", "0"] }).pid;
+			writeFileSync(join(s.dir, "roster.lock"), `${dead}-token`);
+			const t0 = Date.now();
+			expect(await s.call({ action: "name", agent: "battle-brother", squad: "S3" })).not.toContain("WARN");
+			await build(s, "S1");
+			writeFileSync(join(s.dir, "roster.lock"), `${dead}-token`);
+			expect(await s.call({ action: "end" })).toEndWith("ROSTER 1 squad(s) recorded");
+			expect(Date.now() - t0).toBeLessThan(1500);
+		});
+
+		test("the end waits past a live holder's stale age instead of losing the record", async () => {
+			const s = await open();
+			const name = await build(s, "S1");
+			const lock = join(s.dir, "roster.lock");
+			writeFileSync(lock, `${process.pid}-token`);
+			const old = new Date(Date.now() - 7000);
+			utimesSync(lock, old, old); // 3 s from stale: more than the 2 s a name waits
+			expect(await s.call({ action: "end" })).toEndWith("ROSTER 1 squad(s) recorded");
+			expect(roster(s.dir)[surname(name)].squads).toBe(1);
+		}, 15000);
+	});
+
+	describe("names off, context", () => {
+		test("a builder job that completes records no outcome", async () => {
+			delete process.env.STRATEGIUM_NAMES;
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			await s.call({ action: "slices", slices: SQ });
+			s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: "S1" }, s.ctx);
+			const event = { toolName: "task", input: { tasks: [{ agent: "battle-brother", name: "S1", task: "build squad S1" }] }, details: { progress: [{ index: 0, id: "S1", status: "running" }] }, isError: false };
+			for (const h of s.handlers.tool_result) h(event, s.ctx);
+			const job = { type: "context", messages: [{ role: "custom", details: { jobs: [{ jobId: "j1", type: "task", status: "completed", label: "S1" }] } }] };
+			for (const h of s.handlers.context) h(job, s.ctx);
+			expect(JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")).ended).toBeUndefined();
+		});
+	});
+
+	describe("names off", () => {
+		test("no roster read, write or lock; no run-file field; end prints what main prints", async () => {
+			delete process.env.STRATEGIUM_NAMES;
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			await s.call({ action: "slices", slices: SQ });
+			const event = { toolName: "task", input: { tasks: [{ agent: "battle-brother", name: "S1", task: "build squad S1" }] }, details: { progress: [{ index: 0, id: "S1", status: "completed" }] }, isError: false };
+			s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: "S1" }, s.ctx);
+			for (const h of s.handlers.tool_result) h(event, s.ctx);
+			merge(s);
+			const run = JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8"));
+			expect(run.ended).toBeUndefined();
+			expect(run.merged).toBeUndefined();
+			expect(await s.call({ action: "end" })).not.toContain("ROSTER");
+			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
+			expect(existsSync(join(s.dir, "roster.lock"))).toBe(false);
+		});
+	});
+
+	describe("parallel writes", () => {
+		test("two real processes add 50 each to one brother and every increment lands", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "st-roster-par-"));
+			dirs.push(dir);
+			const rosterPath = join(import.meta.dir, "roster.ts").replaceAll("\\", "/");
+			const script = `import { updateRoster } from "${rosterPath}"; const dir = ${JSON.stringify(dir)}; let failed = 0;
+for (let i = 0; i < 50; i++) { const err = updateRoster(dir, b => { const n = { ...b }; const s = n.Lorenzo ?? { passed: 0, penances: 0, falls: 0, squads: 0, purity: 0, halo: 0, laurel: 0 }; n.Lorenzo = { ...s, passed: s.passed + 1 }; return n; }, 10000); if (err) failed++; }
+console.log("FAILED " + failed);`;
+			const procs = [0, 1].map(() => Bun.spawn({ cmd: [process.execPath, "-e", script], stdout: "pipe" }));
+			const outs = await Promise.all(procs.map(p => new Response(p.stdout).text()));
+			expect(outs.map(o => o.trim())).toEqual(["FAILED 0", "FAILED 0"]);
+			expect(roster(dir).Lorenzo.passed).toBe(100);
+			expect(existsSync(join(dir, "roster.lock"))).toBe(false);
 		});
 	});
 });

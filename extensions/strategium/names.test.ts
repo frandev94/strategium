@@ -4,6 +4,69 @@ import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./
 // Seeded LCG so draws are reproducible.
 const seeded = (seed: number) => () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
 
+describe("without prefer the bare name is required (REG-1)", () => {
+	const bare = (agent: string, title: string, pool: string[]) => {
+		for (let seed = 1; seed <= 10; seed++) {
+			const keep = pool[seed % pool.length];
+			const avoid = new Set(pool.filter((s) => s !== keep).map((s) => title + s));
+			const r = allocateName([], agent === "battle-brother" ? { agent, squad: "a" } : { agent }, avoid, seeded(seed));
+			expect("error" in r ? r.error : r.entry.name).toBe(title + keep);
+		}
+	};
+	const brothers = () => {
+		const held: NameEntry[] = [];
+		const names: string[] = [];
+		for (let i = 0; i < 49; i++) {
+			const r = allocateName(held, { agent: "battle-brother", squad: "p" + i });
+			if ("error" in r) break;
+			held.push(r.entry);
+			names.push(r.entry.surname);
+		}
+		return names;
+	};
+	test("48 of 49 bare Brother names avoided: the remaining one, for 10 seeds", () => bare("battle-brother", "Brother", brothers()));
+	test("a librarian likewise", () => {
+		const pool: string[] = [];
+		const held: NameEntry[] = [];
+		for (;;) {
+			const r = allocateName(held, { agent: "librarian" });
+			if ("error" in r) break;
+			held.push(r.entry);
+			pool.push(r.entry.surname);
+		}
+		bare("librarian", "Librarian", pool);
+	});
+	test("differential: same result as the old bare-name pass 1 for random seeds", () => {
+		const all = brothers();
+		for (let seed = 1; seed <= 40; seed++) {
+			const rand = seeded(seed);
+			const avoid = new Set(all.filter(() => rand() < 0.9).map((s) => "Brother" + s));
+			const free = all.filter((s) => !avoid.has("Brother" + s));
+			const r = allocateName([], { agent: "battle-brother", squad: "a" }, avoid, seeded(seed + 100));
+			if (free.length) expect(free).toContain("error" in r ? "" : r.entry.surname);
+			if (!("error" in r) && free.length) expect(r.entry.name).toBe("Brother" + r.entry.surname);
+		}
+	});
+});
+
+describe("prefer with names already issued (CB1)", () => {
+	test("a preferred surname whose bare name is in avoid is kept with an epithet", () => {
+		const r = allocateName([], { agent: "battle-brother", squad: "a" }, new Set(["BrotherLorenzo"]), undefined, { prefer: ["Lorenzo"] });
+		expect("error" in r ? r.error : r.entry.name).toBe("BrotherLorenzoUnbroken");
+		expect("error" in r ? "" : r.entry.surname).toBe("Lorenzo");
+	});
+	test("pass 2 honours prefer too: with every surname held by retired builders", () => {
+		const entries: NameEntry[] = [];
+		for (let i = 0; i < 49; i++) {
+			const r = allocateName(entries, { agent: "battle-brother", squad: `p${i}` });
+			if ("error" in r) break;
+			entries.push({ ...r.entry, spawned: true, old: true });
+		}
+		const r = allocateName(entries, { agent: "battle-brother", squad: "a" }, new Set(), undefined, { prefer: ["Gideon"] });
+		expect("error" in r ? r.error : r.entry.surname).toBe("Gideon");
+	});
+});
+
 /** Allocate and append, like the wiring does. */
 function give(entries: NameEntry[], req: Parameters<typeof allocateName>[1], avoid?: ReadonlySet<string>, rand?: () => number) {
 	const r = allocateName(entries, req, avoid, rand);
@@ -156,6 +219,91 @@ describe("roles", () => {
 	test("names issued earlier in the process are avoided", () => {
 		const avoid = new Set(["ScoutTelion", "ScoutCyrus"]);
 		for (let i = 0; i < 12; i++) expect(avoid.has(give([], { agent: "scout" }, avoid, seeded(i)).name)).toBe(false);
+	});
+});
+
+describe("prefer and skip", () => {
+	const alloc = (entries: NameEntry[], req: Parameters<typeof allocateName>[1], opts: { prefer?: string[]; skip?: Set<string> }, rand = seeded(3)) => {
+		const r = allocateName(entries, req, undefined, rand, opts);
+		if ("error" in r) throw new Error(r.error);
+		if (r.fresh) entries.push(r.entry);
+		return r.entry;
+	};
+
+	test("the first free preferred surname wins over the draw, in order", () => {
+		const entries: NameEntry[] = [];
+		const prefer = ["Gideon", "Leon", "Uriel"];
+		expect(alloc(entries, { agent: "battle-brother", squad: "a" }, { prefer }).surname).toBe("Gideon");
+		expect(alloc(entries, { agent: "battle-brother", squad: "b" }, { prefer }).surname).toBe("Leon");
+		expect(alloc(entries, { agent: "battle-brother", squad: "c" }, { prefer }).surname).toBe("Uriel");
+	});
+
+	test("a role takes its preferred surname", () => {
+		expect(alloc([], { agent: "scout" }, { prefer: ["Cyrus"] }).name).toBe("ScoutCyrus");
+	});
+
+	test("skipped surnames are never chosen, even if preferred", () => {
+		const skip = new Set(["Gideon"]);
+		for (let i = 0; i < 40; i++) {
+			const e = alloc([], { agent: "battle-brother", squad: "a" }, { prefer: ["Gideon"], skip }, seeded(i));
+			expect(e.surname).not.toBe("Gideon");
+		}
+	});
+
+	test("with every preferred surname taken or skipped, it recruits from the pool", () => {
+		const entries: NameEntry[] = [];
+		const first = alloc(entries, { agent: "battle-brother", squad: "a" }, { prefer: ["Gideon"] });
+		const second = alloc(entries, { agent: "battle-brother", squad: "b" }, { prefer: ["Gideon", "Leon"], skip: new Set(["Leon"]) });
+		expect(first.surname).toBe("Gideon");
+		expect(second.surname).not.toMatch(/^(Gideon|Leon)$/);
+		expect(second.name.startsWith("Brother")).toBe(true);
+	});
+
+	test("a squad keeps its surname when preferences change", () => {
+		const entries: NameEntry[] = [];
+		const b = alloc(entries, { agent: "battle-brother", squad: "a" }, { prefer: ["Gideon"] });
+		const v = alloc(entries, { agent: "veteran", squad: "a" }, { prefer: ["Leon"], skip: new Set(["Gideon"]) });
+		expect(v.surname).toBe(b.surname);
+	});
+
+	test("without options the result is unchanged", () => {
+		expect(alloc([], { agent: "scout" }, {}, seeded(5))).toEqual(give([], { agent: "scout" }, undefined, seeded(5)));
+	});
+
+	// The brother pool, learned from the code: unheld surnames are handed out until none is left.
+	const brotherPool = () => {
+		const entries: NameEntry[] = [];
+		for (let i = 0; i < 200; i++) {
+			const r = allocateName(entries, { agent: "battle-brother", squad: `p${i}` }, undefined, seeded(i));
+			if ("error" in r) break;
+			entries.push(r.entry);
+		}
+		return entries.map((e) => e.surname);
+	};
+
+	test("with the whole pool skipped but one surname, that one is chosen for any seed", () => {
+		const pool = brotherPool();
+		expect(pool.length).toBeGreaterThan(40);
+		const last = pool[7];
+		const skip = new Set(pool.filter((s) => s !== last));
+		for (let i = 0; i < 40; i++) expect(alloc([], { agent: "battle-brother", squad: "a" }, { skip }, seeded(i)).surname).toBe(last);
+	});
+
+	test("with the whole pool skipped there is no free name", () => {
+		const r = allocateName([], { agent: "battle-brother", squad: "a" }, undefined, seeded(1), { skip: new Set(brotherPool()) });
+		expect(r).toEqual({ error: expect.stringContaining("no free name left for battle-brother") });
+	});
+
+	test("skip binds pass 2: a skipped surname held by a retired builder is never reused", () => {
+		const pool = brotherPool();
+		const retired: NameEntry[] = pool.map((s, i) => ({ name: `Brother${s}`, agent: "battle-brother", surname: s, squad: `r${i}`, spawned: true, old: true }));
+		const open = pool[3];
+		for (let i = 0; i < 40; i++) {
+			const skip = new Set(pool.filter((s) => s !== open));
+			expect(alloc([...retired], { agent: "battle-brother", squad: "new" }, { skip }, seeded(i)).surname).toBe(open);
+		}
+		const all = allocateName([...retired], { agent: "battle-brother", squad: "new" }, undefined, seeded(1), { skip: new Set(pool) });
+		expect("error" in all).toBe(true);
 	});
 });
 
