@@ -9,7 +9,7 @@ describe("agents/*.md frontmatter", () => {
 	test("there are agent files", () => expect(files.length).toBeGreaterThan(0));
 	for (const f of files) {
 		test(`${f}: frontmatter parses with one description value`, () => {
-			const raw = readFileSync(join(dir, f), "utf8").replace(/\r\n/g, "\n");
+			const raw = readFileSync(join(dir, f), "utf8").replace(/\r\n?/g, "\n");
 			const m = raw.match(/^---\n([\s\S]*?)\n---\n/);
 			expect(m).not.toBeNull();
 			const fm = Bun.YAML.parse(m![1]) as Record<string, unknown>;
