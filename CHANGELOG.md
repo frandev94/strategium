@@ -1,3 +1,21 @@
+## [0.2.35] - 2026-11-22
+
+### 🚀 Features
+
+- *(cockpit)* An optional caster narrates the current station
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Caster races, reasons and sanitizing
+- *(cockpit)* Caster report shows calls and model; provider errors explained
+
+### 📚 Documentation
+
+- *(cockpit)* Describe the caster
+
+### 🧪 Testing
+
+- *(tooling)* Tui-shot --caster flag and caster-box replay
 ## [0.2.34] - 2026-11-22
 
 ### 🚀 Features
