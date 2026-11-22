@@ -31,6 +31,15 @@ test("parseArgs --ponytail: bare, =DIR, DIR, and bare before a flag", () => {
 	expect(args(["--ponytail", "--all"])).toMatchObject({ ponytail: true, all: true });
 });
 
+test("parseArgs --relic: bare and =1 are on, =0 off, default unset, other values rejected", () => {
+	expect(args([]).relic).toBeNull();
+	expect(args(["--relic"]).relic).toBe(true);
+	expect(args(["--relic=1"]).relic).toBe(true);
+	expect(args(["--relic=0"]).relic).toBe(false);
+	expect(args(["--relic", "--all"])).toMatchObject({ relic: true, all: true });
+	expect(parseArgs(["--relic=2"])).toHaveProperty("error", expect.stringContaining("--relic"));
+});
+
 test("parseArgs rejects an unknown flag, a missing value and a bad seed", () => {
 	expect(parseArgs(["--bogus"])).toEqual({ error: "unrecognized arguments: --bogus" });
 	expect(parseArgs(["--rep=q-close"])).toHaveProperty("error"); // no prefix abbreviations
