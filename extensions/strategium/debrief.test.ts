@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { usd } from "./cockpit";
 import { type AgentCost, type DebriefInput, debrief, splitMinutes, stationTimes } from "./debrief";
+import type { Honour } from "./roster";
 import { type Ev, lockPath, nowIso, safeName } from "./timer";
 
 const base = new Date(2026, 10, 16, 9, 0, 0);
@@ -516,5 +517,69 @@ describe("cost", () => {
 			}
 			expect(total.includes("$0.00") && !known(agents).some(x => x.cost! > 0 || x.cost === 0)).toBe(false);
 		}
+	});
+});
+
+describe("debrief honours (#135)", () => {
+	const h = (brother: string, squad: string, kind: Honour["kind"], extra: Partial<Honour> = {}): Honour => ({ brother, squad, kind, penances: 0, earned: [], ...extra });
+	const rows: Honour[] = [
+		h("Leon", "alpha", "first", { earned: ["Purity Seal"], joined: true }),
+		h("Tycho", "beta", "fell", { penances: 2 }),
+	];
+	const evs = [start(0), stop(10)];
+
+	test("honours undefined leaves the markdown and summary as before: no section, no HONOURS", () => {
+		const r = debrief(input(evs));
+		expect(r.markdown).not.toContain("## Honours");
+		expect(r.summary.join("\n")).not.toContain("HONOURS");
+		expect(debrief(input(evs, { honours: undefined }))).toEqual(r);
+	});
+	test("rows give the table after Squads and the HONOURS line", () => {
+		const r = debrief(input(evs, { honours: { rows } }));
+		const md = r.markdown;
+		expect(md.indexOf("## Squads")).toBeLessThan(md.indexOf("## Honours"));
+		expect(md.indexOf("## Honours")).toBeLessThan(md.indexOf("## Agents spawned"));
+		expect(section(md, "Honours").trim().split("\n")).toEqual([
+			"| Brother | Squad | Result | Honours |",
+			"|---|---|---|---|",
+			"| Leon | alpha | first build | Purity Seal |",
+			"| Tycho | beta | fell | — |",
+		]);
+		expect(r.summary.at(-1)).toBe("HONOURS Leon joins the roster, Leon earns a Purity Seal, Tycho falls");
+	});
+	test("results: first build, after N penance(s), saved by the veteran, fell", () => {
+		const all = [h("A", "a", "first"), h("B", "b", "penance", { penances: 1 }), h("C", "c", "penance", { penances: 2 }), h("D", "d", "saved", { earned: ["Iron Halo"] }), h("E", "e", "fell")];
+		const body = section(debrief(input(evs, { honours: { rows: all } })).markdown, "Honours");
+		const cells = body.trim().split("\n").slice(2).map(l => l.split(" | ")[2]);
+		expect(cells).toEqual(["first build", "after 1 penance", "after 2 penances", "saved by the veteran", "fell"]);
+	});
+	test("every honour is worded: Iron Halo, Laurel, Crux, corrupted", () => {
+		const r = debrief(input(evs, { honours: { rows: [h("Leon", "a", "saved", { earned: ["Iron Halo", "Laurel Imperialis", "Crux Terminatus"] }), h("Tycho", "b", "fell", { corrupted: true })] } }));
+		expect(r.summary.at(-1)).toBe(
+			"HONOURS Leon earns the Iron Halo, Leon earns the Laurel Imperialis, Leon earns the Crux Terminatus, Tycho falls, Tycho is corrupted and kept in reserve",
+		);
+	});
+	test("rows: [] gives None. and HONOURS none; a run with no honour to word is also none", () => {
+		const r = debrief(input(evs, { honours: { rows: [] } }));
+		expect(section(r.markdown, "Honours").trim()).toBe("None.");
+		expect(r.summary.at(-1)).toBe("HONOURS none");
+		expect(debrief(input(evs, { honours: { rows: [h("Leon", "a", "penance", { penances: 1 })] } })).summary.at(-1)).toBe("HONOURS none");
+	});
+	test("unsaved adds the not-saved note, with and without rows", () => {
+		const note = "Roster not written (roster busy): this record was not saved.";
+		expect(section(debrief(input(evs, { honours: { rows, unsaved: "roster busy" } })).markdown, "Honours")).toContain(`\n${note}\n`);
+		const none = section(debrief(input(evs, { honours: { rows: [], unsaved: "roster busy" } })).markdown, "Honours");
+		expect(none).toContain("None.");
+		expect(none).toContain(note);
+		expect(section(debrief(input(evs, { honours: { rows } })).markdown, "Honours")).not.toContain("not saved");
+	});
+	test("a pipe or ESC in a brother, squad or reason is escaped or cleaned", () => {
+		const r = debrief(input(evs, { honours: { rows: [h("Le|on\x1b[31m", "al\x1b[1mpha|", "first")], unsaved: "bad\nreason\x1b[2J" } }));
+		const body = section(r.markdown, "Honours");
+		expect(body).not.toContain("\x1b");
+		expect(body.trim().split("\n")[2]).toBe("| Le\\|on | alpha\\| | first build | — |");
+		expect(body).toContain("Roster not written (bad reason): this record was not saved.");
+		expect(r.summary.join("\n")).not.toContain("\x1b");
+		expect(r.summary.at(-1)).not.toContain("\n");
 	});
 });

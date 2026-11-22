@@ -1,22 +1,31 @@
 import { describe, expect, test } from "bun:test";
 import { CASTER_SYSTEM, casterFacts, casterPrompt, casterText, due, parseAlias, parseEvery, stateHash, summarize, type CasterReply } from "./caster";
-import { cockpitView, type Deployed, type Entry, type Live } from "./cockpit";
+import { cockpitView, type Deployed, type Entry, type Live, type ViewInput } from "./cockpit";
 
 const NOW = 10_000_000;
 const sig = () => new AbortController().signal;
 
-const input = (over: { deployed?: Map<string, Deployed>; live?: Map<string, Live>; phase?: string; chronicle?: Entry[]; now?: number; building?: boolean } = {}) => {
+const input = (over: { deployed?: Map<string, Deployed>; live?: Map<string, Live>; phase?: string; chronicle?: Entry[]; now?: number; building?: boolean; names?: ViewInput["names"] } = {}) => {
 	const chronicle = over.chronicle ?? [{ at: "10:00", who: "captain", text: "muster done" }];
 	const deployed = over.deployed ?? new Map<string, Deployed>([["a1", { who: "a1", role: "battle-brother", squad: "alpha", station: over.phase ?? "Skirmish", state: "active", at: NOW - 60_000 }]]);
 	const live = over.live ?? new Map<string, Live>([["a1", { since: NOW - 60_000, at: NOW - 5_000, tool: "bash", intent: "run tests", done: 1, total: 3, line: "parser green" }]]);
 	const phases = [{ name: over.phase ?? "Skirmish", tasks: [{ content: "[battle-brother] forge", status: "in_progress" }] }];
-	const view = cockpitView({ key: "61", phases, slices: [{ id: "alpha" }], agents: over.building === false ? {} : { a1: { id: "alpha" } }, notes: {}, chronicle, deployed, live, now: over.now ?? NOW });
+	const view = cockpitView({ key: "61", phases, slices: [{ id: "alpha" }], agents: over.building === false ? {} : { a1: { id: "alpha" } }, notes: {}, chronicle, deployed, live, now: over.now ?? NOW, names: over.names });
 	return { view, live, chronicle };
 };
 const hash = (o: Parameters<typeof input>[0] = {}) => {
 	const { view, live, chronicle } = input(o);
 	return stateHash(view, live, chronicle);
 };
+const named: ViewInput["names"] = { squads: { alpha: { name: "PenitentLorenzo", surname: "Lorenzo" } } };
+
+describe("names (#135)", () => {
+	test("casterFacts carries the squad's name and stateHash moves with it", () => {
+		const { view, live, chronicle } = input({ names: named });
+		expect(casterFacts(view, live, chronicle).join("\n")).toContain("PenitentLorenzo");
+		expect(hash({ names: named })).not.toBe(hash());
+	});
+});
 const bad = /[\p{Cc}\u202a-\u202e\u2066-\u2069\u2028\u2029\u200e\u200f\u061c]/u;
 
 describe("stateHash", () => {

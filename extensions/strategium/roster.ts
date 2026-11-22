@@ -87,6 +87,62 @@ export function applyRun(brothers: Brothers, outcomes: readonly Outcome[], merge
 	return next;
 }
 
+export type Brother = { name: string; surname: string; service?: Service; crux?: true; corrupted?: true };
+
+/** Squad id → the squad's current builder: the last spawned not-retired builder entry, else the last one. `service` is undefined for a recruit or an unreadable roster. */
+export function squadBrothers(names: readonly NameEntry[] | undefined, brothers: Brothers | undefined): Record<string, Brother> {
+	const out: Record<string, Brother> = Object.create(null);
+	const own = (Array.isArray(names) ? (names as NameEntry[]) : []).filter(e => isBuilder(e) && e.squad !== undefined);
+	for (const squad of new Set(own.map(e => e.squad as string))) {
+		const mine = own.filter(e => e.squad === squad);
+		const e = (mine.findLast(x => x.spawned) ?? mine.at(-1)) as NameEntry;
+		const service = brothers && Object.hasOwn(brothers, e.surname) ? brothers[e.surname] : undefined;
+		out[squad] = { name: e.name, surname: e.surname, ...(service ? { service } : {}), ...(service && crux(service) ? { crux: true } : {}), ...(service && corrupted(service) ? { corrupted: true } : {}) };
+	}
+	return out;
+}
+
+export type Honour = {
+	brother: string;
+	squad: string;
+	kind: Outcome["kind"];
+	penances: number;
+	earned: ("Purity Seal" | "Iron Halo" | "Laurel Imperialis" | "Crux Terminatus")[];
+	joined?: true;
+	corrupted?: true;
+};
+
+/**
+ * One row per outcome, from the `applyRun(before)` diff so it can never disagree with the saved record.
+ * Laurel, Crux, joined and corrupted belong to the brother, so they sit on his first row. Without `before` the old record is unknown: no joined, Crux or corrupted.
+ */
+export function honours(outcomes: readonly Outcome[], merged: boolean, before?: Brothers): Honour[] {
+	const old = before ?? empty();
+	const after = applyRun(old, outcomes, merged);
+	const seen = new Set<string>();
+	return outcomes.map(o => {
+		const b = Object.hasOwn(old, o.brother) ? old[o.brother] : undefined;
+		const a = after[o.brother] as Service;
+		const first = !seen.has(o.brother);
+		seen.add(o.brother);
+		const earned: Honour["earned"] = [];
+		if (o.kind === "first") earned.push("Purity Seal");
+		if (o.kind === "saved") earned.push("Iron Halo");
+		if (first && a.laurel > (b?.laurel ?? 0)) earned.push("Laurel Imperialis");
+		const known = first && before !== undefined;
+		if (known && crux(a) && !(b && crux(b))) earned.push("Crux Terminatus");
+		return {
+			brother: o.brother,
+			squad: o.squad,
+			kind: o.kind,
+			penances: o.penances,
+			earned,
+			...(known && !b ? { joined: true as const } : {}),
+			...(known && corrupted(a) && !(b && corrupted(b)) ? { corrupted: true as const } : {}),
+		};
+	});
+}
+
 /** D7: the whole file is readable or it is not; no partial salvage. */
 export function parseRoster(text: string): { brothers: Brothers } | { error: string } {
 	if (text.length > MAX_BYTES) return { error: "larger than 256 KiB" };

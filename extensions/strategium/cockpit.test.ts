@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	BADGES,
 	activePhase,
 	closes,
 	clean,
@@ -28,6 +29,7 @@ import {
 	type View,
 	type ViewInput,
 } from "./cockpit";
+import type { Brother } from "./roster";
 import { AGENTS } from "../../skills/strategium/todo";
 import { DEFAULT_THEME, THEMES, type Theme } from "./themes";
 
@@ -2538,8 +2540,8 @@ describe("transcript boundaries (#125 penance)", () => {
 
 // The relic switch must leave today's renderer byte for byte alone. These digests were taken from the renderer of main 157274f before the relic code existed.
 describe("relic off: byte-identical to main", () => {
-	const FIX: Record<string, () => View> = {
-		scriptorium: () =>
+	const FIX: Record<string, (over?: Partial<ViewInput>) => View> = {
+		scriptorium: over =>
 			cockpitView(
 				input({
 					clock: { running: true, el: 42, bk: 120 },
@@ -2550,10 +2552,11 @@ describe("relic off: byte-identical to main", () => {
 					],
 					seal: { id: "Plan", lines: ["Squads: a, b", "Merge bar: tests green", "Review: confessor"] },
 					chronicle: many(7),
+					...over,
 				}),
 			),
-		skirmish: () => cockpitView(DETAIL({ chronicle: many(14) })),
-		detail: () => open("agent:AlphaBrother", { chronicle: many(6) }),
+		skirmish: over => cockpitView(DETAIL({ chronicle: many(14), ...over })),
+		detail: over => open("agent:AlphaBrother", { chronicle: many(6), ...over }),
 	};
 	const PALS = { truecolor: () => palette("truecolor", THEMES["blood-angels"]), 256: () => palette("256", THEMES.cogitator) };
 	const DIGESTS: Record<string, string> = {
@@ -2655,12 +2658,16 @@ describe("relic off: byte-identical to main", () => {
 		"skirmish/72/truecolor/30/1": "8d0d238dbab9acd4615593bc5e499eb85d3f9fe0eda3b3b7104720e9c80d1b5e",
 	};
 	const cases = Object.keys(FIX).flatMap(v => [60, 72, 100, 140].flatMap(w => Object.keys(PALS).flatMap(p => [undefined, 30].flatMap(h => [0, 1].map(f => [`${v}/${w}/${p}/${h ?? "-"}/${f}`, v, w, p, h, f] as const)))));
-	const digest = (v: string, w: number, p: string, h: number | undefined, f: number) =>
-		new Bun.CryptoHasher("sha256").update(renderCockpit(FIX[v](), w, f, PALS[p as keyof typeof PALS](), h).join("\n")).digest("hex");
+	const digest = (v: string, w: number, p: string, h: number | undefined, f: number, over: Partial<ViewInput> = {}) =>
+		new Bun.CryptoHasher("sha256").update(renderCockpit(FIX[v](over), w, f, PALS[p as keyof typeof PALS](), h).join("\n")).digest("hex");
 
 	test.each(cases)("%s", (name, v, w, p, h, f) => {
 		if (process.env.DUMP_DIGESTS) console.log(`DIGEST ${name} ${digest(v, w, p, h, f)}`);
 		expect(digest(v, w, p, h, f)).toBe(DIGESTS[name]);
+	});
+	// Names on with nothing named yet is names off, byte for byte.
+	test.each(cases)("%s with names: { squads: {} }", (name, v, w, p, h, f) => {
+		expect(digest(v, w, p, h, f, { names: { squads: {} } })).toBe(DIGESTS[name]);
 	});
 });
 
@@ -3115,5 +3122,97 @@ describe("caster box", () => {
 			expect(renderCockpit(cockpitView(rest as ViewInput), w, 0, TRUE, 40, relic)).toEqual(a);
 			expect(a.join("\n")).not.toMatch(/CASTER|caster:/);
 		}
+	});
+});
+
+describe("names: squad rows, badges and record", () => {
+	const LORENZO = { passed: 4, penances: 1, falls: 0, squads: 5, purity: 4, halo: 1, laurel: 1 };
+	const NAMES = (extra: Record<string, Brother> = {}): ViewInput["names"] => ({
+		squads: { alpha: { name: "PenitentLorenzo", surname: "Lorenzo", service: LORENZO }, beta: { name: "BrotherLeon", surname: "Leon" }, ...extra },
+	});
+	const rowOf = (v: View, id: string) => v.boxes.flatMap(b => b.lines).find(l => l.id === `squad:${id}`)!.text;
+	const lines = (names: ViewInput["names"], id = "squad:alpha") => open(id, { names }).detail!.lines;
+	const UNSAFE = /[\p{Cc}\u202a-\u202e\u2066-\u2069\u2028\u2029\u200e\u200f\u061c]/u;
+
+	test("plain row: name, badges with counts, then the squad", () => {
+		expect(rowOf(cockpitView(DETAIL({ names: NAMES() })), "alpha")).toBe("‡ PenitentLorenzo ✠4 ☉1 ❦1 · squad alpha forging");
+	});
+	test("Nerd Font row: glyph, space, count, from BADGES(true)", () => {
+		const b = BADGES(true);
+		expect(rowOf(cockpitView(DETAIL({ glyphs: true, names: NAMES() })), "alpha")).toContain(`PenitentLorenzo ${b.purity} 4 ${b.halo} 1 ${b.laurel} 1 · squad alpha forging`);
+	});
+	test("zero counters are omitted and a recruit shows no badges", () => {
+		const only = { name: "BrotherTycho", surname: "Tycho", service: { passed: 1, penances: 0, falls: 0, squads: 1, purity: 0, halo: 0, laurel: 1 } };
+		expect(rowOf(cockpitView(DETAIL({ names: NAMES({ alpha: only }) })), "alpha")).toBe("‡ BrotherTycho ❦1 · squad alpha forging");
+		expect(rowOf(cockpitView(DETAIL({ names: NAMES() })), "beta")).toBe("† BrotherLeon · squad beta returned");
+	});
+	test("passed >= 10 shows the Crux with no number", () => {
+		const tycho = { name: "BrotherTycho", surname: "Tycho", crux: true as const, service: { passed: 10, penances: 0, falls: 0, squads: 10, purity: 7, halo: 0, laurel: 0 } };
+		expect(rowOf(cockpitView(DETAIL({ names: NAMES({ alpha: tycho }) })), "alpha")).toBe("‡ BrotherTycho ✠7 ✚ · squad alpha forging");
+	});
+	test("each plain badge is one cell and not an emoji", () => {
+		for (const g of Object.values(BADGES(false))) {
+			expect(Bun.stringWidth(g)).toBe(1);
+			expect(g).not.toMatch(/\p{Extended_Pictographic}/u);
+		}
+	});
+	test("the Nerd Font badges are the md glyphs", () => {
+		// md-seal_variant, md-circle_double, md-crown, md-shield_cross (glyphnames.json)
+		expect(Object.values(BADGES(true))).toEqual(["\u{f0fd9}", "\u{f0e95}", "\u{f01a5}", "\u{f0cc9}"]);
+	});
+
+	test.each([60, 72, 100, 140])("at width %i no line is wider than the width", width => {
+		const long = { name: `Penitent${"A".repeat(20)}`, surname: "A", crux: true as const, service: LORENZO };
+		for (const names of [NAMES(), NAMES({ alpha: long })]) for (const glyphs of [false, true]) for (const l of renderCockpit(cockpitView(DETAIL({ names, glyphs })), width, 0, TRUE)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
+	});
+	test("a 28-char name cuts the tail of a narrow row with an ellipsis", () => {
+		const long = { name: `Penitent${"A".repeat(20)}`, surname: "A", service: LORENZO };
+		const row = renderCockpit(cockpitView(DETAIL({ names: NAMES({ alpha: long }) })), 60, 0, TRUE).map(plain).find(l => l.includes("PenitentAAA"))!;
+		expect(row).toContain("…");
+		expect(row).not.toContain("forging");
+	});
+
+	test("detail: brother, record and honours", () => {
+		const out = lines(NAMES());
+		expect(out).toContain("brother: Lorenzo");
+		expect(out).toContain("record: passed 4 · penances 1 · falls 0 · squads 5");
+		expect(out).toContain("honours: Purity Seal ×4 · Iron Halo ×1 · Laurel Imperialis ×1");
+		expect(out.indexOf("brother: Lorenzo")).toBeGreaterThan(out.indexOf("escalated to veteran"));
+		expect(out.indexOf("brother: Lorenzo")).toBeLessThan(out.findIndex(l => l.startsWith("agents (")));
+	});
+	test("detail: a recruit has no record yet and no honours", () => {
+		const out = lines(NAMES(), "squad:beta");
+		expect(out).toContain("brother: Leon");
+		expect(out).toContain("record: none yet");
+		expect(out).toContain("honours: none");
+	});
+	test("detail: the Crux, an unreadable roster and a corrupted brother", () => {
+		const tycho = { name: "BrotherTycho", surname: "Tycho", crux: true as const, corrupted: true as const, service: { passed: 10, penances: 0, falls: 3, squads: 10, purity: 7, halo: 0, laurel: 0 } };
+		const out = lines(NAMES({ alpha: tycho }));
+		expect(out).toContain("honours: Purity Seal ×7 · Crux Terminatus");
+		expect(out).toContain("corrupted: kept in reserve");
+		const unknown = lines({ squads: { alpha: { name: "PenitentLorenzo", surname: "Lorenzo" } }, unreadable: true });
+		expect(unknown).toContain("record: unknown (roster unreadable)");
+		expect(unknown.join("\n")).not.toContain("corrupted");
+		expect(lines(NAMES())).not.toContain("corrupted: kept in reserve");
+	});
+	test("detail: a squad without a name has no record lines", () => {
+		expect(lines({ squads: {} }).join("\n")).not.toMatch(/brother:|record:|honours:/);
+	});
+	test("control characters and ESC in a name are cleaned", () => {
+		const evil = { name: "Pen\x1b[31mi\x07tent\u202e", surname: "Lo\x1brenzo\n", service: LORENZO };
+		const names = NAMES({ alpha: evil });
+		expect(rowOf(cockpitView(DETAIL({ names })), "alpha")).not.toMatch(UNSAFE);
+		for (const l of lines(names)) expect(l).not.toMatch(UNSAFE);
+		for (const l of renderCockpit(cockpitView(DETAIL({ names })), 100, 0, TRUE)) expect(plain(l)).not.toMatch(/[\x00-\x08\x0b-\x1f]/);
+	});
+
+	test("navigation ids and the transcript target are the same with names on and off", () => {
+		const on = open("squad:alpha", { names: NAMES() });
+		const off = open("squad:alpha");
+		expect(on.boxes.flatMap(b => b.lines.map(l => l.id))).toEqual(off.boxes.flatMap(b => b.lines.map(l => l.id)));
+		expect(on.nav).toEqual(off.nav);
+		expect(on.detail!.target).toBe(off.detail!.target);
+		expect(on.detail!.target).toBe("AlphaVet");
 	});
 });

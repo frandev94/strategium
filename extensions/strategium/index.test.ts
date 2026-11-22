@@ -8520,3 +8520,149 @@ console.log("FAILED " + failed);`;
 		});
 	});
 });
+
+// Names, honours and the record in the cockpit, the chronicle and the debrief (#135).
+describe("names in the cockpit (#135)", () => {
+	type Comp = { render(w: number): string[]; handleInput?(d: string): void };
+	const SQ = [
+		{ id: "S1", parallel: true, files: ["a.ts"] },
+		{ id: "S2", parallel: true, files: ["b.ts"] },
+		{ id: "S3", parallel: false, files: ["c.ts"] },
+	];
+	const LORENZO = { passed: 4, penances: 0, falls: 0, squads: 4, purity: 4, halo: 0, laurel: 0 };
+	const plain = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, "");
+	// A run with the three squads and a UI; `on` false leaves names off, `brothers` or `raw` seed roster.json.
+	const open = async (o: { on?: boolean; brothers?: object; raw?: string } = {}) => {
+		if (o.on !== false) process.env.STRATEGIUM_NAMES = "1";
+		const dir = mkdtempSync(join(tmpdir(), "st-names-cockpit-"));
+		dirs.push(dir);
+		if (o.brothers) writeFileSync(join(dir, "roster.json"), JSON.stringify({ version: 1, brothers: o.brothers }));
+		if (o.raw !== undefined) writeFileSync(join(dir, "roster.json"), o.raw);
+		const s = setup("sess-0001", dir);
+		const opened: Comp[] = [];
+		const c = s.ctx as unknown as { hasUI: boolean; ui: Record<string, unknown> };
+		c.hasUI = true;
+		c.ui.custom = (factory: (t: unknown, th: unknown, k: unknown, done: () => void) => Comp) => {
+			opened.push(factory({ requestRender() {}, terminal: { rows: 60 } }, {}, {}, () => {}));
+			return new Promise(() => {});
+		};
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: dir });
+		await s.call({ action: "slices", slices: SQ });
+		const phases = [{ name: "Skirmish", tasks: [{ content: "[battle-brother] Squads", status: "in_progress" }] }];
+		s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases } }, s.ctx));
+		return { ...s, opened };
+	};
+	type Opened = Awaited<ReturnType<typeof open>>;
+	const task = (s: Opened, agent: string, id: string, status: string) =>
+		s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent, name: id, task: "build squad S1" }] }, details: { progress: [{ index: 0, id, status }] }, isError: false }, s.ctx));
+	const named = async (s: Opened, agent: string) => (await s.call({ action: "name", agent, squad: "S1" })).split("\n").at(-1)!.slice(5);
+	const cockpitFile = (s: Opened) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8")) as { chronicle: { text: string }[]; deployed: [string, Record<string, unknown>][] };
+	const texts = (s: Opened) => cockpitFile(s).chronicle.map(e => e.text);
+	// The overlay as it is now, without colours; closed again so no interval stays alive.
+	const peek = async (s: Opened) => {
+		await s.sub("cockpit");
+		const comp = s.opened.at(-1)!;
+		const text = plain(comp.render(120).join("\n"));
+		comp.handleInput!("q");
+		return text;
+	};
+	const detail = async (s: Opened) => {
+		await s.sub("cockpit");
+		const comp = s.opened.at(-1)!;
+		for (let i = 0; i < 40 && !plain(comp.render(120).join("\n")).split("\n").some(l => l.includes("▸") && l.includes("S1")); i++) comp.handleInput!("\x1b[B");
+		comp.handleInput!("\r");
+		const text = plain(comp.render(120).join("\n"));
+		comp.handleInput!("q");
+		return text;
+	};
+
+	test("names off: the chronicle, the cockpit file and the end result are today's", async () => {
+		const s = await open({ on: false });
+		task(s, "battle-brother", "S1", "running");
+		task(s, "battle-brother", "S1", "completed");
+		expect(texts(s).filter(t => /deployed|returned/.test(t))).toEqual(["† battle-brother deployed", "✓ returned"]);
+		expect(cockpitFile(s).deployed[0][1]).not.toHaveProperty("name");
+		const out = await s.call({ action: "end" });
+		expect(out).not.toContain("HONOURS");
+		expect(readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8")).not.toContain("## Honours");
+	});
+
+	test("names on: the chronicle carries the name, the deployed entry keeps it and the return says it", async () => {
+		const s = await open();
+		const name = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		task(s, "battle-brother", name, "running");
+		expect(texts(s)).toContain(`† ${name} deployed`);
+		expect(cockpitFile(s).deployed[0][1].name).toBe(name);
+		task(s, "battle-brother", name, "completed");
+		expect(texts(s)).toContain(`✓ ${name} returned`);
+		task(s, "veteran", "S1-v", "running");
+		expect(texts(s).at(-1)).toBe("‡ escalated to VETERAN"); // no name matches this id: today's text
+	});
+
+	test("names on: a veteran escalation and an unsquadded agent are named", async () => {
+		const s = await open();
+		const b = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: b }, s.ctx);
+		const v = await named(s, "veteran");
+		s.handlers.before_subagent_spawn[0]({ agent: "veteran", spawnKey: v }, s.ctx);
+		task(s, "veteran", v, "running");
+		expect(texts(s)).toContain(`‡ ${v} escalated to VETERAN`);
+		const i = (await s.call({ action: "name", agent: "inquisitor" })).slice(5);
+		s.handlers.before_subagent_spawn[0]({ agent: "inquisitor", spawnKey: i }, s.ctx);
+		s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "inquisitor", name: i, task: "judge" }] }, details: { progress: [{ index: 0, id: `${i}-2`, status: "running" }] }, isError: false }, s.ctx));
+		expect(texts(s)).toContain(`${i} deployed`);
+	});
+
+	test("names on: the squad row shows the badges, and one roster load serves the whole run", async () => {
+		const s = await open({ brothers: { Lorenzo: LORENZO } });
+		const name = await named(s, "battle-brother");
+		expect(name).toBe("BrotherLorenzo");
+		expect(await peek(s)).toContain("BrotherLorenzo ✠4");
+		rmSync(join(s.dir, "roster.json"));
+		expect(await peek(s)).toContain("BrotherLorenzo ✠4");
+	});
+
+	test("an unreadable roster.json shows record unknown in the detail and never throws", async () => {
+		const s = await open({ raw: "{nope" });
+		await named(s, "battle-brother");
+		expect(await detail(s)).toContain("record: unknown (roster unreadable)");
+	});
+
+	test("a saved cockpit with a non-string name loads without the field", async () => {
+		const s = await open();
+		task(s, "scout", "scout-1", "running");
+		const file = join(s.dir, "runs", "sess-0001.cockpit");
+		const saved = JSON.parse(readFileSync(file, "utf8"));
+		saved.deployed[0][1].name = 5;
+		writeFileSync(file, JSON.stringify(saved));
+		const again = setup("sess-0001", s.dir);
+		await again.start();
+		task(again as Opened, "scout", "scout-1", "completed");
+		expect(cockpitFile(again as Opened).deployed[0][1]).not.toHaveProperty("name");
+	});
+
+	test("end with names on prints the HONOURS line before ROSTER, and the debrief lists the Honours table", async () => {
+		const s = await open({ brothers: { Lorenzo: LORENZO } });
+		const name = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		task(s, "battle-brother", name, "completed");
+		const out = await s.call({ action: "end" });
+		expect(out).toMatch(/\nHONOURS Lorenzo earns a Purity Seal[^\n]*\nROSTER 1 squad\(s\) recorded$/);
+		expect(readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8")).toMatch(/## Honours[\s\S]*Lorenzo/);
+	});
+
+	test("a roster that cannot be written still prints HONOURS and the debrief says it was not saved, with no joins", async () => {
+		const s = await open();
+		const name = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		task(s, "battle-brother", name, "completed");
+		mkdirSync(join(s.dir, "roster.lock")); // a lock nobody can take over
+		const out = await s.call({ action: "end" });
+		expect(out).toContain("WARN ROSTER not written: roster busy");
+		expect(out).toContain("earns a Purity Seal");
+		expect(out).not.toContain("joins the roster");
+		expect(readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8")).toContain("this record was not saved");
+	}, 30000);
+});

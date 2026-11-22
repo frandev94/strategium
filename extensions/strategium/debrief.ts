@@ -1,5 +1,6 @@
 // The run report: a pure builder from a key's events, squads and notes to markdown. Does no fs itself, no ctx, no index.ts.
 import { isCost, type Live, oneLine, usd } from "./cockpit";
+import type { Honour } from "./roster";
 import { bookedMin, type Ev } from "./timer";
 
 export type Reported = {
@@ -16,6 +17,7 @@ export type DebriefInput = {
 	notes: Record<string, { failed?: true; veteran?: true }>;
 	reported?: Reported;
 	agents?: AgentCost[]; // every agent of the run with the usage its live file carried; ids and roles are untrusted
+	honours?: { rows: Honour[]; unsaved?: string }; // names on only: the run's honours and falls; unsaved = why roster.json was not written
 };
 /** One agent's usage as its live file carried it: a missing or invalid field is unknown, never 0. */
 export type AgentCost = { id: string; role: string; squad?: string; calls?: number; model?: string } & Pick<Live, "cost" | "tokens_in" | "tokens_out" | "cache_read" | "cache_write">;
@@ -106,7 +108,21 @@ const counts = (names: string[]) => {
 	return [...m].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 };
 
+/** One brother's honours as short sentences, in the order the Chapter hands them out. */
+const honourLine = (h: Honour): string[] => {
+	const n = oneLine(h.brother);
+	return [
+		...(h.joined ? [`${n} joins the roster`] : []),
+		...h.earned.map(e => `${n} earns ${e === "Purity Seal" ? "a" : "the"} ${e}`),
+		...(h.kind === "fell" ? [`${n} falls`] : []),
+		...(h.corrupted ? [`${n} is corrupted and kept in reserve`] : []),
+	];
+};
+const result = (h: Honour) =>
+	h.kind === "first" ? "first build" : h.kind === "saved" ? "saved by the veteran" : h.kind === "fell" ? "fell" : `after ${h.penances} ${h.penances === 1 ? "penance" : "penances"}`;
+
 export function debrief(input: DebriefInput): { markdown: string; summary: string[] } {
+	const hs = input.honours;
 	const { key, end } = input;
 	const evs = input.evs.filter(e => e.key === key);
 	const all = stationTimes(evs, key, end);
@@ -215,6 +231,17 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 			? table(["Squad", "Tier", "Builder runs", "Penances", "Veteran runs", "Last result", "State"], squadRows)
 			: ["None."]),
 		"",
+		...(hs
+			? [
+					"## Honours",
+					"",
+					...(hs.rows.length
+						? table(["Brother", "Squad", "Result", "Honours"], hs.rows.map(r => [cell(r.brother), cell(r.squad), result(r), r.earned.length ? r.earned.join(", ") : "—"]))
+						: ["None."]),
+					...(hs.unsaved === undefined ? [] : ["", `Roster not written (${oneLine(hs.unsaved)}): this record was not saved.`]),
+					"",
+				]
+			: []),
 		"## Agents spawned",
 		"",
 		...table(["Role", "Spawns"], [...roles.map(([n, c]) => [cell(n), String(c)]), ["Total", total(roles)]]),
@@ -256,6 +283,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 			agents.length
 				? `COST (${who}, list price) ${spend.text} · ${byRole.map(r => `${roleName(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
 				: "COST none",
+			...(hs ? [`HONOURS ${hs.rows.flatMap(honourLine).join(", ") || "none"}`] : []),
 		],
 	};
 }

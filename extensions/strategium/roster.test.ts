@@ -5,15 +5,19 @@ import { join } from "node:path";
 import type { NameEntry } from "./names";
 import {
 	applyRun,
+	type Brothers,
 	corrupted,
 	crux,
+	honours,
 	loadRoster,
+	type Outcome,
 	parseRoster,
 	rankBrothers,
 	retryable,
 	runOutcomes,
 	type Service,
 	serializeRoster,
+	squadBrothers,
 	unfinished,
 	updateRoster,
 	withRosterLock,
@@ -406,4 +410,149 @@ describe("updateRoster", () => {
 			mkdirSync(join(dir, "roster.json"));
 			expect(typeof updateRoster(dir, b => b)).toBe("string");
 		}));
+});
+
+describe("squadBrothers (#135)", () => {
+	const rec = map({ Lorenzo: { passed: 10, purity: 4, halo: 1, laurel: 1 }, Gideon: { falls: 3 } });
+	test("takes the last spawned builder of each squad: Brother, then Penitent, then Veteran", () => {
+		const names = [
+			builder("a", "Lorenzo"),
+			builder("a", "Lorenzo", { name: "PenitentLorenzo" }),
+			veteran("a", "Lorenzo"),
+			builder("b", "Gideon"),
+		];
+		const r = squadBrothers(names, rec);
+		expect(r.a?.name).toBe("VeteranLorenzo");
+		expect(r.b?.name).toBe("BrotherGideon");
+		expect(r.a).toMatchObject({ surname: "Lorenzo", service: rec.Lorenzo, crux: true });
+		expect(r.b).toMatchObject({ surname: "Gideon", corrupted: true });
+		expect(r.b?.crux).toBeUndefined();
+	});
+	test("an unspawned builder is shown only when no spawned one exists", () => {
+		const names = [builder("a", "Lorenzo"), builder("a", "Lorenzo", { name: "PenitentLorenzo", spawned: undefined })];
+		expect(squadBrothers(names, rec).a?.name).toBe("BrotherLorenzo");
+		expect(squadBrothers([builder("a", "Leon", { spawned: undefined })], rec).a?.name).toBe("BrotherLeon");
+	});
+	test("ignores retired and non-builder entries", () => {
+		const names: NameEntry[] = [
+			builder("a", "Lorenzo", { old: true }),
+			{ name: "ScoutTelion", agent: "scout", surname: "Telion", squad: "z", spawned: true },
+			{ name: "LibrarianStern", agent: "librarian", surname: "Stern", spawned: true },
+		];
+		expect(Object.keys(squadBrothers(names, rec))).toEqual([]);
+	});
+	test("a recruit and an unreadable roster have no service; undefined names give nothing", () => {
+		expect(squadBrothers([builder("a", "Leon")], rec).a?.service).toBeUndefined();
+		expect(squadBrothers([builder("a", "Lorenzo")], undefined).a).toMatchObject({ name: "BrotherLorenzo", surname: "Lorenzo" });
+		expect(squadBrothers([builder("a", "Lorenzo")], undefined).a?.service).toBeUndefined();
+		expect(squadBrothers(undefined, rec)).toEqual({});
+	});
+	test("a surname of __proto__ or constructor is not an inherited record", () => {
+		const r = squadBrothers([builder("a", "__proto__"), builder("b", "constructor")], {} as Brothers);
+		expect(r.a?.service).toBeUndefined();
+		expect(r.b?.service).toBeUndefined();
+		expect(squadBrothers([builder("__proto__", "Leon")], rec).__proto__?.name).toBe("BrotherLeon");
+	});
+	test("property: the result never holds a retired or non-builder entry", () => {
+		// properties: no property-test library in the repo, so a seeded walk stands in for fast-check.
+		let seed = 7;
+		const rnd = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+		const agents = ["battle-brother", "veteran", "scout", "librarian"];
+		for (let i = 0; i < 200; i++) {
+			const names: NameEntry[] = Array.from({ length: 1 + Math.floor(rnd() * 6) }, (_, n) => ({
+				name: `X${i}n${n}`,
+				agent: agents[Math.floor(rnd() * 4)] as string,
+				surname: "Leon",
+				squad: ["a", "b"][Math.floor(rnd() * 2)],
+				...(rnd() < 0.5 ? { spawned: true as const } : {}),
+				...(rnd() < 0.4 ? { old: true as const } : {}),
+			}));
+			for (const b of Object.values(squadBrothers(names, undefined))) {
+				const e = names.find(x => x.name === b.name);
+				expect(e && !e.old && (e.agent === "battle-brother" || e.agent === "veteran")).toBe(true);
+			}
+		}
+	});
+});
+
+describe("honours (#135)", () => {
+	const out = (brother: string, squad: string, kind: Outcome["kind"], penances = 0): Outcome => ({ brother, squad, kind, penances });
+	test("first gives the Purity Seal, saved the Iron Halo, fell a fall and nothing", () => {
+		const h = honours([out("Leon", "a", "first"), out("Tycho", "b", "saved", 1), out("Dante", "c", "fell", 2)], false, map({}));
+		expect(h.map(x => [x.brother, x.squad, x.kind, x.penances, x.earned])).toEqual([
+			["Leon", "a", "first", 0, ["Purity Seal"]],
+			["Tycho", "b", "saved", 1, ["Iron Halo"]],
+			["Dante", "c", "fell", 2, []],
+		]);
+	});
+	test("a merge with every squad on its first build gives each brother the Laurel", () => {
+		const h = honours([out("Leon", "a", "first"), out("Tycho", "b", "first")], true, map({}));
+		expect(h.map(x => x.earned)).toEqual([["Purity Seal", "Laurel Imperialis"], ["Purity Seal", "Laurel Imperialis"]]);
+		expect(honours([out("Leon", "a", "first"), out("Tycho", "b", "penance", 1)], true, map({})).flatMap(x => x.earned)).toEqual(["Purity Seal"]);
+	});
+	test("a brother with two squads gets the Laurel once, on his first row", () => {
+		const h = honours([out("Leon", "a", "first"), out("Leon", "b", "first")], true, map({}));
+		expect(h.map(x => x.earned)).toEqual([["Purity Seal", "Laurel Imperialis"], ["Purity Seal"]]);
+	});
+	test("the Crux is earned at 9 to 10 passed and not at 10 to 11", () => {
+		expect(honours([out("Leon", "a", "first")], false, map({ Leon: { passed: 9 } }))[0]?.earned).toEqual(["Purity Seal", "Crux Terminatus"]);
+		expect(honours([out("Leon", "a", "first")], false, map({ Leon: { passed: 10 } }))[0]?.earned).toEqual(["Purity Seal"]);
+		expect(honours([out("Leon", "a", "saved", 1)], false, map({ Leon: { passed: 8 } }))[0]?.earned).toEqual(["Iron Halo", "Crux Terminatus"]);
+	});
+	test("corrupted is set only on the false to true transition", () => {
+		const fall = [out("Leon", "a", "fell")];
+		expect(honours(fall, false, map({ Leon: { falls: 2 } }))[0]?.corrupted).toBe(true);
+		expect(honours(fall, false, map({ Leon: { falls: 3 } }))[0]?.corrupted).toBeUndefined();
+		expect(honours(fall, false, map({ Leon: { falls: 0 } }))[0]?.corrupted).toBeUndefined();
+		expect(honours([out("Leon", "a", "penance", 2)], false, map({ Leon: { squads: 4, passed: 1, penances: 1 } }))[0]?.corrupted).toBe(true);
+	});
+	test("joined is set only for a brother absent from before, and only on his first row", () => {
+		const h = honours([out("Leon", "a", "first"), out("Leon", "b", "first"), out("Tycho", "c", "first")], false, map({ Tycho: {} }));
+		expect(h.map(x => x.joined)).toEqual([true, undefined, undefined]);
+		expect(honours([out("__proto__", "a", "first")], false, {} as Brothers)[0]?.joined).toBe(true);
+	});
+	test("with before undefined there is no joined, Crux or corrupted", () => {
+		const h = honours([out("Leon", "a", "first"), out("Tycho", "b", "fell")], true, undefined);
+		expect(h.map(x => [x.joined, x.corrupted, x.earned.includes("Crux Terminatus")])).toEqual([[undefined, undefined, false], [undefined, undefined, false]]);
+		expect(h[0]?.earned).toEqual(["Purity Seal"]);
+	});
+	test("property: counts equal the applyRun diff, and without before there is no joined, Crux or corrupted", () => {
+		let seed = 11;
+		const rnd = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+		const kinds = ["first", "penance", "saved", "fell"] as const;
+		const who = ["Leon", "Tycho", "Dante"];
+		for (let i = 0; i < 300; i++) {
+			const before = map(
+				Object.fromEntries(
+					who
+						.filter(() => rnd() < 0.6)
+						.map(n => [n, { passed: Math.floor(rnd() * 12), falls: Math.floor(rnd() * 4), squads: Math.floor(rnd() * 7), penances: Math.floor(rnd() * 7), purity: 1 }]),
+				),
+			);
+			const outcomes = Array.from({ length: 1 + Math.floor(rnd() * 4) }, (_, n) =>
+				out(who[Math.floor(rnd() * 3)] as string, `s${n}`, kinds[Math.floor(rnd() * 4)] as Outcome["kind"], Math.floor(rnd() * 3)),
+			);
+			const merged = rnd() < 0.5;
+			const after = applyRun(before, outcomes, merged);
+			const rows = honours(outcomes, merged, before);
+			for (const n of who) {
+				const mine = rows.filter(r => r.brother === n);
+				if (!mine.length) continue;
+				const b = before[n] ?? svc();
+				const a = after[n] as Service;
+				const got = (k: string) => mine.filter(r => r.earned.includes(k as never)).length;
+				expect(got("Purity Seal")).toBe(a.purity - b.purity);
+				expect(got("Iron Halo")).toBe(a.halo - b.halo);
+				expect(got("Laurel Imperialis")).toBe(a.laurel - b.laurel);
+				expect(got("Crux Terminatus")).toBe(crux(a) && !crux(b) ? 1 : 0);
+				expect(mine.filter(r => r.corrupted).length).toBe(corrupted(a) && !corrupted(b) ? 1 : 0);
+				expect(mine.filter(r => r.kind === "fell").length).toBe(outcomes.filter(o => o.brother === n && o.kind === "fell").length);
+			}
+			for (const r of honours(outcomes, merged, undefined)) {
+				expect(r.joined).toBeUndefined();
+				expect(r.corrupted).toBeUndefined();
+				expect(r.earned).not.toContain("Crux Terminatus");
+			}
+		}
+	});
 });
