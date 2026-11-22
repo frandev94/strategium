@@ -131,7 +131,7 @@ export function allocateName(
 		[(s) => holders(s).every((e) => e.old || (!builder && e.agent === agent)), (base) => freeName(base, taken)],
 	];
 	// `prefer` surnames lead the candidates, so the first free one wins; otherwise draw from the pool.
-	const prefer = (opts.prefer ?? []).filter((s) => !opts.skip?.has(s));
+	const prefer = opts.prefer ?? [];
 	const candidates = [...new Set([...prefer, ...pool])].filter((s) => !opts.skip?.has(s));
 	for (const [eligible, compose] of passes) {
 		const options: [string, string][] = [];

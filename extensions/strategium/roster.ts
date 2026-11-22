@@ -12,7 +12,7 @@ export type Outcome = { brother: string; squad: string; kind: "first" | "penance
 const COUNTERS = ["passed", "penances", "falls", "squads", "purity", "halo", "laurel"] as const;
 const NAME_RE = /^[A-Z][A-Za-z]{1,19}$/;
 const MAX_BYTES = 256 * 1024;
-const STALE_MS = 10_000;
+export const STALE_MS = 10_000;
 const RETRY_MS = 20;
 
 const empty = (): Brothers => Object.create(null);
@@ -136,11 +136,28 @@ export function loadRoster(dir: string): { brothers: Brothers } | { error: strin
 	}
 }
 
-/** Remove a lock older than STALE_MS, but only if it is still the same file we looked at. */
+/** True when `pid` is certainly gone: kill(pid, 0) says ESRCH (EPERM means it lives, another user's). */
+function dead(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "ESRCH";
+	}
+}
+
+/** EEXIST is a held lock; on Windows a lock being deleted answers EPERM or EACCES for a moment, so those wait too. */
+export const retryable = (code: string | undefined, platform: string = process.platform): boolean =>
+	code === "EEXIST" || (platform === "win32" && (code === "EPERM" || code === "EACCES"));
+
+/** Remove a lock older than STALE_MS or whose holder pid (the token's first number) is dead, but only if it is still the same file we looked at. */
 function takeStale(lock: string): void {
 	try {
 		const seen = statSync(lock);
-		if (Date.now() - seen.mtimeMs <= STALE_MS) return;
+		if (Date.now() - seen.mtimeMs <= STALE_MS) {
+			const pid = Number(/^(\d+)-/.exec(readFileSync(lock, "utf8"))?.[1]);
+			if (!(pid > 0) || !dead(pid)) return;
+		}
 		const now = statSync(lock);
 		// shortcut: a holder may replace the lock between this re-check and the rm; stale takeover is rare, upgrade to a rename-claim if it ever bites.
 		if (now.mtimeMs === seen.mtimeMs && now.ino === seen.ino) rmSync(lock, { force: true });
@@ -150,7 +167,7 @@ function takeStale(lock: string): void {
 }
 
 /**
- * Run `fn` under `<dir>/roster.lock` (exclusive create, 20 ms retries up to `waitMs`, stale after 10 s).
+ * Run `fn` under `<dir>/roster.lock` (exclusive create, 20 ms retries up to `waitMs`, stale after 10 s or when its holder's pid is dead).
  * `{ busy: true }` when the lock could not be taken, including a state dir that cannot hold it. `fn`'s own errors propagate after the release.
  */
 export function withRosterLock<T>(dir: string, fn: () => T, waitMs = 2000): { value: T } | { busy: true } {
@@ -164,7 +181,7 @@ export function withRosterLock<T>(dir: string, fn: () => T, waitMs = 2000): { va
 				writeFileSync(lock, token, { flag: "wx", mode: 0o600 });
 				break;
 			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code !== "EEXIST") return { busy: true };
+				if (!retryable((err as NodeJS.ErrnoException).code)) return { busy: true };
 				takeStale(lock);
 				if (Date.now() >= deadline) return { busy: true };
 				sleep(RETRY_MS);

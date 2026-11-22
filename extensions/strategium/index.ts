@@ -28,7 +28,7 @@ import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
 import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./names";
-import { applyRun, corrupted, loadRoster, rankBrothers, runOutcomes, unfinished, updateRoster, withRosterLock } from "./roster";
+import { applyRun, corrupted, loadRoster, rankBrothers, runOutcomes, STALE_MS, unfinished, updateRoster, withRosterLock } from "./roster";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -658,10 +658,11 @@ function endRun(sid: string, key?: string, takeover?: string, reported?: Reporte
 		closeGap(run);
 	}
 	stopKey(run.key);
+	// The roster record goes in before the claim is released: until then the brothers still count as on campaign.
+	const record = names ? recordRun(run) : undefined;
 	release(stateDir(), run.key, sid);
 	// After the last span is closed and before the run's files go: the debrief reads them.
 	const lines = writeDebrief(run, reported, live, run.sid === sid);
-	const record = names ? recordRun(run) : undefined;
 	dropFiles(run.sid);
 	dropPointer(sid);
 	return [`ENDED ${run.key}`, ...lines, ...(record ? [record] : [])].join("\n");
@@ -847,7 +848,18 @@ function setEnded(run: Run, squad: string, end?: "ok" | "failed"): Run {
 	return { ...run, ended: kept.length ? Object.fromEntries(kept) : undefined };
 }
 
-const MERGE_CMD = /\b(?:gh\s+pr|glab\s+mr)\s+merge\b/;
+/** Outcome of an agent's final status: only a real failure is a fall; aborted and cancelled leave the squad without one. */
+const outcomeOf = (status: unknown): "ok" | "failed" | undefined => (status === "completed" ? "ok" : status === "failed" ? "failed" : undefined);
+
+/**
+ * The Captain's own merge: after any `cd …` steps joined by `&&`, the command starts with gh pr merge / glab mr merge,
+ * is not --auto or --help/-h, and has no pipe, `;` or newline whose exit code could stand for the merge's.
+ */
+function isMerge(command: string): boolean {
+	const segs = command.split("&&").map(s => s.trim());
+	const seg = segs.find(s => !/^cd(\s|$)/.test(s)) ?? "";
+	return /^(?:gh\s+pr|glab\s+mr)\s+merge(?:\s|$)/.test(seg) && !/\s--auto\b|\s(?:--help|-h)(?:\s|$)|[|;\n]/.test(command);
+}
 
 /** Fold the run's outcomes into the shared roster at `end`: the line to print, undefined with nothing to record. A roster failure never stops the end. */
 function recordRun(run: Run): string | undefined {
@@ -855,17 +867,22 @@ function recordRun(run: Run): string | undefined {
 	const outcomes = runOutcomes({ ...run, names });
 	if (!outcomes.length) return undefined;
 	const merged = run.merged === true && !unfinished({ names, ended: run.ended });
-	const err = updateRoster(stateDir(), b => applyRun(b, outcomes, merged));
+	// The end has no second chance: wait past STALE_MS so a lock left by a crash is taken instead of losing the record.
+	const err = updateRoster(stateDir(), b => applyRun(b, outcomes, merged), STALE_MS + 2000);
 	return err ? `WARN ROSTER not written: ${err}` : `ROSTER ${outcomes.length} squad(s) recorded`;
 }
 
 type Pick = { prefer: string[]; skip: Set<string> };
 
-/** Surnames in use by the not-retired builders of other sessions' open runs: those brothers are on campaign. */
+// A paused run may not beat, so a quiet run is judged by the newest of its heartbeat and run file; a day without either is a run nobody finishes.
+const CAMPAIGN_MS = 24 * 3_600_000;
+const touchedAt = (sid: string) => Math.max(0, ...[runFile(sid), beatFile(sid)].map(f => statSync(f, { throwIfNoEntry: false })?.mtimeMs ?? 0));
+
+/** Surnames in use by the not-retired builders of other sessions' open runs: those brothers are on campaign, until the claim is gone or the run has been silent for 24 h. */
 function onCampaign(sid: string): Set<string> {
 	const away = new Set<string>();
 	for (const r of allRuns())
-		if (r.sid !== sid && holds(stateDir(), r.key, r.sid))
+		if (r.sid !== sid && holds(stateDir(), r.key, r.sid) && Date.now() - touchedAt(r.sid) < CAMPAIGN_MS)
 			for (const n of cleanNames(r.names) ?? []) if (n.squad !== undefined && !n.old) away.add(n.surname);
 	return away;
 }
@@ -2519,7 +2536,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const agents = { ...run.agents };
 			for (const id of ended) delete agents[id];
 			next = settle(next, agents, ended.map(id => run.agents![id]));
-			if (naming.on) for (const j of ends) next = setEnded(next, run.agents![j.id].id, j.status === "completed" ? "ok" : "failed");
+			if (naming.on) for (const j of ends) next = setEnded(next, run.agents![j.id].id, outcomeOf(j.status));
 		}
 		if (next !== run) writeRun(next);
 	});
@@ -2539,7 +2556,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		let scouted = false;
 		const launched: Slice[] = [];
 		let tracked = false;
-		const done: [string, "ok" | "failed"][] = [];
+		const done: [string, "ok" | "failed" | undefined][] = [];
 		for (const p of progress.map(asObj)) {
 			const item = typeof p.index === "number" ? items[p.index] : undefined;
 			if (!item || typeof p.id !== "string") continue;
@@ -2562,7 +2579,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			launched.push(slice);
 			// A blocking call returns once its agents are done: those never count as running.
 			if (p.status === "pending" || p.status === "running") agents[p.id] = slice;
-			else if (["completed", "failed", "aborted"].includes(String(p.status))) done.push([slice.id, p.status === "completed" ? "ok" : "failed"]);
+			else if (["completed", "failed", "aborted"].includes(String(p.status))) done.push([slice.id, outcomeOf(p.status)]);
 		}
 		let next: Run = run;
 		if (launched.length) next = settle(next, agents, launched);
@@ -2576,7 +2593,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	pi.on("tool_result", (e, ctx) => {
 		if (!naming.on || ctx?.agent?.kind === "sub" || !ctx?.sessionManager || e.toolName.replace(/^_+/, "") !== "bash" || e.isError) return;
 		const input = asObj(e.input);
-		if (input.async === true || asObj(e.details).exitCode !== undefined || !MERGE_CMD.test(String(input.command ?? ""))) return;
+		if (input.async === true || asObj(e.details).async !== undefined || asObj(e.details).exitCode !== undefined || !isMerge(String(input.command ?? ""))) return;
 		const run = ownRun(sidOf(ctx));
 		if (run && !run.merged) writeRun({ ...run, merged: true });
 	});

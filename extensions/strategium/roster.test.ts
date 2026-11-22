@@ -10,6 +10,7 @@ import {
 	loadRoster,
 	parseRoster,
 	rankBrothers,
+	retryable,
 	runOutcomes,
 	type Service,
 	serializeRoster,
@@ -318,6 +319,33 @@ describe("withRosterLock (D8)", () => {
 			writeFileSync(join(dir, "file"), "x");
 			expect(withRosterLock(join(dir, "file", "sub"), () => 1, 50)).toEqual({ busy: true });
 		}));
+	test("a lock whose holder process is dead is taken at once, however fresh", () =>
+		withDir(dir => {
+			const dead = Bun.spawnSync({ cmd: [process.execPath, "-e", "0"] }).pid;
+			writeFileSync(join(dir, "roster.lock"), `${dead}-token`);
+			const t0 = Date.now();
+			expect(withRosterLock(dir, () => "got it", 5000)).toEqual({ value: "got it" });
+			expect(Date.now() - t0).toBeLessThan(1000);
+			expect(existsSync(join(dir, "roster.lock"))).toBe(false);
+		}));
+	test("a fresh lock whose holder is alive is busy", () =>
+		withDir(dir => {
+			writeFileSync(join(dir, "roster.lock"), `${process.pid}-token`);
+			expect(withRosterLock(dir, () => 1, 50)).toEqual({ busy: true });
+		}));
+	test("the token a holder writes starts with its pid", () =>
+		withDir(dir => {
+			withRosterLock(dir, () => expect(readFileSync(join(dir, "roster.lock"), "utf8")).toStartWith(`${process.pid}-`));
+		}));
+	test("EEXIST retries everywhere; EPERM and EACCES only on win32 (a lock mid-delete there)", () => {
+		expect(retryable("EEXIST", "linux")).toBe(true);
+		for (const code of ["EPERM", "EACCES"]) {
+			expect(retryable(code, "win32")).toBe(true);
+			expect(retryable(code, "linux")).toBe(false);
+		}
+		expect(retryable("ENOENT", "win32")).toBe(false);
+		expect(retryable(undefined, "win32")).toBe(false);
+	});
 });
 
 describe("updateRoster", () => {

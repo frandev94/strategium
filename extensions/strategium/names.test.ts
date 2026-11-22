@@ -206,6 +206,42 @@ describe("prefer and skip", () => {
 	test("without options the result is unchanged", () => {
 		expect(alloc([], { agent: "scout" }, {}, seeded(5))).toEqual(give([], { agent: "scout" }, undefined, seeded(5)));
 	});
+
+	// The brother pool, learned from the code: unheld surnames are handed out until none is left.
+	const brotherPool = () => {
+		const entries: NameEntry[] = [];
+		for (let i = 0; i < 200; i++) {
+			const r = allocateName(entries, { agent: "battle-brother", squad: `p${i}` }, undefined, seeded(i));
+			if ("error" in r) break;
+			entries.push(r.entry);
+		}
+		return entries.map((e) => e.surname);
+	};
+
+	test("with the whole pool skipped but one surname, that one is chosen for any seed", () => {
+		const pool = brotherPool();
+		expect(pool.length).toBeGreaterThan(40);
+		const last = pool[7];
+		const skip = new Set(pool.filter((s) => s !== last));
+		for (let i = 0; i < 40; i++) expect(alloc([], { agent: "battle-brother", squad: "a" }, { skip }, seeded(i)).surname).toBe(last);
+	});
+
+	test("with the whole pool skipped there is no free name", () => {
+		const r = allocateName([], { agent: "battle-brother", squad: "a" }, undefined, seeded(1), { skip: new Set(brotherPool()) });
+		expect(r).toEqual({ error: expect.stringContaining("no free name left for battle-brother") });
+	});
+
+	test("skip binds pass 2: a skipped surname held by a retired builder is never reused", () => {
+		const pool = brotherPool();
+		const retired: NameEntry[] = pool.map((s, i) => ({ name: `Brother${s}`, agent: "battle-brother", surname: s, squad: `r${i}`, spawned: true, old: true }));
+		const open = pool[3];
+		for (let i = 0; i < 40; i++) {
+			const skip = new Set(pool.filter((s) => s !== open));
+			expect(alloc([...retired], { agent: "battle-brother", squad: "new" }, { skip }, seeded(i)).surname).toBe(open);
+		}
+		const all = allocateName([...retired], { agent: "battle-brother", squad: "new" }, undefined, seeded(1), { skip: new Set(pool) });
+		expect("error" in all).toBe(true);
+	});
 });
 
 describe("servitors", () => {
