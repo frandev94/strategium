@@ -1,3 +1,17 @@
+## [0.2.37] - 2026-11-22
+
+### 🚀 Features
+
+- *(extension)* Lore names handed out by the plugin within a run
+
+### 🐛 Bug Fixes
+
+- *(extension)* Names guard covers redrafts, eval labels and repeat spawns
+- *(extension)* Names guard for every agent at spawn; name action normalises the agent
+
+### 📚 Documentation
+
+- *(skills)* Agent names and the names setting
 ## [0.2.36] - 2026-11-22
 
 ### 🐛 Bug Fixes
