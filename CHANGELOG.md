@@ -1,3 +1,23 @@
+## [0.2.32] - 2026-11-22
+
+### 🚀 Features
+
+- *(cockpit)* Enter opens the detail of the selected line
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Finished-agent rows survive a restart and never leak to a respawn
+- *(cockpit)* Wrap walks words in linear time
+- *(cockpit)* Retry a missed agent row while its detail is open
+- *(cockpit)* A squad detail retries its agents' rows; gold scroll position
+
+### 📚 Documentation
+
+- *(cockpit)* Describe the detail views
+
+### 🧪 Testing
+
+- *(tooling)* Tui-shot replay of the cockpit details
 ## [0.2.31] - 2026-11-21
 
 ### 🚀 Features
