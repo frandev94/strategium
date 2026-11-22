@@ -151,15 +151,16 @@ The Captain plans and delegates; every other role is an agent it starts. Each on
 | You · the Captain (main session) | Chapter Master · Captain | Chapter Command |
 | `scout` | Neophyte | 10th Company |
 | `librarian` | Librarian (specialist) | Librarius |
-| `battle-brother`, `veteran` | Battle-Brother | battle company |
+| `battle-brother` | Battle-Brother | battle company |
+| `veteran` | Battle-Brother (veteran) | 1st Company |
 | `apothecary` | Apothecary (specialist) | Apothecarion |
-| `task` | none (auxiliary), an Adept | Chapter Serfs |
+| `task` | none (auxiliary), an Adept | Chapter Serfs (unrelated to the Mechanicus) |
 | `sonic` | none (auxiliary), a Servitor | maintained by the Armoury |
 | `archmagos` | Archmagos Dominus | Adeptus Mechanicus (external) |
 | `inquisitor`, `security-reviewer` | Inquisitorial authority and auditor | Inquisition (external) |
 | `confessor` | Confessor | Ecclesiarchy (external) |
 
-The librarian, apothecary, inquisitor and confessor roles are thematic adaptations of their lore. The cockpit themes are colour schemes and change no term here. Rank, department and role are kept apart; the full roster is in [docs/chapter.md](docs/chapter.md).
+The librarian, apothecary, inquisitor, confessor, archmagos and security-reviewer roles, and the `task` Adept, are thematic adaptations of their lore (the notes in [docs/chapter.md](docs/chapter.md) say how). The cockpit themes are colour schemes and change no term here. Rank, department and role are kept apart; the full roster is in [docs/chapter.md](docs/chapter.md).
 
 #### Models
 

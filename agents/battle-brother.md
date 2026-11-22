@@ -1,6 +1,6 @@
 ---
 name: battle-brother
-description: Strategium implementer. Builds one planned squad test-first in the directory it is given and reports red/green evidence. Never commits. Lore identity: Battle-Brother of a battle company. See docs/chapter.md.
+description: Strategium implementer. Builds one planned squad test-first in the directory it is given and reports red/green evidence. Never commits. In the lore, Battle-Brother of a battle company. See docs/chapter.md.
 spawns: scout
 model: ["@task"]
 thinkingLevel: medium

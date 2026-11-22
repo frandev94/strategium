@@ -151,15 +151,16 @@ El Capitán planifica y delega; cada uno de los demás papeles es un agente que 
 | Tú · el Capitán (sesión principal) | Maestro de Capítulo · Capitán | Chapter Command |
 | `scout` | Neophyte | 10th Company |
 | `librarian` | Librarian (especialista) | Librarius |
-| `battle-brother`, `veteran` | Battle-Brother | battle company |
+| `battle-brother` | Battle-Brother | battle company |
+| `veteran` | Battle-Brother (veterano) | 1st Company |
 | `apothecary` | Apothecary (especialista) | Apothecarion |
-| `task` | ninguno (auxiliar), un Adept | Chapter Serfs |
+| `task` | ninguno (auxiliar), un Adept | Chapter Serfs (sin relación con el Mechanicus) |
 | `sonic` | ninguno (auxiliar), un Servitor | mantenido por la Armoury |
 | `archmagos` | Archmagos Dominus | Adeptus Mechanicus (externa) |
 | `inquisitor`, `security-reviewer` | Autoridad y auditor inquisitorial | Inquisition (externa) |
 | `confessor` | Confessor | Ecclesiarchy (externa) |
 
-Los papeles de librarian, apothecary, inquisitor y confessor son adaptaciones temáticas de su lore. Los temas del cockpit son esquemas de color y no cambian ningún término de aquí. Rango, departamento y papel van separados; el roster completo está en [docs/chapter.md](docs/chapter.md) (en inglés).
+Los papeles de librarian, apothecary, inquisitor, confessor, archmagos y security-reviewer, y el Adept de `task`, son adaptaciones temáticas de su lore (las notas de [docs/chapter.md](docs/chapter.md) explican cómo). Los temas del cockpit son esquemas de color y no cambian ningún término de aquí. Rango, departamento y papel van separados; el roster completo está en [docs/chapter.md](docs/chapter.md) (en inglés).
 
 #### Modelos
 

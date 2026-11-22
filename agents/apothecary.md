@@ -1,6 +1,6 @@
 ---
 name: apothecary
-description: Strategium adversarial test auditor. Mutation-tests a finished squad's changed lines within a fixed budget and reports survivors with the missing assertion. Leaves the tree exactly as found; never commits. Lore identity: Apothecary of the Apothecarion, a thematic adaptation (Apothecaries tend battle-brothers; here the apothecary probes the tests). See docs/chapter.md.
+description: Strategium adversarial test auditor. Mutation-tests a finished squad's changed lines within a fixed budget and reports survivors with the missing assertion. Leaves the tree exactly as found; never commits. In the lore, Apothecary of the Apothecarion, a thematic adaptation (Apothecaries tend battle-brothers; here the apothecary probes the tests). See docs/chapter.md.
 tools: read, grep, find, glob, lsp, bash, edit
 model: ["@task"]
 thinkingLevel: medium

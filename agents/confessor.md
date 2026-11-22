@@ -1,6 +1,6 @@
 ---
 name: confessor
-description: Strategium second reviewer, of another model family when available. Reviews a run's branch against its Merge bar independently of the inquisitor; did not build it and never edits. Lore identity: Confessor of the Ecclesiarchy, an external title and not an Astartes rank; thematic adaptation of a second-model review (the Chaplain of the Reclusiam is the Astartes counterpart). See docs/chapter.md.
+description: Strategium second reviewer, of another model family when available. Reviews a run's branch against its Merge bar independently of the inquisitor; did not build it and never edits. In the lore, Confessor of the Ecclesiarchy, an external title and not an Astartes rank; thematic adaptation of a second-model review (the Chaplain of the Reclusiam is the Astartes counterpart). See docs/chapter.md.
 tools: read, grep, find, glob, lsp, ast_grep, bash
 spawns: scout
 model: [openai-codex/gpt-6-astra, "@task"]
