@@ -18,7 +18,7 @@ export type DebriefInput = {
 	agents?: AgentCost[]; // every agent of the run with the usage its live file carried; ids and roles are untrusted
 };
 /** One agent's usage as its live file carried it: a missing or invalid field is unknown, never 0. */
-export type AgentCost = { id: string; role: string; squad?: string } & Pick<Live, "cost" | "tokens_in" | "tokens_out" | "cache_read" | "cache_write">;
+export type AgentCost = { id: string; role: string; squad?: string; calls?: number; model?: string } & Pick<Live, "cost" | "tokens_in" | "tokens_out" | "cache_read" | "cache_write">;
 
 const MIN = 60_000;
 const BEFORE = "(before the todo)";
@@ -165,7 +165,8 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 	const models = counts(sp.map(e => e.model ?? "default"));
 	const total = (c: [string, number][]) => String(sum(c.map(x => x[1])));
 	const agents = input.agents ?? [];
-	const hasCaster = agents.some(a => a.id === "caster" && a.role === "caster");
+	const isCaster = (a: AgentCost) => a.id === "caster" && a.role === "caster";
+	const hasCaster = agents.some(isCaster);
 	const who = hasCaster ? "agents and caster" : "agents";
 	const spend = group(agents);
 	const byRole = [...Map.groupBy(agents, a => a.role)]
@@ -232,11 +233,11 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 						["Agent", "Role", "Squad", "Tokens in", "Tokens out", "Cache", "Cost"],
 						agents.map(a => {
 							const cache = [a.cache_read, a.cache_write].filter(isCount);
-							return [cell(a.id), cell(a.role), cell(a.squad), tokens(a.tokens_in), tokens(a.tokens_out), cache.length ? String(sum(cache)) : "?", priced(a) ? agentUsd(a.cost!) : "?"];
+							return [cell(a.id), cell(a.role), cell(isCaster(a) && a.calls ? `${a.calls} ${a.calls === 1 ? "call" : "calls"}${a.model ? ` · ${a.model}` : ""}` : a.squad), tokens(a.tokens_in), tokens(a.tokens_out), cache.length ? String(sum(cache)) : "?", priced(a) ? agentUsd(a.cost!) : "?"];
 						}),
 					),
 					"",
-					...table(["Role", "Agents", "Cost", "Share"], [...byRole.map(r => [cell(roleName(r.role)), String(r.n), r.text, bar(r.sum, top)]), [`Total (${who})`, String(agents.length), spend.text, "—"]]),
+					...table(["Role", "Agents", "Cost", "Share"], [...byRole.map(r => [cell(roleName(r.role)), String(r.n), r.text, bar(r.sum, top)]), [`Total (${who})`, hasCaster ? `${agents.filter(a => !isCaster(a)).length} + caster` : String(agents.length), spend.text, "—"]]),
 					"",
 					...(rate ? [`Cost per booked hour: ${rate} (${who} only; total ${spend.text} over ${booked} booked min${spend.some ? "; known agents only" : ""})`, ""] : []),
 				]

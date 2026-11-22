@@ -256,6 +256,13 @@ describe("summarize", () => {
 		expect(await run(async () => Promise.reject(new Error("")))).toEqual({ text: "call failed", dim: true });
 		expect(await run(async () => Promise.reject("str"))).toEqual({ text: "call failed", dim: true });
 	});
+	test("a failed reply with an error is `call failed: <error>`, one clean line cut to 40 characters, and keeps its cost", async () => {
+		const reply: CasterReply = { text: "ignored", failed: true, cost: 0.2, error: `rate\nlimited ${"e".repeat(60)}` };
+		const r = await run(async () => reply);
+		expect(r.reply).toBe(reply);
+		expect(r.dim).toBe(true);
+		expect(r.text).toBe(`call failed: rate limited ${"e".repeat(27)}`);
+	});
 	test("failed is `call failed` (dim) and keeps the cost that was paid", async () => {
 		const reply: CasterReply = { text: "ignored", failed: true, cost: 0.2 };
 		expect(await run(async () => reply)).toEqual({ text: "call failed", dim: true, reply });

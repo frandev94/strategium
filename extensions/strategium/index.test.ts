@@ -3693,7 +3693,7 @@ describe("cockpit", () => {
 			expect(calls).toHaveLength(1);
 			await s.sub("cockpit");
 			expect(shownText(ui)).not.toContain("Too late.");
-			expect(cockpitJson(s).caster).toEqual({ cost: 0.002, calls: 1, tokens_in: 130, tokens_out: 20 });
+			expect(cockpitJson(s).caster).toEqual({ cost: 0.002, calls: 1, tokens_in: 100, tokens_out: 20, cache_read: 30, cache_write: 0 });
 		});
 
 		const cockpitPath = (s: { dir: string }) => join(s.dir, "runs", "sess-0001.cockpit");
@@ -3730,6 +3730,67 @@ describe("cockpit", () => {
 			expect(calls[0].options.signal.aborted).toBe(false);
 			await s.call({ action: "end" });
 			expect(calls[0].options.signal.aborted).toBe(true);
+		});
+
+		test("a session switch resets the cockpit and aborts the call in flight", async () => {
+			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			await tick();
+			expect(calls[0].options.signal.aborted).toBe(false);
+			await s.handlers.session_switch[0]({}, s.ctx);
+			expect(calls[0].options.signal.aborted).toBe(true);
+		});
+
+		test("stopReason error is shown as `call failed: <errorMessage>`, one clean line cut to 40 characters, and its cost is added", async () => {
+			const msg = `rate limited\n${"m".repeat(100)}`;
+			const { s, ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => reply("half", { stopReason: "error", errorMessage: msg, headers: { authorization: "Bearer SECRET" } }) });
+			await tick();
+			expect(shownText(ui)).toContain(`call failed: rate limited ${"m".repeat(27)}`);
+			expect(shownText(ui)).not.toContain("m".repeat(28));
+			expect(shownText(ui)).not.toContain("SECRET");
+			expect(shownText(ui)).not.toContain("half");
+			expect(cockpitJson(s).caster.calls).toBe(1);
+		});
+
+		test("the resolved model id is kept in the spend, shown in the run report and in /strategium-config", async () => {
+			const { s } = await casting({ env: { STRATEGIUM_CASTER: "1" }, resolve: () => ({ id: `fast-${"x".repeat(60)}` }) });
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain("model @smol · every");
+			await tick();
+			const id = `fast-${"x".repeat(35)}`;
+			expect(cockpitJson(s).caster.model).toBe(id);
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain(`caster: on (STRATEGIUM_CASTER) · model @smol → ${id} · every 1 min`);
+			const again = setup("sess-0001", s.dir);
+			await again.start();
+			await again.call({ action: "end" });
+			expect(debriefOf(s)).toContain(`| caster | caster | 1 call · ${id} | 100 | 20 | 30 |`);
+		});
+
+		describe("empty states", () => {
+			const raw = (ui: { opened: { component: { render(w: number): string[] } }[] }) => ui.opened.at(-1)!.component.render(100);
+			const sgr = (lines: string[], text: string) => lines.find(l => l.includes(text))!.split(text)[0].match(/(\x1b\[[0-9;]*m)[^\x1b]*$/)![1];
+			const title = (lines: string[]) => plain(lines.find(l => plain(l).includes("CASTER ·"))!);
+
+			test("`listening…` draws dim and with no age; a summary draws normal with its age", async () => {
+				const { ui } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+				const before = raw(ui);
+				expect(title(before)).not.toMatch(/· (<1m|\d+m)/);
+				const dim = sgr(before, "listening…");
+				await tick();
+				const after = raw(ui);
+				expect(title(after)).toMatch(/· <1m/);
+				expect(sgr(after, "Alpha is green.")).not.toBe(dim);
+			});
+
+			test("`nothing new` draws dim and with no age", async () => {
+				const { ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => reply("") });
+				const dim = sgr(raw(ui), "listening…");
+				await tick();
+				const after = raw(ui);
+				expect(plain(after.join("\n"))).toContain("nothing new");
+				expect(title(after)).not.toMatch(/· (<1m|\d+m)/);
+				expect(sgr(after, "nothing new")).toBe(dim);
+			});
 		});
 
 		test("an abort caused by the close clears the attempt, so reopening calls again", async () => {
@@ -3780,7 +3841,7 @@ describe("cockpit", () => {
 			await tick();
 			expect(shownText(ui)).toContain("call failed");
 			expect(shownText(ui)).not.toContain("half an answer");
-			expect(cockpitJson(s).caster).toEqual({ cost: 0.002, calls: 1, tokens_in: 130, tokens_out: 20 });
+			expect(cockpitJson(s).caster).toEqual({ cost: 0.002, calls: 1, tokens_in: 100, tokens_out: 20, cache_read: 30, cache_write: 0 });
 		});
 
 		test("a throw while building the facts leaves the caster not in flight", async () => {
@@ -3885,11 +3946,11 @@ describe("cockpit", () => {
 			t0(61);
 			await tick();
 			expect(calls).toHaveLength(2);
-			expect(cockpitJson(s).caster).toEqual({ cost: 0.004, calls: 2, tokens_in: 260, tokens_out: 40 });
+			expect(cockpitJson(s).caster).toEqual({ cost: 0.004, calls: 2, tokens_in: 200, tokens_out: 40, cache_read: 60, cache_write: 0 });
 			const again = setup("sess-0001", s.dir);
 			await again.start();
 			await again.call({ action: "end" });
-			expect(debriefOf(s)).toMatch(/\| caster \| caster \| — \| 260 \| 40 \| \? \| \$0\.004 \|/);
+			expect(debriefOf(s)).toMatch(/\| caster \| caster \| 2 calls \| 200 \| 40 \| 60 \| \$0\.004 \|/);
 			expect(debriefOf(s)).toContain("Agents and the cockpit caster only");
 		});
 
@@ -3910,7 +3971,7 @@ describe("cockpit", () => {
 			await tick();
 			expect(calls).toHaveLength(0);
 			expect(shownText(ui)).toContain("Fake commentary.");
-			expect(cockpitJson(s).caster).toEqual({ cost: 0, calls: 1, tokens_in: 0, tokens_out: 0 });
+			expect(cockpitJson(s).caster).toEqual({ cost: 0, calls: 1, tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 });
 		});
 
 		test("/strategium-config caster on|off|default saves the choice, applies it at once and wins over the env", async () => {

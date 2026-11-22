@@ -169,8 +169,8 @@ const runFile = (sid: string) => path.join(runsDir(), `${sid}.json`);
 const beatFile = (sid: string) => path.join(runsDir(), `${sid}.beat`);
 // The cockpit's chronicle, agent registry and squad marks, saved beside the run (not in it: see drawCockpit).
 const cockpitFile = (sid: string) => path.join(runsDir(), `${sid}.cockpit`);
-/** What the cockpit caster spent in a run: omp's list price, the calls that came back with a reply (a failed or aborted one included, a throw is not), and tokens (input counts cache reads and writes). */
-type Spend = { cost: number; calls: number; tokens_in: number; tokens_out: number };
+/** What the cockpit caster spent in a run: omp's list price, the calls that came back with a reply (a failed or aborted one included, a throw is not), and tokens as an agent counts them (input only; cache reads and writes apart), and the model the alias last resolved to. */
+type Spend = { cost: number; calls: number; tokens_in: number; tokens_out: number; cache_read: number; cache_write: number; model?: string };
 /** The caster's memory for the run key: the summary shown, when the last attempt started, and the call in flight. */
 type CasterState = { text?: string; dim?: boolean; station?: string; at?: number; lastAt?: number; lastHash?: string; ctrl?: AbortController; spend?: Spend };
 /** completeSimple of @oh-my-pi/pi-ai: the test seam; the real one is imported on the first call. */
@@ -180,7 +180,9 @@ type HostModel = Parameters<CompleteSimple>[0];
 const casterSpend = (v: unknown): Spend | undefined => {
 	const o = asObj(v);
 	const n = (x: unknown): x is number => typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
-	return isCost(o.cost) && n(o.calls) && o.calls > 0 && n(o.tokens_in) && n(o.tokens_out) ? { cost: o.cost, calls: o.calls, tokens_in: o.tokens_in, tokens_out: o.tokens_out } : undefined;
+	return isCost(o.cost) && n(o.calls) && o.calls > 0 && n(o.tokens_in) && n(o.tokens_out) && n(o.cache_read) && n(o.cache_write)
+		? { cost: o.cost, calls: o.calls, tokens_in: o.tokens_in, tokens_out: o.tokens_out, cache_read: o.cache_read, cache_write: o.cache_write, ...(typeof o.model === "string" && o.model ? { model: chars(oneLine(o.model), 40) } : {}) }
+		: undefined;
 };
 const savedSpend = (sid: string): Spend | undefined => {
 	try {
@@ -635,7 +637,7 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 			return { id, role: r.role, ...(r.squad ? { squad: r.squad } : {}), cost, tokens_in, tokens_out, cache_read, cache_write };
 		});
 		const spend = live?.key === run.key ? live.caster?.spend : savedSpend(run.sid);
-		if (spend?.calls) costs.push({ id: "caster", role: "caster", cost: spend.cost, tokens_in: spend.tokens_in, tokens_out: spend.tokens_out });
+		if (spend?.calls) costs.push({ id: "caster", role: "caster", calls: spend.calls, model: spend.model, cost: spend.cost, tokens_in: spend.tokens_in, tokens_out: spend.tokens_out, cache_read: spend.cache_read, cache_write: spend.cache_write });
 		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported, agents: costs });
 		const file = path.join(stateDir(), "debriefs", `${safeName(run.key)}-${nowIso(now).slice(0, 19).replace(/:/g, "-")}.md`);
 		try {
@@ -1193,7 +1195,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const alias = parseAlias(process.env.STRATEGIUM_CASTER_MODEL);
 		const raw = process.env.STRATEGIUM_CASTER?.trim() ?? "";
 		const ignored = [raw && raw !== "1" && raw !== "0" ? `STRATEGIUM_CASTER "${chars(oneLine(raw), 40)}"` : "", every.ignored === undefined ? "" : `STRATEGIUM_CASTER_EVERY_MIN "${every.ignored}"`].filter(Boolean);
-		return `caster: ${caster.on ? "on" : "off"} (${caster.from}) · model ${"alias" in alias ? alias.alias : alias.error} · every ${every.min} min${ignored.length ? ` · ignored: ${ignored.join(", ")}` : ""}`;
+		const resolved = "alias" in alias && cockpit.caster.spend?.model ? ` → ${cockpit.caster.spend.model}` : "";
+		return `caster: ${caster.on ? "on" : "off"} (${caster.from}) · model ${"alias" in alias ? alias.alias : alias.error}${resolved} · every ${every.min} min${ignored.length ? ` · ignored: ${ignored.join(", ")}` : ""}`;
 	};
 
 	// The cockpit: an overlay on demand while this session has a run. Everything it shows beyond the run file
@@ -1407,15 +1410,18 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				return {
 					text: (m.content ?? []).filter(p => p.type === "text").map(p => p.text ?? "").join(" "),
 					cost: u?.cost?.total,
-					tokens_in: (u?.input ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0),
+					tokens_in: u?.input,
 					tokens_out: u?.output,
-					...(m.stopReason === "error" || m.stopReason === "aborted" ? { failed: true as const } : {}),
+					cache_read: u?.cacheRead,
+					cache_write: u?.cacheWrite,
+					model: typeof model.id === "string" ? chars(oneLine(model.id), 40) : undefined,
+					...(m.stopReason === "error" || m.stopReason === "aborted" ? { failed: true as const, error: m.stopReason === "error" ? m.errorMessage : undefined } : {}),
 				};
 			},
 		};
 	};
 	/** On a caster tick of the open cockpit: start one summary when it is due (see `due`). The attempt is stamped when it starts, so a failure waits for a new state and a new interval and never loops. */
-	const casterTick = (ctx: SessionCtx, run: Run) => {
+	const casterTick = (ctx: SessionCtx) => {
 		const c = cockpit.caster;
 		if (!caster.on || !cockpit.input) return;
 		const view = cockpitView({ ...cockpit.input });
@@ -1446,11 +1452,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				const n = (x: number | undefined) => (typeof x === "number" && Number.isSafeInteger(x) && x > 0 ? x : 0);
 				// A reply that arrives after an abort is not shown, but it was paid.
 				if (r.reply) {
-					const spend = (c.spend ??= { cost: 0, calls: 0, tokens_in: 0, tokens_out: 0 });
+					const spend = (c.spend ??= { cost: 0, calls: 0, tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 });
+					if (r.reply.model) spend.model = r.reply.model;
 					spend.cost += isCost(r.reply.cost) ? r.reply.cost : 0;
 					spend.calls++;
 					spend.tokens_in += n(r.reply.tokens_in);
 					spend.tokens_out += n(r.reply.tokens_out);
+					spend.cache_read += n(r.reply.cache_read);
+					spend.cache_write += n(r.reply.cache_write);
 					cockpit.dirty = true;
 				}
 				if (!ctrl.signal.aborted) Object.assign(c, { text: r.text, dim: r.dim, station, at: r.dim ? undefined : Date.now() });
@@ -1493,7 +1502,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 							const own = frame % 2 === 0 ? readRun(sidOf(ctx)) : undefined;
 							if (own) {
 								drawCockpit(own, ctx);
-								casterTick(ctx, own);
+								casterTick(ctx);
 							}
 							tui.requestRender();
 						} catch {

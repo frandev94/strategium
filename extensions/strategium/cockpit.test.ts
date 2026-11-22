@@ -3081,6 +3081,10 @@ describe("caster box", () => {
 		expect(row(false)).toContain(`${TRUE.parchment}listening…`);
 	});
 
+	test("narrow: the caster line costs a row, so the chronicle keeps at least 6 rows at any tight height", () => {
+		for (let h = 14; h <= 40; h++) expect(eventLines(draw(cast(), 60, h)).length).toBeGreaterThanOrEqual(6);
+	});
+
 	test("narrow: one `caster: first sentence` line under the header, cut to the width", () => {
 		const out = draw(cast({ caster: caster({ text: "First sentence. Second one." }) }), 60, 40);
 		expect(out.filter(l => l.includes("caster:"))).toEqual(["caster: First sentence."]);

@@ -1,7 +1,7 @@
 // The cockpit caster's pure logic: what the model is told, when it is asked, and what its answer becomes. No fs, no ctx, no model id: the call itself is injected (`Complete`).
 import { clean, oneLine, type Entry, type Live, type View } from "./cockpit";
 
-export type CasterReply = { text: string; cost?: number; tokens_in?: number; tokens_out?: number; failed?: true };
+export type CasterReply = { text: string; cost?: number; tokens_in?: number; tokens_out?: number; cache_read?: number; cache_write?: number; model?: string; failed?: true; error?: string };
 export type Complete = (system: string, user: string, signal: AbortSignal) => Promise<CasterReply>;
 
 const FACT_CHARS = 200;
@@ -72,16 +72,21 @@ export function parseAlias(env?: string): { alias: string } | { error: string } 
 	return /^@\S+$/.test(v) && !clean(v).includes(" ") ? { alias: v } : { error: `not a role alias: ${chars(oneLine(v), 40)}` };
 }
 
-/** One summary, never throwing: a throw is `call failed: <its message>` (one clean line, at most 40 characters; never headers or keys), a failed reply `call failed`, an empty one `nothing new`; all dim. The reply is returned whenever there is one, so its cost is not lost. */
+/** `call failed` and, when there is one, its reason as one clean line of at most 40 characters (the message only: never headers or keys). */
+const failure = (why: unknown) => {
+	const w = chars(line(why), 40);
+	return w ? `call failed: ${w}` : "call failed";
+};
+
+/** One summary, never throwing: a throw or a failed reply is `call failed: <its message>`, an empty one `nothing new`; all dim. The reply is returned whenever there is one, so its cost is not lost. */
 export async function summarize(complete: Complete, station: string, facts: string[], signal: AbortSignal): Promise<{ text: string; dim: boolean; reply?: CasterReply }> {
 	let reply: CasterReply;
 	try {
 		reply = await complete(CASTER_SYSTEM, casterPrompt(station, facts), signal);
 	} catch (e) {
-		const why = chars(line(e instanceof Error ? e.message : ""), 40);
-		return { text: why ? `call failed: ${why}` : "call failed", dim: true };
+		return { text: failure(e instanceof Error ? e.message : ""), dim: true };
 	}
-	if (reply.failed) return { text: "call failed", dim: true, reply };
+	if (reply.failed) return { text: failure(reply.error), dim: true, reply };
 	const text = casterText(reply.text);
 	return text ? { text, dim: false, reply } : { text: "nothing new", dim: true, reply };
 }

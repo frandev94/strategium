@@ -7,7 +7,7 @@ const USAGE = `Run the real omp + this plugin in a Windows ConPTY, seed a run, a
 Default mode writes screen<sfx>.* (the footer the seeded run draws, before Alt+C) and overlay<sfx>.* (after Alt+C).
 --ponytail[=DIR]: also load the ponytail omp plugin (second -e), default dir found under ~/.omp/plugins; suffix defaults to -ponytail.
 --relic: start omp with STRATEGIUM_RELIC=1 and add -relic to the suffix (screen-relic.*, overlay-relic.*, replay work dirs) unless --suffix is given. Without it STRATEGIUM_RELIC=0, whatever the caller's environment holds, so a shot or replay never depends on it.
---caster[=TEXT]: start omp with STRATEGIUM_CASTER=1 and the test hook STRATEGIUM_CASTER_FAKE=TEXT (default: a fixed two-clause sentence), so the cockpit draws a caster summary with no model call; adds -caster to the suffix unless --suffix is given. Without it both are pinned off (STRATEGIUM_CASTER=0, FAKE empty), whatever the caller's environment holds. Applies to shots and to --replay/--all; the caster-box replay runs with the caster on either way.
+--caster[=TEXT]: start omp with STRATEGIUM_CASTER=1 and the test hook STRATEGIUM_CASTER_FAKE=TEXT (default: a fixed two-clause sentence), so the cockpit draws a caster summary with no model call; adds -caster to the suffix unless --suffix is given. Without it both are pinned off (STRATEGIUM_CASTER=0, FAKE empty), whatever the caller's environment holds. Applies to shots and to --replay/--all; the caster-box replay runs with the caster on and its own fixed text either way.
 --replay=NAME runs one regression scenario (REPLAYS below): keys, resizes and waits in the real omp, text checks on the screen xterm.js holds at each
 checkpoint; prints PASS/FAIL and exits 0/1 (unknown name: 2). --all runs every scenario and prints a table. --keep-work keeps the work dir (replay.log). --all-png (replays) shoots every snapshot, not only the png=True ones.
 Outputs (default %TEMP%\\strategium-tui-shot): <name>.raw (VT bytes), <name>.html (xterm.js 5.5 vendored in tools/tui-shot/vendor, no network), <name>.png (headless Edge).
@@ -174,6 +174,8 @@ export interface Args {
 export const relicEnv = (relic: boolean) => ({ STRATEGIUM_RELIC: relic ? "1" : "0" });
 /** The text the fake caster says when --caster has no value. */
 export const CASTER_TEXT = "Squad alpha just went green on the parser tests; gamma has been quiet for six minutes.";
+/** The fake caster text of a replay: a scenario that needs the caster says its own fixed text, so --caster=OTHER never breaks its checks; the others follow the flag. */
+export const replayCaster = (sc: { caster?: boolean }, flag: string | null) => (sc.caster ? CASTER_TEXT : flag);
 /** The child's STRATEGIUM_CASTER and its test hook STRATEGIUM_CASTER_FAKE: always set (null = off), so the caller's own values never change a shot or a replay. */
 export const casterEnv = (text: string | null) => ({ STRATEGIUM_CASTER: text === null ? "0" : "1", STRATEGIUM_CASTER_FAKE: text ?? "" });
 const VALUE: Record<string, keyof Args> = { "--seed": "seed", "--suffix": "suffix", "--plugin": "plugin", "--out": "out", "--omp": "omp", "--edge": "edge", "--replay": "replay" };
@@ -1413,7 +1415,7 @@ async function replay(name: string): Promise<[string, string | null]> {
 		console.log(`SKIP ${name} (${sc.r}): ponytail plugin not found`);
 		return ["SKIP", "ponytail plugin not found"];
 	}
-	const R = new Run(sc.seed, sfx, sc.ext ?? false, pdir, sc.caster ? (A.caster ?? CASTER_TEXT) : A.caster);
+	const R = new Run(sc.seed, sfx, sc.ext ?? false, pdir, replayCaster(sc, A.caster));
 	console.log(`== ${name} (${sc.r}, ${sc.kind})\n   omp: ${R.cmd}`);
 	let err: string | null = null, C: Ctx;
 	try {

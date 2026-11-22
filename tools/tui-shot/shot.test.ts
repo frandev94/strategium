@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allExit, type Args, CASTER_TEXT, casterEnv, parseArgs, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+import { allExit, type Args, CASTER_TEXT, casterEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
 
 const args = (argv: string[]) => {
 	const a = parseArgs(argv);
@@ -54,6 +54,13 @@ test("parseArgs --caster: off by default, bare = default text, =TEXT and TEXT, b
 test("casterEnv always pins STRATEGIUM_CASTER and its fake text, so a user's own values never change a shot", () => {
 	expect(casterEnv(null)).toEqual({ STRATEGIUM_CASTER: "0", STRATEGIUM_CASTER_FAKE: "" });
 	expect(casterEnv("Alpha is green")).toEqual({ STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_FAKE: "Alpha is green" });
+});
+
+test("replayCaster: a caster scenario keeps its own text whatever --caster says, the others follow the flag", () => {
+	expect(replayCaster({ caster: true }, "OTHER")).toBe(CASTER_TEXT);
+	expect(replayCaster({ caster: true }, null)).toBe(CASTER_TEXT);
+	expect(replayCaster({}, "OTHER")).toBe("OTHER");
+	expect(replayCaster({}, null)).toBeNull();
 });
 
 test("the caster-box replay is registered on the skirmish seed and always runs with the caster", () => {
