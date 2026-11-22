@@ -238,6 +238,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 					...(hs.rows.length
 						? table(["Brother", "Squad", "Result", "Honours"], hs.rows.map(r => [cell(r.brother), cell(r.squad), result(r), r.earned.length ? r.earned.join(", ") : "—"]))
 						: ["None."]),
+					...(hs.rows.some(r => honourLine(r).length) ? ["", ...hs.rows.flatMap(honourLine).map(l => `- ${l}`)] : []),
 					...(hs.unsaved === undefined ? [] : ["", `Roster not written (${oneLine(hs.unsaved)}): this record was not saved.`]),
 					"",
 				]

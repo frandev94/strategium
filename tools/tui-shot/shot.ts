@@ -151,8 +151,8 @@ SEEDS.names = {
 	},
 	live: { PenitentLorenzo: SEEDS.detail.live!.AlphaBrother, ApothecaryVolker: SEEDS.detail.live!.ApothecaryBeta },
 	roster: {
-		Lorenzo: { passed: 4, penances: 1, falls: 0, squads: 5, purity: 4, halo: 1, laurel: 1 },
-		Tycho: { passed: 10, penances: 2, falls: 0, squads: 10, purity: 7, halo: 0, laurel: 0 },
+		Lorenzo: { passed: 6, penances: 1, falls: 0, squads: 5, purity: 4, halo: 1, laurel: 1 }, // 4 first builds + 1 saved squad (+2): passed = purity + 2 * halo
+		Tycho: { passed: 10, penances: 3, falls: 0, squads: 10, purity: 7, halo: 0, laurel: 0 }, // 7 first builds + 3 passes after a penance
 	},
 };
 
@@ -1381,7 +1381,7 @@ function checksCockpitNames(C: Ctx) {
 	const d = snapOf(C, "squad");
 	C.ck("squad: the detail names SQUAD alpha", d.rowsText.some(r => r.startsWith("╟─") && r.includes("SQUAD alpha")), null, "SQUAD alpha", d);
 	C.ck("squad: brother: Lorenzo", d.has("brother: Lorenzo"), null, "brother: Lorenzo", d);
-	C.ck("squad: record: passed 4", d.has("record: passed 4"), null, "record: passed 4", d);
+	C.ck("squad: record: passed 6", d.has("record: passed 6"), null, "record: passed 6", d);
 	const b = snapOf(C, "squad-back");
 	C.ck("squad-back: the boxes are back", b.type === "alternate" && b.has("BATTLE-BROTHERS"), b.type, "alternate, BATTLE-BROTHERS", b);
 	const n = snapOf(C, "narrow"), long = n.rowsText.map((r, y) => [r, y] as const).filter(([r]) => /Lorenzo|Tycho|Leon/.test(r));

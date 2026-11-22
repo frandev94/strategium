@@ -869,7 +869,14 @@ function recordRun(run: Run): { line: string; honours: Honour[]; error?: string 
 	const merged = run.merged === true && !unfinished({ names, ended: run.ended });
 	// The end has no second chance: wait past STALE_MS so a lock left by a crash is taken instead of losing the record.
 	const seen: { before?: Brothers } = {};
-	const err = updateRoster(stateDir(), b => ((seen.before = b), applyRun(b, outcomes, merged)), STALE_MS + 2000);
+	const err = updateRoster(
+		stateDir(),
+		b => {
+			seen.before = b;
+			return applyRun(b, outcomes, merged);
+		},
+		STALE_MS + 2000,
+	);
 	// An unsaved record has no known "before": no joins, Crux or corruption.
 	const rows = honours(outcomes, merged, err ? undefined : seen.before);
 	return err ? { line: `WARN ROSTER not written: ${err}`, honours: rows, error: err } : { line: `ROSTER ${outcomes.length} squad(s) recorded`, honours: rows };
@@ -1357,7 +1364,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		dirty: false,
 		seal: undefined as { id: string; lines: string[] } | undefined, // what the Captain prepared for the seal that waits (the `seal` action)
 		deployed: new Map<string, Deployed>(),
-		roster: undefined as { brothers: Brothers } | { error: string } | undefined, // roster.json as read once per run, names on only: a brother's record cannot change while his run holds him
+		roster: undefined as { n: number; brothers: Brothers } | undefined, // roster.json as read for a run with `n` names, names on only: a brother's record cannot change while his run holds him, a new name may be one the file now knows. Never an unreadable read
 		final: new Map<string, Live | undefined>(), // a finished agent's live row: read once, a miss re-read while its agent's or squad's detail is open (undefined: none found); memory only
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
@@ -1451,7 +1458,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		job.state = ok ? "done" : "failed";
 		job.ended = Date.now();
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
-		log(key, job.who, `${ok ? "✓" : "✗"} ${job.name ? `${job.name} ` : ""}${ok ? "returned" : "failed"}`, ok ? "ok" : "fail");
+		log(key, job.who, `${ok ? "✓" : "✗"} ${naming.on && job.name ? `${job.name} ` : ""}${ok ? "returned" : "failed"}`, ok ? "ok" : "fail");
 	};
 	/** Idle for the host with nothing queued and no background job running: the prompt is free for the user's orders. */
 	const agentStatus = (ctx: SessionCtx) =>
@@ -1505,7 +1512,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
 		}
 		cockpit.transcript = readOpen(ctx);
-		const roster = naming.on ? (cockpit.roster ??= loadRoster(stateDir())) : { brothers: {} };
+		const n = run.names?.length ?? 0;
+		const roster = naming.on ? (cockpit.roster?.n === n ? cockpit.roster : loadRoster(stateDir())) : { brothers: {} };
+		if (naming.on) cockpit.roster = "error" in roster ? undefined : { n, brothers: roster.brothers };
 		cockpit.input = {
 			live: rows,
 			now,

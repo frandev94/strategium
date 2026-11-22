@@ -539,13 +539,24 @@ describe("debrief honours (#135)", () => {
 		const md = r.markdown;
 		expect(md.indexOf("## Squads")).toBeLessThan(md.indexOf("## Honours"));
 		expect(md.indexOf("## Honours")).toBeLessThan(md.indexOf("## Agents spawned"));
-		expect(section(md, "Honours").trim().split("\n")).toEqual([
+		expect(section(md, "Honours").trim().split("\n").slice(0, 4)).toEqual([
 			"| Brother | Squad | Result | Honours |",
 			"|---|---|---|---|",
 			"| Leon | alpha | first build | Purity Seal |",
 			"| Tycho | beta | fell | — |",
 		]);
 		expect(r.summary.at(-1)).toBe("HONOURS Leon joins the roster, Leon earns a Purity Seal, Tycho falls");
+	});
+	test("the section words every honour under the table: joins, earned, falls and corrupted too", () => {
+		const r = debrief(input(evs, { honours: { rows: [h("Leon", "a", "first", { earned: ["Purity Seal"], joined: true }), h("Tycho", "b", "fell", { corrupted: true })] } }));
+		expect(section(r.markdown, "Honours").trim().split("\n").slice(4)).toEqual([
+			"",
+			"- Leon joins the roster",
+			"- Leon earns a Purity Seal",
+			"- Tycho falls",
+			"- Tycho is corrupted and kept in reserve",
+		]);
+		expect(section(debrief(input(evs, { honours: { rows: [h("A", "a", "penance", { penances: 1 })] } })).markdown, "Honours").trim().split("\n")).toHaveLength(3);
 	});
 	test("results: first build, after N penance(s), saved by the veteran, fell", () => {
 		const all = [h("A", "a", "first"), h("B", "b", "penance", { penances: 1 }), h("C", "c", "penance", { penances: 2 }), h("D", "d", "saved", { earned: ["Iron Halo"] }), h("E", "e", "fell")];

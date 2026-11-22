@@ -3157,8 +3157,8 @@ describe("names: squad rows, badges and record", () => {
 		}
 	});
 	test("the Nerd Font badges are the md glyphs", () => {
-		// md-seal_variant, md-circle_double, md-crown, md-shield_cross (glyphnames.json)
-		expect(Object.values(BADGES(true))).toEqual(["\u{f0fd9}", "\u{f0e95}", "\u{f01a5}", "\u{f0cc9}"]);
+		// md-seal_variant, md-circle_double, md-crown, md-cross_celtic (glyphnames.json); the crux is a cross, not the shield of a rank
+		expect(Object.values(BADGES(true))).toEqual(["\u{f0fd9}", "\u{f0e95}", "\u{f01a5}", "\u{f0cf5}"]);
 	});
 
 	test.each([60, 72, 100, 140])("at width %i no line is wider than the width", width => {

@@ -348,9 +348,9 @@ export const icons = (nf: boolean) =>
 			}
 		: { captain: "☩", scout: "", librarian: "", brother: "†", veteran: "‡", apothecary: "", inquisitor: "", securityReviewer: "", sonic: "", task: "", seal: "◷", back: "↶", sealOn: "✠", sealWait: "○" };
 
-/** Honour badges next to a squad's builder: plain glyphs one cell wide, never emoji. Nerd Font: md-seal_variant, md-circle_double, md-crown, md-shield_cross (codepoints checked in the Nerd Fonts glyphnames.json). */
+/** Honour badges next to a squad's builder: plain glyphs one cell wide, never emoji. Nerd Font: md-seal_variant, md-circle_double, md-crown, md-cross_celtic (codepoints checked in the Nerd Fonts glyphnames.json; a cross, not the shield of a rank). */
 export const BADGES = (nf: boolean) =>
-	nf ? { purity: "\u{f0fd9}", halo: "\u{f0e95}", laurel: "\u{f01a5}", crux: "\u{f0cc9}" } : { purity: "✠", halo: "☉", laurel: "❦", crux: "✚" };
+	nf ? { purity: "\u{f0fd9}", halo: "\u{f0e95}", laurel: "\u{f01a5}", crux: "\u{f0cf5}" } : { purity: "✠", halo: "☉", laurel: "❦", crux: "✚" };
 
 /** `icon` then `text`, one gap between them. No icon: just the text. */
 const label = (icon: string, text: string) => (icon ? `${icon} ${text}` : text);
