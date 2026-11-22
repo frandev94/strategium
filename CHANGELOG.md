@@ -1,3 +1,18 @@
+## [0.2.38] - 2026-11-22
+
+### 🚀 Features
+
+- *(extension)* Service record and shared roster across runs
+
+### 🐛 Bug Fixes
+
+- *(extension)* Roster campaign hold expires, real merges only, dead locks taken
+- *(extension)* Ranked brothers return in later runs of the same session
+- *(extension)* Only ranked surnames take an epithet in the first pass
+
+### 📚 Documentation
+
+- *(lore)* Service record, honours and the roster
 ## [0.2.37] - 2026-11-22
 
 ### 🚀 Features
