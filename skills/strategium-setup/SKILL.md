@@ -90,6 +90,7 @@ The recommended config and its reasons are in `<R>/docs/models.md`; read it befo
 | `STRATEGIUM_CASTER` | optional | `0` (off; `1` turns on the cockpit caster, a model summary of the current station; used only when no choice is saved; any other value is ignored; `/strategium-config caster on`, `off` or `default` saves or drops the choice and applies it at once) |
 | `STRATEGIUM_CASTER_EVERY_MIN` | optional | `1` (minutes between caster calls, a whole number of 1 or more; anything else falls back to `1`) |
 | `STRATEGIUM_CASTER_MODEL` | optional | `@smol` (the omp role alias the caster uses; it must start with `@`; the `smol` role must be set, see §4c; its cost shows as the `caster` row of the run report) |
+| `STRATEGIUM_NAMES` | optional | `0` (off; `1` turns on the agent names, the `strategium name` action and the spawn guard that refuses a name the plugin did not hand out; used only when no choice is saved; any other value is ignored; `/strategium-config names on`, `off` or `default` saves or drops the choice) |
 | `STRATEGIUM_TIERS` | optional | leave unset (defaults `light=@smol:medium;standard=@task:medium;heavy=@slow:high`; `;`-separated `tier=selector` entries override one tier each, e.g. `light=anthropic/claude-haiku-5-5:low;heavy=@task:high`; `light` needs the `smol` role set, see `docs/models.md`) |
 | `OBSIDIAN_VAULT_PATH` | only with obsidian-second-brain | absolute path of the vault; check the folder exists and contains `.obsidian/` |
 

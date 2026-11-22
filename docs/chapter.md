@@ -89,6 +89,28 @@ None of these is an agent unless the roster says so.
 - Dreadnoughts: entombed heroes in walking war machines, the usual bearers of the honorific Venerable (see Honorifics and posts). Never used as a generic name for ordinary agents.
 - Chapter Fleet: the workflow infrastructure described under Departments.
 
+## Agent names
+
+With `STRATEGIUM_NAMES` on, the plugin gives every agent a name for the run: a title plus a surname (`BrotherLorenzo`, `PenitentLorenzo`, `VeteranLorenzo`). This section is the single source of the terms. The `strategium name` action hands them out; the ids in the roster do not change.
+
+| Agent | Title | Note |
+|---|---|---|
+| `battle-brother` | Brother, then Penitent | Brother is a squad's first builder; once one has spawned, the next builder of that squad (its penance) is Penitent. The squad keeps one surname for the run |
+| `veteran` | Veteran | same surname as its squad |
+| `librarian` | Librarian | |
+| `archmagos` | Archmagos | |
+| `scout` | Scout | |
+| `inquisitor` | Inquisitor | |
+| `confessor` | Confessor | |
+| `apothecary` | Apothecary | |
+| `security-reviewer` | Interrogator | an Inquisition rank, used here for the auditor's name |
+| `sonic` | Servitor | the designation is two capital letters and a number, `ServitorKX7`: the only names with digits |
+| `task` | Adept | the Chapter Serf above |
+
+- Penitent: a Battle-Brother doing penance for a failed squad. It is not a rank.
+- A surname belongs to one squad or one role in a run; a taken name gets an epithet (`InquisitorEisenhornSteadfast`). A name is at most 28 characters, so omp's `-N` suffix keeps the id within 32.
+- A redraft retires the old builder names; the re-planned squads get new surnames.
+
 ## Stations and the chronicle voice
 
 Station names are unchanged. One line each:

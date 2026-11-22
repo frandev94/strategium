@@ -26,6 +26,7 @@ import { casterFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, 
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
+import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./names";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -69,6 +70,7 @@ type Run = {
 	archmagosSpawned?: number;
 	redraft?: true;
 	builds?: Record<string, number>;
+	names?: NameEntry[];
 	phases?: Phase[];
 	since?: string;
 };
@@ -383,7 +385,9 @@ function readRun(sid: string): Run | undefined {
 	const f = runFile(sid);
 	if (!existsSync(f)) return undefined;
 	try {
-		return JSON.parse(readFileSync(f, "utf8")) as Run;
+		const run = JSON.parse(readFileSync(f, "utf8")) as Run;
+		if (run && typeof run === "object" && "names" in run) run.names = cleanNames(run.names);
+		return run;
 	} catch {
 		return undefined;
 	}
@@ -735,7 +739,7 @@ function signal(spawn: Spawn, level: string, msg: string | undefined, sound: boo
 }
 
 // The agents the Captain may spawn during a run.
-const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "confessor", "security-reviewer", "sonic", "task"];
+export const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "confessor", "security-reviewer", "sonic", "task"];
 const agentName = (a: string) => a.toLowerCase().split(/[:/]/).pop()!;
 const SLICES_REASON = "Strategium: declare the plan's squads first: strategium action slices, with each squad's id, parallel flag and files.";
 const ARCHMAGOS_OFF =
@@ -783,6 +787,12 @@ const tiersState = () => {
 
 const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
+/** The squad a recorded name was handed out for, if that squad is known. */
+function recordedSquad(run: Run, name: string): Slice | undefined {
+	const squad = run.names?.find(n => n.name === name)?.squad;
+	return [...(run.slices ?? []), ...(run.stopped ?? [])].find(s => s.id === squad);
+}
+
 /**
  * The squad a spawn builds, undefined when the spawnKey matches none.
  * `named`: item names that took their squad from the brief ("build squad <id>").
@@ -791,6 +801,9 @@ const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
  */
 function squadOf(run: Run, spawnKey: string, named: Map<string, string>): Slice | undefined {
 	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
+	// The recorded name first (omp's -N suffix dropped), then today's rules.
+	const byName = recordedSquad(run, baseId(spawnKey));
+	if (byName) return byName;
 	const stripped = spawnKey.replace(/-\d+$/, "");
 	let slice: Slice | undefined;
 	for (const key of [spawnKey, stripped]) {
@@ -813,6 +826,42 @@ function tierFor(run: Run, spawnKey: string, named: Map<string, string>): Tier |
 	writeRun({ ...run, builds: { ...run.builds, [slice.id]: n + 1 } });
 	return LADDER[Math.min(LADDER.indexOf(slice.tier ?? "standard") + (n ? 1 : 0), LADDER.length - 1)];
 }
+
+/** Run.names as read from disk: well-formed entries only, in order, each name once. */
+function cleanNames(v: unknown): NameEntry[] | undefined {
+	if (!Array.isArray(v)) return undefined;
+	const seen = new Set<string>();
+	const out: NameEntry[] = [];
+	for (const raw of v) {
+		const { name, agent, surname, squad, spawned, old } = asObj(raw);
+		if (typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9]*$/.test(name) || name.length > MAX_NAME || seen.has(name)) continue;
+		if (typeof agent !== "string" || !NAMED_AGENTS.includes(agent) || typeof surname !== "string" || (squad !== undefined && typeof squad !== "string")) continue;
+		seen.add(name);
+		out.push({ name, agent, surname, ...(squad !== undefined ? { squad } : {}), ...(spawned === true ? { spawned: true as const } : {}), ...(old === true ? { old: true as const } : {}) });
+	}
+	return out.length ? out : undefined;
+}
+
+/** The run once the name behind a spawn key (omp's -N suffix dropped) is marked spawned; the same run when no name of that agent matches or it is marked already. */
+function markSpawned(run: Run, key: string, agent: string): Run {
+	const hit = run.names?.find(n => n.name === baseId(key));
+	if (!hit || hit.agent !== agent || hit.spawned) return run;
+	return { ...run, names: run.names!.map(n => (n === hit ? { ...n, spawned: true as const } : n)) };
+}
+
+/** Why a name is refused with names on: undefined when the plugin handed it out for this agent and it has not spawned yet. */
+function nameProblem(run: Run, agent: string, name: string): string | undefined {
+	if (!name) return "has no name";
+	const hit = run.names?.find(n => n.name === name);
+	if (!hit) return `has the name ${name}, which the plugin did not hand out`;
+	if (hit.agent !== agent) return `has the name ${name}, which was handed out for ${hit.agent}`;
+	if (hit.spawned) return `has the name ${name}, which has already spawned`;
+	if (hit.old) return `has the name ${name}, which a redraft retired`;
+	return undefined;
+}
+
+const nameReason = (agent: string, what: string, problem: string) =>
+	`Strategium: names are on and ${what} ${problem}. To get a name for ${agent}${agent === "battle-brother" || agent === "veteran" ? " (with its squad)" : ""}, call strategium action name`;
 
 // Windows and macOS filesystems ignore case; Linux does not.
 const normFile = (f: string) => {
@@ -918,6 +967,10 @@ const taskItems = (input: unknown) => {
 function builtSlice(item: Record<string, unknown>, run: Run): Slice | undefined {
 	if (!["battle-brother", "veteran"].includes(agentName(String(item.agent ?? "task")))) return undefined;
 	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
+	// The recorded name first; names off (or a name the plugin did not hand out) falls back to the rules below.
+	const given = typeof item.name === "string" ? item.name.trim() : undefined;
+	const byName = given ? recordedSquad(run, given) : undefined;
+	if (byName) return byName;
 	const name = typeof item.name === "string" ? fold(item.name) : undefined;
 	const built = [...String(item.task ?? "").matchAll(/\b(?:squad|slice)\s+([\w.-]*\w)/gi)].map(m => m[1]);
 	return known.find(s => fold(s.id) === name) ?? known.find(s => built.includes(s.id));
@@ -1190,6 +1243,30 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		return { on: false, from: "default" };
 	};
 	let caster = casterSetting();
+
+	// Agent names (#133): /strategium-config names saves "on" or "off" in the state dir, which wins over STRATEGIUM_NAMES (1/0, anything else ignored); off by default.
+	const namesFile = () => path.join(stateDir(), "names");
+	const namesSetting = (): { on: boolean; from: string } => {
+		let saved = "";
+		try {
+			saved = readFileSync(namesFile(), "utf8").trim().toLowerCase();
+		} catch {
+			// no saved choice: fall through to the env and the default
+		}
+		const fromEnv = process.env.STRATEGIUM_NAMES?.trim() ?? "";
+		if (saved === "on" || saved === "off") return { on: saved === "on", from: "/strategium-config" };
+		if (fromEnv === "1" || fromEnv === "0") return { on: fromEnv === "1", from: "STRATEGIUM_NAMES" };
+		return { on: false, from: "default" };
+	};
+	let naming = namesSetting();
+	const namesState = () => `${naming.on ? "on" : "off"} (${naming.from})`;
+	// The names issued in this omp process, per session, across its runs: omp suffixes an id it has already seen, so a campaign's next run avoids them. Lost on restart.
+	const issuedBySession = new Map<string, Set<string>>();
+	const issuedFor = (sid: string) => {
+		const set = issuedBySession.get(sid) ?? new Set<string>();
+		issuedBySession.set(sid, set);
+		return set;
+	};
 	const casterConfigLine = () => {
 		const every = parseEvery(process.env.STRATEGIUM_CASTER_EVERY_MIN);
 		const alias = parseAlias(process.env.STRATEGIUM_CASTER_MODEL);
@@ -1678,7 +1755,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 
 	const count = z.number().int().nonnegative().optional();
 	const schema = z.object({
-		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft", "seal", "signal"]),
+		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft", "name", "seal", "signal"]),
 		key: z.string().optional(),
 		booked: z.number().int().positive().optional(),
 		spent: z.number().int().nonnegative().optional(),
@@ -1702,13 +1779,16 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		eta_min: z.number().int().min(0).max(10080).optional(),
 		line: z.string().optional(),
 		blocked: z.boolean().optional(),
+		agent: z.string().optional(),
+		squad: z.string().optional(),
+		again: z.boolean().optional(),
 	});
 
 	pi.registerTool({
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?, reported?), attention (message), notify (on?), slices (slices), redraft, seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id; parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound and toast settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned. end writes the run's debrief (time per station, seals, squads, spawns) to <state dir>/debriefs and answers ENDED <key>, DEBRIEF <path> and summary lines; reported = {apothecary: {killed, survived, crashes}, review: {pass, fail, opened, fixed, not_reproduced}}: whole numbers from the agents' reports, shown only in the (reported) sections.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?, reported?), attention (message), notify (on?), slices (slices), redraft, name (agent, squad?, again?), seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id (with names on, after the name from the name action); parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>, or when its name came from the name action) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound, toast and names settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex; it makes the run's builder names obsolete. name (agent, squad?, again?) hands out the agent's lore name and answers NAME <name> or ERROR <reason>. It works only with names on (status shows NAMES on|off (<source>); /strategium-config names on|off|default or env STRATEGIUM_NAMES=1; off by default, and then it answers ERROR). agent is a roster agent; squad, a declared squad id, is required for battle-brother and veteran and refused for the other agents; again: true keeps a non-builder agent's persona. With names on, the name of every task item (and the label of an eval agent) must come from this action: a refusal says so, and slices adds a NAMES <squad>=<name>, ... line for the parallel squads. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned. end writes the run's debrief (time per station, seals, squads, spawns) to <state dir>/debriefs and answers ENDED <key>, DEBRIEF <path> and summary lines; reported = {apothecary: {killed, survived, crashes}, review: {pass, fail, opened, fixed, not_reproduced}}: whole numbers from the agents' reports, shown only in the (reported) sections.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub" && input.action !== "signal") return text("ERROR strategium tool is for the main session only");
@@ -1747,8 +1827,27 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						if (!run) throw new Error("no active run in this session; use begin");
 						return text(addMin(run, params.minutes ?? 0));
 					}
+					case "name": {
+						if (!naming.on) return text("ERROR names are off: /strategium-config names on or STRATEGIUM_NAMES=1");
+						const run = ownRun(sid);
+						if (!run) return text("ERROR no active run in this session");
+						if (!params.agent) throw new Error("name needs agent");
+						const { squad } = params;
+						const agent = agentName(params.agent);
+						if (squad !== undefined && ["battle-brother", "veteran"].includes(agent) && ![...(run.slices ?? []), ...(run.stopped ?? [])].some(s => s.id === squad))
+							return text(`ERROR squad ${squad} is not declared: call strategium action slices first`);
+						// No await from here to writeRun: parallel calls in one process cannot hand out one name twice.
+						const issued = issuedFor(sid);
+						const got = allocateName(run.names ?? [], { agent, squad, again: params.again }, issued);
+						if ("error" in got) return text(`ERROR ${got.error}`);
+						if (got.fresh) {
+							writeRun({ ...run, names: [...(run.names ?? []), got.entry] });
+							issued.add(got.entry.name);
+						}
+						return text(`NAME ${got.entry.name}`);
+					}
 					case "status":
-						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}\nCOMMIT ${commitState(sid)}\nTIERS ${tiersState()}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}`);
+						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}\nCOMMIT ${commitState(sid)}\nTIERS ${tiersState()}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}\nNAMES ${namesState()}`);
 					case "report":
 						return text(report(params.date));
 					case "end":
@@ -1781,8 +1880,31 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const err = checkSlices(slices, stopped);
 						if (err) return text([...lines, `ERROR ${err}`].join("\n"));
 						const live = slices.filter(s => !stopped.some(d => d.id === s.id));
-						writeRun({ ...run, slices: live, launched: undefined });
 						lines.push(`SQUADS ${live.map(s => s.id + (s.parallel || s.tier ? ` (${[s.parallel && "parallel", s.tier].filter(Boolean).join(", ")})` : "")).join(", ") || "none"}`);
+						let next: Run = { ...run, slices: live, launched: undefined };
+						if (naming.on) {
+							// Each live parallel squad's first Brother, reused until it has spawned; a squad whose Brother has spawned is skipped.
+							// Synchronous from ownRun to writeRun, like `name`, so parallel calls cannot hand out one name twice.
+							const entries = [...(run.names ?? [])];
+							const issued = issuedFor(sid);
+							const pairs: string[] = [];
+							for (const s of live.filter(s => s.parallel)) {
+								if (entries.some(n => n.squad === s.id && !n.old && n.agent === "battle-brother" && n.spawned)) continue;
+								const got = allocateName(entries, { agent: "battle-brother", squad: s.id }, issued);
+								if ("error" in got) {
+									lines.push(`WARN ${got.error}`);
+									continue;
+								}
+								if (got.fresh) {
+									entries.push(got.entry);
+									issued.add(got.entry.name);
+								}
+								pairs.push(`${s.id}=${got.entry.name}`);
+							}
+							if (pairs.length) lines.push(`NAMES ${pairs.join(", ")}`);
+							if (entries.length) next = { ...next, names: entries };
+						}
+						writeRun(next);
 						return text(lines.join("\n"));
 					}
 					case "seal": {
@@ -1803,7 +1925,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const run = ownRun(sid);
 						if (!run) return text("ERROR no active run in this session");
 						if (run.redraft) return text(`ERROR the redraft of ${run.key} is spent (1 per run)`);
-						writeRun({ ...run, redraft: true, builds: undefined });
+						writeRun({ ...run, redraft: true, builds: undefined, ...(run.names ? { names: run.names.map(n => (n.squad ? { ...n, old: true as const } : n)) } : {}) });
 						record({ event: "redraft", key: run.key });
 						return text(
 							`REDRAFT ${run.key}: back to Auspex; no librarian or archmagos until a scout spawned now has finished${run.archmagosSpawned ? "; then one more archmagos may be spawned" : ""}`,
@@ -1926,7 +2048,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look; caster on|off|default sets the cockpit's model commentator", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look; caster on|off|default sets the cockpit's model commentator; names on|off|default sets whether the plugin hands out and checks agent names", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
 		let preview = false;
 		if (arg !== undefined) {
@@ -1941,7 +2063,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const th = arg.match(/^cockpit-theme\s+(\S+)$/);
 			const re = arg.match(/^relic\s+(on|off|default)$/);
 			const ca = arg.match(/^caster\s+(on|off|default)$/);
-			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re && !ca) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			const na = arg.match(/^names\s+(on|off|default)$/);
+			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re && !ca && !na) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default, or names on|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
 			else if (to) toastBySession.set(sid, to[1] === "on");
@@ -1980,6 +2103,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					writeFileSync(casterFile(), v);
 				}
 				caster = casterSetting();
+			} else if (na) {
+				const v = na[1];
+				if (v === "default") rmSync(namesFile(), { force: true });
+				else {
+					mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
+					writeFileSync(namesFile(), v);
+				}
+				naming = namesSetting();
 			} else if (k) {
 				const v = k[1].toLowerCase();
 				if (v === "default") rmSync(keyFile(), { force: true });
@@ -2008,6 +2139,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				`cockpit-key: ${cockpitKey.key} (${cockpitKey.from})${next.key !== cockpitKey.key || next.from !== cockpitKey.from ? `; next omp start: ${next.key} (${next.from})` : ""}`,
 				`cockpit-theme: ${theme.name} (${theme.from})`,
 				`relic: ${relic.on ? "on" : "off"} (${relic.from})`,
+				`names: ${namesState()}`,
 				casterConfigLine(),
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
@@ -2263,6 +2395,17 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			return oneLine(typeof first === "string" && first ? first : typeof modelRole === "string" && modelRole ? `@${modelRole}` : "default").slice(0, 60) || "default";
 		};
 		if (!ROSTER.includes(agent)) return { block: true, reason: `Strategium: during a run only these agents may be spawned: ${ROSTER.join(", ")}.` };
+		// An eval spawn takes its id from its label: with names on, that label (without omp's -N suffix) must be a name handed out for this agent.
+		const key = typeof asObj(e).spawnKey === "string" ? (asObj(e).spawnKey as string) : "";
+		if (naming.on && asObj(e).invocationKind === "eval") {
+			const problem = nameProblem(run, agent, baseId(key));
+			if (problem) return { block: true, reason: `${nameReason(agent, "this eval spawn", problem)} (pass label=<name> from strategium action name)` };
+		}
+		// Two separate task calls in one turn pass the tool_call guard together: the spawn hook refuses the second spawn of a name.
+		if (naming.on && asObj(e).invocationKind !== "eval") {
+			const hit = run.names?.find(n => n.name === baseId(key));
+			if (hit?.spawned && hit.agent === agent) return { block: true, reason: nameReason(agent, "this spawn", `has the name ${hit.name}, which has already spawned`) };
+		}
 		if ((agent === "librarian" || agent === "archmagos") && run.redraft && !Object.values(run.scouts ?? {}).includes("done"))
 			return { block: true, reason: REDRAFT_REFRESH };
 		if (agent === "archmagos") {
@@ -2274,17 +2417,19 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			if (spawned >= (run.redraft ? 2 : 1)) return { block: true, reason: run.redraft ? ARCHMAGOS_SPENT : ARCHMAGOS_AGAIN };
 			// ponytail: counted here, once per real child (a write agent://<id> follow-up never fires this hook); a dispatch that
 			// fails after it, or a later extension's block, still spends the budget: redraft or the user is the way out.
-			writeRun({ ...run, archmagosSpawned: spawned + 1 });
+			writeRun({ ...markSpawned(run, key, agent), archmagosSpawned: spawned + 1 });
 			record({ event: "spawn", key: run.key, role: agent, model: hostModel() });
 			return;
 		}
 		if (agent === "battle-brother" && run.repo && !run.slices) return { block: true, reason: SLICES_REASON };
 		// The tier sets the child's model and its effort (the selector's :level). Reviewers and the rest keep their own.
-		const key = typeof asObj(e).spawnKey === "string" ? (asObj(e).spawnKey as string) : "";
+		const marked = markSpawned(run, key, agent);
 		let tier: Tier | undefined;
-		const squad = agent === "veteran" || agent === "battle-brother" ? squadOf(run, key, briefNames)?.id : undefined;
+		const squad = agent === "veteran" || agent === "battle-brother" ? squadOf(marked, key, briefNames)?.id : undefined;
 		if (agent === "veteran") tier = "heavy";
-		else if (agent === "battle-brother") tier = tierFor(run, key, briefNames) ?? "standard";
+		else if (agent === "battle-brother") tier = tierFor(marked, key, briefNames) ?? "standard";
+		// tierFor already wrote the marked run with its `builds`; any other spawn writes the mark alone.
+		if (marked !== run && !(agent === "battle-brother" && squad)) writeRun(marked);
 		const model = tier ? parseTiers(process.env.STRATEGIUM_TIERS).selectors[tier] : undefined;
 		record({ event: "spawn", key: run.key, role: agent, model: model ?? hostModel(), ...(tier ? { tier } : {}), ...(squad ? { squad } : {}) });
 		if (tier) return { model, note: `Strategium tier ${tier}` };
@@ -2370,6 +2515,18 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		if (name === "ask" && run) {
 			const err = alert(sidOf(ctx), "attention", `${run.key}: your answer is needed`, ctx);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+		}
+		// With names on, every roster item of a task call must carry a name the plugin handed out. Before the repo check: it holds with or without a repo.
+		if (naming.on && run && name === "task") {
+			const seen = new Set<string>();
+			for (const item of taskItems(e.input)) {
+				const agent = agentName(String(item.agent ?? "task"));
+				if (!ROSTER.includes(agent)) continue;
+				const given = typeof item.name === "string" ? item.name.trim() : "";
+				const problem = seen.has(given) ? `has the name ${given}, which another item of this call already uses` : nameProblem(run, agent, given);
+				if (problem) return { block: true, reason: nameReason(agent, "a task item", problem) };
+				seen.add(given);
+			}
 		}
 		if (!run?.repo) return;
 		const repo = run.repo;

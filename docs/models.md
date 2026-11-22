@@ -83,7 +83,7 @@ STRATEGIUM_TIERS=light=anthropic/claude-haiku-5-5:low;heavy=@task:high
 
 Without a `:level` in the selector, the agent's own `thinkingLevel` applies. To change one squad's tier for one run, change it at seal Plan, not here.
 
-**Fallbacks.** The plugin finds a squad from the `name` of the task item (it must be the squad id), or from the brief (`build squad S1`). A battle-brother matching no squad runs on `standard`. A host that ignores the plugin's model leaves the agent on its own definition (`@task`, medium; the veteran high), which is the standard tier without the ladder. A later extension that also sets a model wins.
+**Fallbacks.** The plugin finds a squad from the name recorded by `strategium name` (with `NAMES on`), and then from the `name` of the task item (with names off it must be the squad id), or from the brief (`build squad S1`). A battle-brother matching no squad runs on `standard`. A host that ignores the plugin's model leaves the agent on its own definition (`@task`, medium; the veteran high), which is the standard tier without the ladder. A later extension that also sets a model wins.
 
 ## When a role is unset
 
