@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension, { keyOf, parseTiers, readTranscript, whereFrom } from "./index";
+import extension, { keyOf, parseTiers, readTranscript, ROSTER, whereFrom } from "./index";
+import { NAMED_AGENTS } from "./names";
 import { cockpitView } from "./cockpit";
 import { append, claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
 
@@ -7777,16 +7778,81 @@ describe("agent names (#133)", () => {
 		});
 
 		test("the Brother names slices issued in one run are not reused in the next run of the session", async () => {
+			const random = spyOn(Math, "random").mockReturnValue(0); // a fixed draw: only the issued set keeps run 2's names apart
+			try {
+				const s = await open();
+				const first = (saved(s).names ?? []).map(e => e.name);
+				expect(first.length).toBeGreaterThan(0);
+				await s.call({ action: "end", key: "K-1" });
+				await s.call({ action: "begin", key: "K-2" });
+				await s.call({ action: "repo", repo: s.dir });
+				await s.call({ action: "slices", slices: SQUADS });
+				const second = (JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")).names ?? []).map((e: { name: string }) => e.name);
+				expect(second.length).toBe(first.length);
+				for (const n of second) expect(first).not.toContain(n);
+			} finally {
+				random.mockRestore();
+			}
+		});
+
+		test("a scout named once cannot be spawned twice across two task calls", async () => {
 			const s = await open();
-			const first = (saved(s).names ?? []).map(e => e.name);
-			expect(first.length).toBeGreaterThan(0);
-			await s.call({ action: "end", key: "K-1" });
-			await s.call({ action: "begin", key: "K-2" });
-			await s.call({ action: "repo", repo: s.dir });
-			await s.call({ action: "slices", slices: SQUADS });
-			const second = (JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")).names ?? []).map((e: { name: string }) => e.name);
-			expect(second.length).toBe(first.length);
-			for (const n of second) expect(first).not.toContain(n);
+			const name = await nameOf(s, { agent: "scout" });
+			expect(spawn(s, "scout", name)?.block).toBeUndefined();
+			expect(spawn(s, "scout", `${name}-2`)?.reason).toContain(`has the name ${name}, which has already spawned`);
+		});
+
+		test("a veteran named once cannot be spawned twice", async () => {
+			const s = await open();
+			const name = await nameOf(s, { agent: "veteran", squad: "S1" });
+			expect(spawn(s, "veteran", name)?.block).toBeUndefined();
+			expect(spawn(s, "veteran", `${name}-2`)?.reason).toContain(`has the name ${name}, which has already spawned`);
+		});
+
+		test("the name action takes a qualified agent such as strategium:scout", async () => {
+			const s = await open();
+			expect(await nameOf(s, { agent: "strategium:scout" })).toMatch(/^Scout[A-Z]/);
+		});
+
+		test("a spawn marks only a name handed out for that agent", async () => {
+			const s = await open();
+			const brother = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			spawn(s, "scout", brother); // a task spawn: the tool_call guard is not in play, so only markSpawned's agent check protects the name
+			expect(saved(s).names?.find(e => e.name === brother)?.spawned).toBeUndefined();
+		});
+
+		test("a builder whose squad is no longer declared is still marked spawned", async () => {
+			const s = await open();
+			const name = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			await s.call({ action: "slices", slices: [{ id: "S2", parallel: true, files: ["b.ts"] }] });
+			expect(spawn(s, "battle-brother", name)?.block).toBeUndefined();
+			expect(saved(s).names?.find(e => e.name === name)?.spawned).toBe(true);
+		});
+
+		test("slices lists the new Brother of a squad after a redraft", async () => {
+			const s = await open();
+			await s.call({ action: "redraft" });
+			const out = await s.call({ action: "slices", slices: SQUADS });
+			const fresh = saved(s).names?.find(e => e.squad === "S1" && !e.old)?.name;
+			expect(fresh).toStartWith("Brother");
+			expect(out).toMatch(new RegExp(`^NAMES .*S1=${fresh}`, "m"));
+		});
+
+		test("a role named before a redraft still passes the guard after it", async () => {
+			const s = await open();
+			const scout = await nameOf(s, { agent: "scout" });
+			await s.call({ action: "redraft" });
+			expect(task(s, [item("scout", scout)])).toBeUndefined();
+		});
+
+		test("an agent outside the roster is left to the spawn hook, not the name check", async () => {
+			const s = await open();
+			expect(task(s, [item("not-in-roster")])).toBeUndefined();
+			expect(spawn(s, "not-in-roster")?.reason).toContain("only these agents may be spawned");
+		});
+
+		test("every roster agent can be named, and nothing else", () => {
+			expect([...NAMED_AGENTS].sort()).toEqual([...ROSTER].sort());
 		});
 
 		test("two separate task spawns of one builder name cannot both spawn it", async () => {

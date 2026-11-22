@@ -739,7 +739,7 @@ function signal(spawn: Spawn, level: string, msg: string | undefined, sound: boo
 }
 
 // The agents the Captain may spawn during a run.
-const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "confessor", "security-reviewer", "sonic", "task"];
+export const ROSTER = ["scout", "librarian", "archmagos", "battle-brother", "veteran", "apothecary", "inquisitor", "confessor", "security-reviewer", "sonic", "task"];
 const agentName = (a: string) => a.toLowerCase().split(/[:/]/).pop()!;
 const SLICES_REASON = "Strategium: declare the plan's squads first: strategium action slices, with each squad's id, parallel flag and files.";
 const ARCHMAGOS_OFF =
@@ -1832,7 +1832,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const run = ownRun(sid);
 						if (!run) return text("ERROR no active run in this session");
 						if (!params.agent) throw new Error("name needs agent");
-						const { agent, squad } = params;
+						const { squad } = params;
+						const agent = agentName(params.agent);
 						if (squad !== undefined && ["battle-brother", "veteran"].includes(agent) && ![...(run.slices ?? []), ...(run.stopped ?? [])].some(s => s.id === squad))
 							return text(`ERROR squad ${squad} is not declared: call strategium action slices first`);
 						// No await from here to writeRun: parallel calls in one process cannot hand out one name twice.
@@ -2400,8 +2401,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const problem = nameProblem(run, agent, baseId(key));
 			if (problem) return { block: true, reason: `${nameReason(agent, "this eval spawn", problem)} (pass label=<name> from strategium action name)` };
 		}
-		// Two separate task calls in one turn pass the tool_call guard together: the spawn hook refuses the second one of a builder name.
-		if (naming.on && asObj(e).invocationKind !== "eval" && (agent === "battle-brother" || agent === "veteran")) {
+		// Two separate task calls in one turn pass the tool_call guard together: the spawn hook refuses the second spawn of a name.
+		if (naming.on && asObj(e).invocationKind !== "eval") {
 			const hit = run.names?.find(n => n.name === baseId(key));
 			if (hit?.spawned && hit.agent === agent) return { block: true, reason: nameReason(agent, "this spawn", `has the name ${hit.name}, which has already spawned`) };
 		}

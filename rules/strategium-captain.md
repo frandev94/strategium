@@ -23,10 +23,10 @@ From `strategium` `repo` (it arms the guard):
 - Bash file writes are blocked (`rm`, `rmdir`, `mv`, `cp`, `touch`, `truncate`, `tee`, `ln`, `sed -i`, `perl -i`, destructive git, redirects). A redirect passes only into `$TEMP`, `$TMP`, `$TMPDIR`, `%TEMP%`, `/tmp/`, `local://`, `out://`, `/dev/null` or a file descriptor.
 - `battle-brother` is refused until `strategium` `slices` has declared the squads.
 
-With `NAMES on` (`strategium` `status`), from `begin`:
-- A `task` item for a roster agent is refused when its `name` is missing, was not handed out by `strategium` `name`, was handed out for another agent, has already spawned, or repeats another item of the same call.
+With names on (`/strategium-config names on`; `strategium` `status` shows `NAMES on`), from `begin`:
+- A `task` item for a roster agent is refused when its `name` is missing, was not handed out by `strategium name`, was handed out for another agent, has already spawned, or repeats another item of the same call.
 - An eval spawn of a roster agent is refused the same way, through its `label`.
-- Each refusal names the action: call `strategium` `name` with `agent` (and `squad` for a `battle-brother` or `veteran`). With names off, no name is checked.
+- Each refusal names the action: call `strategium name` with `agent` (and `squad` for a `battle-brother` or `veteran`). With names off, no name is checked.
 
 ## Allowed for the Captain
 
