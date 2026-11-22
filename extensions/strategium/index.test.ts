@@ -7748,6 +7748,54 @@ describe("agent names (#133)", () => {
 			expect(evalSpawn(name)?.reason).toContain(GUARD);
 		});
 
+		test("an eval spawn refused for a missing or unknown label says how to pass the label", async () => {
+			const s = await open();
+			for (const key of [undefined, "Nobody"]) expect(spawn(s, "apothecary", key, { invocationKind: "eval" })?.reason).toEndWith("(pass label=<name> from strategium action name)");
+		});
+
+		test("a builder name a redraft retired is refused even if it never spawned", async () => {
+			const s = await open();
+			const old = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			await s.call({ action: "redraft" });
+			await s.call({ action: "slices", slices: SQUADS });
+			expect(task(s, [item("battle-brother", old, { isolated: true })])?.reason).toContain(`has the name ${old}, which a redraft retired`);
+		});
+
+		test("a spawned archmagos is marked spawned and name archmagos again hands out another name", async () => {
+			process.env.STRATEGIUM_ARCHMAGOS = "1";
+			process.env.STRATEGIUM_NAMES = "1";
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1", archmagos: true });
+			await s.call({ action: "repo", repo: s.dir });
+			const name = await nameOf(s, { agent: "archmagos" });
+			const file = join(s.dir, "runs", "sess-0001.json");
+			writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), librarians: { a: "done", b: "done" } }));
+			const r = setup("sess-0001", s.dir);
+			expect(r.handlers.before_subagent_spawn[0]({ agent: "archmagos", spawnKey: name, invocationKind: "eval" }, r.ctx)).toBeUndefined();
+			expect(saved(r).names?.find(e => e.name === name)?.spawned).toBe(true);
+			expect(await nameOf(r, { agent: "archmagos", again: true })).not.toBe(name);
+		});
+
+		test("the Brother names slices issued in one run are not reused in the next run of the session", async () => {
+			const s = await open();
+			const first = (saved(s).names ?? []).map(e => e.name);
+			expect(first.length).toBeGreaterThan(0);
+			await s.call({ action: "end", key: "K-1" });
+			await s.call({ action: "begin", key: "K-2" });
+			await s.call({ action: "repo", repo: s.dir });
+			await s.call({ action: "slices", slices: SQUADS });
+			const second = (JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")).names ?? []).map((e: { name: string }) => e.name);
+			expect(second.length).toBe(first.length);
+			for (const n of second) expect(first).not.toContain(n);
+		});
+
+		test("two separate task spawns of one builder name cannot both spawn it", async () => {
+			const s = await open();
+			const name = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			expect(spawn(s, "battle-brother", name)?.block).toBeUndefined();
+			expect(spawn(s, "battle-brother", `${name}-2`)?.reason).toContain(`has the name ${name}, which has already spawned`);
+		});
+
 		test("a refused spawn leaves its name unspent", async () => {
 			const s = await open();
 			const name = await nameOf(s, { agent: "archmagos" });
@@ -7815,7 +7863,8 @@ describe("agent names (#133)", () => {
 			const s = await open();
 			const name = await nameOf(s, { agent: "battle-brother", squad: "S1" });
 			expect(spawn(s, "battle-brother", name)).toEqual({ model: "@smol:medium", note: "Strategium tier light" });
-			expect(spawn(s, "battle-brother", `${name}-2`)?.model).toBe("@task:medium");
+			const next = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			expect(spawn(s, "battle-brother", `${next}-2`)?.model).toBe("@task:medium");
 			expect(saved(s).builds).toEqual({ S1: 2 });
 		});
 

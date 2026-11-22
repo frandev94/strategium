@@ -787,6 +787,12 @@ const tiersState = () => {
 
 const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
+/** The squad a recorded name was handed out for, if that squad is known. */
+function recordedSquad(run: Run, name: string): Slice | undefined {
+	const squad = run.names?.find(n => n.name === name)?.squad;
+	return [...(run.slices ?? []), ...(run.stopped ?? [])].find(s => s.id === squad);
+}
+
 /**
  * The squad a spawn builds, undefined when the spawnKey matches none.
  * `named`: item names that took their squad from the brief ("build squad <id>").
@@ -796,8 +802,7 @@ const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 function squadOf(run: Run, spawnKey: string, named: Map<string, string>): Slice | undefined {
 	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
 	// The recorded name first (omp's -N suffix dropped), then today's rules.
-	const recorded = run.names?.find(n => n.name === baseId(spawnKey))?.squad;
-	const byName = known.find(s => s.id === recorded);
+	const byName = recordedSquad(run, baseId(spawnKey));
 	if (byName) return byName;
 	const stripped = spawnKey.replace(/-\d+$/, "");
 	let slice: Slice | undefined;
@@ -851,6 +856,7 @@ function nameProblem(run: Run, agent: string, name: string): string | undefined 
 	if (!hit) return `has the name ${name}, which the plugin did not hand out`;
 	if (hit.agent !== agent) return `has the name ${name}, which was handed out for ${hit.agent}`;
 	if (hit.spawned) return `has the name ${name}, which has already spawned`;
+	if (hit.old) return `has the name ${name}, which a redraft retired`;
 	return undefined;
 }
 
@@ -963,8 +969,7 @@ function builtSlice(item: Record<string, unknown>, run: Run): Slice | undefined 
 	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
 	// The recorded name first; names off (or a name the plugin did not hand out) falls back to the rules below.
 	const given = typeof item.name === "string" ? item.name.trim() : undefined;
-	const recorded = run.names?.find(n => n.name === given)?.squad;
-	const byName = known.find(s => s.id === recorded);
+	const byName = given ? recordedSquad(run, given) : undefined;
 	if (byName) return byName;
 	const name = typeof item.name === "string" ? fold(item.name) : undefined;
 	const built = [...String(item.task ?? "").matchAll(/\b(?:squad|slice)\s+([\w.-]*\w)/gi)].map(m => m[1]);
@@ -2393,7 +2398,12 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const key = typeof asObj(e).spawnKey === "string" ? (asObj(e).spawnKey as string) : "";
 		if (naming.on && asObj(e).invocationKind === "eval") {
 			const problem = nameProblem(run, agent, baseId(key));
-			if (problem) return { block: true, reason: nameReason(agent, "this eval spawn", problem) };
+			if (problem) return { block: true, reason: `${nameReason(agent, "this eval spawn", problem)} (pass label=<name> from strategium action name)` };
+		}
+		// Two separate task calls in one turn pass the tool_call guard together: the spawn hook refuses the second one of a builder name.
+		if (naming.on && asObj(e).invocationKind !== "eval" && (agent === "battle-brother" || agent === "veteran")) {
+			const hit = run.names?.find(n => n.name === baseId(key));
+			if (hit?.spawned && hit.agent === agent) return { block: true, reason: nameReason(agent, "this spawn", `has the name ${hit.name}, which has already spawned`) };
 		}
 		if ((agent === "librarian" || agent === "archmagos") && run.redraft && !Object.values(run.scouts ?? {}).includes("done"))
 			return { block: true, reason: REDRAFT_REFRESH };
