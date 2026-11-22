@@ -98,6 +98,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_STATE_DIR;
 	delete process.env.STRATEGIUM_COCKPIT_KEY;
 	delete process.env.STRATEGIUM_COCKPIT_THEME;
+	delete process.env.STRATEGIUM_RELIC;
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
@@ -3415,7 +3416,7 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
@@ -3484,6 +3485,64 @@ describe("cockpit", () => {
 			expect(s.notes).toContain('Strategium: STRATEGIUM_COCKPIT_THEME "khorne" is not a theme (blood-angels, ultramarines, dark-angels, cogitator); ignored');
 			await s.sub("config");
 			expect(s.notes.at(-1)).toContain("cockpit-theme: blood-angels (default)");
+		});
+	});
+
+	describe("the relic look", () => {
+		test("the default is off: config names it and the overlay is the plain frame", async () => {
+			const { s, ui } = await running();
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain("relic: off (default)");
+			await s.sub("cockpit");
+			const comp = ui.opened.at(-1)!.component;
+			const plainFrame = comp.render(100).join("\n");
+			await s.sub("config", "relic on");
+			expect(comp.render(100).join("\n")).not.toBe(plainFrame);
+			expect(comp.render(100).join("\n")).toMatch(/[╍┅╌┄•]/);
+			comp.handleInput!("q");
+		});
+
+		test("relic on|off saves the choice and applies it at once; default drops the file", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			const comp = ui.opened.at(-1)!.component;
+			const before = comp.render(100).join("\n");
+			await s.sub("config", "relic on");
+			expect(readFileSync(join(s.dir, "relic"), "utf8")).toBe("on");
+			expect(s.notes.at(-1)).toContain("relic: on (/strategium-config)");
+			await s.sub("config", "relic off");
+			expect(readFileSync(join(s.dir, "relic"), "utf8")).toBe("off");
+			expect(s.notes.at(-1)).toContain("relic: off (/strategium-config)");
+			expect(comp.render(100).join("\n")).toBe(before);
+			await s.sub("config", "relic default");
+			expect(existsSync(join(s.dir, "relic"))).toBe(false);
+			expect(s.notes.at(-1)).toContain("relic: off (default)");
+			comp.handleInput!("q");
+		});
+
+		test("STRATEGIUM_RELIC picks it (1/0), other values are ignored, and a saved choice wins", async () => {
+			process.env.STRATEGIUM_RELIC = "1";
+			const s = setup();
+			await s.sub("config");
+			expect(s.notes.at(-1)).toContain("relic: on (STRATEGIUM_RELIC)");
+			await s.sub("config", "relic off");
+			expect(s.notes.at(-1)).toContain("relic: off (/strategium-config)");
+			process.env.STRATEGIUM_RELIC = "yes";
+			await s.sub("config", "relic default");
+			expect(s.notes.at(-1)).toContain("relic: off (default)");
+			process.env.STRATEGIUM_RELIC = "0";
+			const s0 = setup();
+			await s0.sub("config");
+			expect(s0.notes.at(-1)).toContain("relic: off (STRATEGIUM_RELIC)");
+		});
+
+		test("a bad relic argument is refused and writes no file", async () => {
+			const s = setup();
+			for (const bad of ["relic maybe", "relic ON", "relic Default"]) {
+				await s.sub("config", bad);
+				expect(s.notes.at(-1)).toContain("config takes");
+			}
+			expect(existsSync(join(s.dir, "relic"))).toBe(false);
 		});
 	});
 

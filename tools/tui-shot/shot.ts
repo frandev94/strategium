@@ -1,11 +1,12 @@
 const USAGE = `Run the real omp + this plugin in a Windows ConPTY, seed a run, and screenshot what the user sees, or replay past regressions. Windows only.
 
-  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live|signal|detail|transcript] [--ponytail[=DIR]] [--suffix=-x] [--plugin=DIR]
+  bun tools/tui-shot/shot.ts [--seed=scriptorium|skirmish|timed|restart|live|signal|detail|transcript] [--ponytail[=DIR]] [--relic] [--suffix=-x] [--plugin=DIR]
                              [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png]
   bun tools/tui-shot/shot.ts --replay=NAME | --all  [--plugin=DIR] [--suffix=-x] [--out=DIR] [--omp=EXE] [--edge=EXE] [--no-png] [--all-png] [--keep-work]
 
 Default mode writes screen<sfx>.* (the footer the seeded run draws, before Alt+C) and overlay<sfx>.* (after Alt+C).
 --ponytail[=DIR]: also load the ponytail omp plugin (second -e), default dir found under ~/.omp/plugins; suffix defaults to -ponytail.
+--relic: start omp with STRATEGIUM_RELIC=1 and add -relic to the suffix (screen-relic.*, overlay-relic.*, replay work dirs) unless --suffix is given. Without it STRATEGIUM_RELIC=0, whatever the caller's environment holds, so a shot or replay never depends on it.
 --replay=NAME runs one regression scenario (REPLAYS below): keys, resizes and waits in the real omp, text checks on the screen xterm.js holds at each
 checkpoint; prints PASS/FAIL and exits 0/1 (unknown name: 2). --all runs every scenario and prints a table. --keep-work keeps the work dir (replay.log). --all-png (replays) shoots every snapshot, not only the png=True ones.
 Outputs (default %TEMP%\\strategium-tui-shot): <name>.raw (VT bytes), <name>.html (xterm.js 5.5 vendored in tools/tui-shot/vendor, no network), <name>.png (headless Edge).
@@ -165,13 +166,15 @@ SEEDS.transcript = {
 
 // --- args: argparse semantics (--x=v and --x v; --ponytail with an optional value), no prefix abbreviations ---
 export interface Args {
-	seed: string; ponytail: string | true | null; suffix: string | null; plugin: string; out: string; omp: string | null; edge: string | null;
+	seed: string; ponytail: string | true | null; relic: boolean; suffix: string | null; plugin: string; out: string; omp: string | null; edge: string | null;
 	noPng: boolean; allPng: boolean; replay: string | null; all: boolean; keepWork: boolean; help: boolean;
 }
+/** The child's STRATEGIUM_RELIC: always set, so the caller's own value never changes a shot or a replay. */
+export const relicEnv = (relic: boolean) => ({ STRATEGIUM_RELIC: relic ? "1" : "0" });
 const VALUE: Record<string, keyof Args> = { "--seed": "seed", "--suffix": "suffix", "--plugin": "plugin", "--out": "out", "--omp": "omp", "--edge": "edge", "--replay": "replay" };
-const FLAG: Record<string, keyof Args> = { "--no-png": "noPng", "--all-png": "allPng", "--all": "all", "--keep-work": "keepWork", "-h": "help", "--help": "help" };
+const FLAG: Record<string, keyof Args> = { "--no-png": "noPng", "--all-png": "allPng", "--all": "all", "--keep-work": "keepWork", "--relic": "relic", "-h": "help", "--help": "help" };
 export function parseArgs(argv: string[]): Args | { error: string } {
-	const a: Args = { seed: "scriptorium", ponytail: null, suffix: null, plugin: ROOT, out: join(tmpdir(), "strategium-tui-shot"), omp: null, edge: null,
+	const a: Args = { seed: "scriptorium", ponytail: null, relic: false, suffix: null, plugin: ROOT, out: join(tmpdir(), "strategium-tui-shot"), omp: null, edge: null,
 		noPng: false, allPng: false, replay: null, all: false, keepWork: false, help: false };
 	const set = a as unknown as Record<string, unknown>;
 	for (let i = 0; i < argv.length; i++) {
@@ -305,6 +308,7 @@ export class Run {
 		this.env = {};
 		for (const [a, b] of Object.entries(process.env)) if (b !== undefined) this.env[a] = b;
 		Object.assign(this.env, { STRATEGIUM_STATE_DIR: this.state, STRATEGIUM_GLYPHS: "1", TERM_PROGRAM: "Windows_Terminal", WT_SESSION: "00000000-0000-0000-0000-000000000001" });
+		Object.assign(this.env, relicEnv(A.relic));
 		if (ext) { // every model role pinned to the fake provider: side turns (title...) never reach a real model either
 			writeFileSync(join(this.work, "replay.yml"),
 				"modelRoles:\n" + ["default", "slow", "plan", "advisor", "task", "vision", "commit", "smol"].map(r => `  ${r}: replay/ask\n`).join(""));
@@ -1470,7 +1474,7 @@ async function main(argv: string[]): Promise<number> {
 		return 1;
 	}
 	A = parsed;
-	SFX = A.suffix ?? (A.ponytail ? "-ponytail" : "");
+	SFX = A.suffix ?? (A.ponytail ? "-ponytail" : "") + (A.relic ? "-relic" : "");
 	OUT = resolve(A.out);
 	mkdirSync(OUT, { recursive: true });
 	PLUGIN = resolve(A.plugin);

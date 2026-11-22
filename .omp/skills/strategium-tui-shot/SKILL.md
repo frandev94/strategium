@@ -12,10 +12,11 @@ description: Use when developing or debugging the Strategium cockpit, footer or 
 ```
 bun tools/tui-shot/shot.ts --seed=skirmish           # screen.png (the footer the seeded run draws, before Alt+C) + overlay.png (after Alt+C)
 bun tools/tui-shot/shot.ts --seed=scriptorium --ponytail   # also load ponytail -> screen-ponytail.png, overlay-ponytail.png
+bun tools/tui-shot/shot.ts --seed=skirmish --relic    # the relic cockpit (STRATEGIUM_RELIC=1) -> screen-relic.png, overlay-relic.png
 bun tools/tui-shot/shot.ts --replay=NAME | --all     # regression replays, see below
 ```
 
-Output goes to `%TEMP%\strategium-tui-shot\` (`<name>.png`, `.html`, `.raw`), never into the repo. It takes about 15-40 s. Options: `--suffix=-x` names the outputs, `--plugin=DIR` another checkout, worktree or export (default: this repo), `--ponytail=DIR`, `--omp=EXE`, `--edge=EXE`, `--out=DIR`, `--no-png` (keep only `.html`/`.raw`), `--all-png` (replays: PNG of every snapshot, not only the ones marked `png`), `--keep-work` (replays: keep the work dir). Edge, omp and ponytail are discovered; the script exits with the flag to pass if one is missing. Different `--suffix` values can run in parallel.
+Output goes to `%TEMP%\strategium-tui-shot\` (`<name>.png`, `.html`, `.raw`), never into the repo. It takes about 15-40 s. Options: `--relic` starts omp with `STRATEGIUM_RELIC=1` (adds `-relic` to the suffix, so outputs are `screen-relic.*`, `overlay-relic.*` and replays `<name>`-prefixed with `-relic` in their work dir `work-relic-<name>`); without it `STRATEGIUM_RELIC=0` is set whatever the caller's environment holds, so a shot or replay never depends on it. `--suffix=-x` names the outputs (an explicit suffix replaces `-relic`), `--plugin=DIR` another checkout, worktree or export (default: this repo), `--ponytail=DIR`, `--omp=EXE`, `--edge=EXE`, `--out=DIR`, `--no-png` (keep only `.html`/`.raw`), `--all-png` (replays: PNG of every snapshot, not only the ones marked `png`), `--keep-work` (replays: keep the work dir). Edge, omp and ponytail are discovered; the script exits with the flag to pass if one is missing. Different `--suffix` values can run in parallel.
 
 Read the PNG with `read` (it decodes images inline) and describe what you see: footer text, overlay layout, truncation, colors, glyph vs emoji. Check the `.png` exists before claiming anything.
 
