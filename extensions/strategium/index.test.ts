@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, setSystemTime, test, vi } from "bun:test";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, setSystemTime, spyOn, test, vi } from "bun:test";
+import * as fs from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension, { keyOf, parseTiers, whereFrom } from "./index";
+import extension, { keyOf, parseTiers, readTranscript, whereFrom } from "./index";
 import { cockpitView } from "./cockpit";
 import { append, claim, type Ev, load, lockPath, nowIso, openKeys } from "./timer";
 
@@ -5407,11 +5408,11 @@ describe("cockpit", () => {
 					await s.sub("cockpit");
 					const c = ui.opened.at(-1)!.component;
 					open(c);
-					expect(show(c)).toContain("no transcript yet");
+					expect(show(c)).toContain("no transcript yet: omp writes it after the agent's first reply");
 					c.handleInput!("\x7f");
 					mkdirSync(join(dir, "A.jsonl"));
 					c.handleInput!("\r");
-					expect(show(c)).toContain("no transcript yet");
+					expect(show(c)).toContain("transcript unreadable: not a regular file");
 					c.handleInput!("q");
 					// An id that climbs out of the dir: its file exists outside, and is not shown.
 					writeFileSync(join(s.dir, "sessions", "evil.jsonl"), say("OUTSIDE") + "\n");
@@ -5420,6 +5421,7 @@ describe("cockpit", () => {
 					const e = ui.opened.at(-1)!.component;
 					open(e);
 					expect(show(e)).toContain("TRANSCRIPT ../evil");
+					expect(show(e)).toContain("../evil: a nested agent; its transcript is not read");
 					expect(show(e)).not.toContain("OUTSIDE");
 					e.handleInput!("q");
 				});
@@ -5500,6 +5502,214 @@ describe("cockpit", () => {
 					expect(show(c)).not.toContain("LATE-ROW");
 					c.handleInput!("\r");
 					expect(show(c)).toContain("LATE-ROW");
+					c.handleInput!("q");
+				});
+
+				// --- #125 penance: reasons, ids, byte budgets, links, cache ---
+				const NO_SESSION = "no session file: this session is not saved, so its agents' transcripts are not either";
+				const roots: string[] = [];
+				const spies: { mockRestore(): void }[] = [];
+				afterEach(() => {
+					spies.splice(0).forEach(sp => sp.mockRestore());
+					roots.splice(0).forEach(r => rmSync(r, { recursive: true, force: true }));
+				});
+				const watch = <K extends "openSync" | "lstatSync" | "fstatSync" | "readSync">(name: K) => {
+					const sp = spyOn(fs, name);
+					spies.push(sp);
+					return sp;
+				};
+				const bytes = (sp: { mock: { results: { value: unknown }[] } }) => sp.mock.results.reduce((n, r) => n + (r.value as number), 0);
+				const KB = 1024;
+				// A session file and the dir its children's files sit in, all under one temp root.
+				const tree = () => {
+					const root = mkdtempSync(join(tmpdir(), "rt-"));
+					roots.push(root);
+					mkdirSync(join(root, "main"));
+					return { root, dir: join(root, "main"), file: join(root, "main.jsonl") };
+				};
+
+				test("every reason reads exactly as the Spec says", () => {
+					const { dir, file } = tree();
+					expect(readTranscript(undefined, "A", false).lines).toEqual([NO_SESSION]);
+					expect(readTranscript(join(dir, "x.txt"), "A", false).lines).toEqual([NO_SESSION]);
+					expect(readTranscript(file, "a.b", false).lines).toEqual(["a.b: a nested agent; its transcript is not read"]);
+					expect(readTranscript(file, "a/b", false).lines).toEqual(["a/b: not a transcript id"]);
+					expect(readTranscript(file, "A", false).lines).toEqual(["no transcript yet: omp writes it after the agent's first reply"]);
+					mkdirSync(join(dir, "D.jsonl"));
+					expect(readTranscript(file, "D", false).lines).toEqual(["transcript unreadable: not a regular file"]);
+					writeFileSync(join(dir, "E.jsonl"), say("x") + "\n");
+					watch("openSync").mockImplementation(() => {
+						throw Object.assign(new Error("denied"), { code: "EACCES" });
+					});
+					expect(readTranscript(file, "E", false).lines).toEqual(["transcript unreadable: EACCES"]);
+				});
+
+				test("an id with a dot, a separator or a colon, or over 64 chars, never reaches fs, decoys inside and outside the dir or not", () => {
+					const { root, dir, file } = tree();
+					for (const base of [dir, root]) mkdirSync(join(base, "a"));
+					const ids = ["a.b", "a/b", "a\\b", "a:b", "a".repeat(65), "", "..", "a b", "a\nb"];
+					for (const id of ids) for (const base of [dir, root]) try { writeFileSync(join(base, `${id}.jsonl`), say("DECOY") + "\n"); } catch { /* not a legal name here: no decoy for it */ }
+					const open = watch("openSync");
+					const st = watch("lstatSync");
+					const fst = watch("fstatSync");
+					for (const id of ids) expect(readTranscript(file, id, false).lines.join()).not.toContain("DECOY");
+					expect(open.mock.calls).toHaveLength(0);
+					expect(st.mock.calls).toHaveLength(0);
+					expect(fst.mock.calls).toHaveLength(0);
+				});
+
+				test("ids of 1 to 64 letters, digits, `_` and `-` are read, including one that starts with `_` or `-`", () => {
+					const { dir, file } = tree();
+					for (const id of ["_x", "-x", "a".repeat(64), "A1"]) {
+						writeFileSync(join(dir, `${id}.jsonl`), say(`ROW-${id.length}`) + "\n");
+						expect(readTranscript(file, id, false).lines).toEqual([`ROW-${id.length}`]);
+					}
+				});
+
+				test("a 10 MB log and a 100 KiB answer read at most 512 KiB + 64 KiB and show the newest end", () => {
+					const { dir, file } = tree();
+					const pad = say("x".repeat(1000)) + "\n";
+					writeFileSync(join(dir, "A.jsonl"), say("HEAD-MARK") + "\n" + pad.repeat(10_000) + say("TAIL-MARK") + "\n");
+					writeFileSync(join(dir, "A.md"), `FIRST-LINE\n${"y".repeat(100 * KB)}\nEND-MARK\n`);
+					expect(fs.statSync(join(dir, "A.jsonl")).size).toBeGreaterThan(10 * 1024 * KB);
+					const rd = watch("readSync");
+					const alloc = spyOn(Buffer, "allocUnsafe");
+					spies.push(alloc);
+					const t = readTranscript(file, "A", true).lines.join("\n");
+					expect(bytes(rd)).toBeGreaterThan(0);
+					expect(bytes(rd)).toBeLessThanOrEqual(512 * KB + 64 * KB);
+					expect(Math.max(...alloc.mock.calls.map(c => c[0]))).toBeLessThanOrEqual(512 * KB); // never a buffer the size of the file
+					expect(t).toContain("TAIL-MARK");
+					expect(t).toContain("FIRST-LINE");
+					expect(t).not.toContain("HEAD-MARK");
+					expect(t).not.toContain("END-MARK");
+					expect(t).toContain("… earlier entries not shown");
+				});
+
+				test("an answer over 64 KiB is read only up to 64 KiB", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("W") + "\n");
+					writeFileSync(join(dir, "A.md"), "y".repeat(200 * KB));
+					const rd = watch("readSync");
+					readTranscript(file, "A", true);
+					expect(bytes(rd)).toBeLessThanOrEqual(KB + 64 * KB);
+				});
+
+				test("a file of exactly 512 KiB keeps its first line with no notice; one byte more cuts it", () => {
+					const { dir, file } = tree();
+					const first = say("FIRST-ROW") + "\n";
+					const last = (extra: number) => say("x".repeat(512 * KB - first.length - 1 - say("").length + extra)) + "\n";
+					writeFileSync(join(dir, "A.jsonl"), first + last(0));
+					expect(fs.statSync(join(dir, "A.jsonl")).size).toBe(512 * KB);
+					expect(readTranscript(file, "A", false).lines[0]).toBe("FIRST-ROW");
+					writeFileSync(join(dir, "B.jsonl"), first + last(1));
+					const b = readTranscript(file, "B", false).lines;
+					expect(b[0]).toBe("… earlier entries not shown");
+					expect(b).not.toContain("FIRST-ROW");
+				});
+
+				test("a symlink or a junction in place of the log is refused before it is opened", () => {
+					const { root, dir, file } = tree();
+					writeFileSync(join(root, "real.jsonl"), say("REAL") + "\n");
+					mkdirSync(join(root, "realdir"));
+					const link = (target: string, name: string, type: "file" | "junction") => {
+						try {
+							symlinkSync(target, join(dir, name), type);
+							return true;
+						} catch (e) {
+							console.warn(`skipped ${type} link: creation refused (${(e as NodeJS.ErrnoException).code})`);
+							return false;
+						}
+					};
+					const open = watch("openSync");
+					for (const [ok, id] of [[link(join(root, "real.jsonl"), "S.jsonl", "file"), "S"], [link(join(root, "realdir"), "J.jsonl", "junction"), "J"]] as const) {
+						if (!ok) continue;
+						expect(readTranscript(file, id, false).lines).toEqual(["transcript unreadable: not a regular file"]);
+					}
+					expect(open.mock.calls).toHaveLength(0);
+				});
+
+				test("what was opened must be a regular file: the handle's own stat decides", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("ROW") + "\n");
+					watch("fstatSync").mockImplementation((() => ({ isFile: () => false, size: 1, mtimeMs: 0 })) as unknown as typeof fs.fstatSync);
+					expect(readTranscript(file, "A", false).lines).toEqual(["transcript unreadable: not a regular file"]);
+				});
+
+				test("switching to another agent never shows the first one's cached rows, even with the same size and mtime", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("AAAA") + "\n");
+					writeFileSync(join(dir, "B.jsonl"), say("BBBB") + "\n");
+					for (const id of ["A", "B"]) utimesSync(join(dir, `${id}.jsonl`), 1e9, 1e9);
+					const a = readTranscript(file, "A", false);
+					expect(a.lines).toEqual(["AAAA"]);
+					expect(readTranscript(file, "B", false, a).lines).toEqual(["BBBB"]);
+				});
+
+				test("an answer that appears later shows up although the log did not change", () => {
+					const { dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("W") + "\n");
+					const a = readTranscript(file, "A", true);
+					expect(a.lines).toContain("no final answer file");
+					writeFileSync(join(dir, "A.md"), "FINAL-ANSWER-TEXT\n");
+					const b = readTranscript(file, "A", true, a);
+					expect(b.lines).toContain("final answer:");
+					expect(b.lines).toContain("FINAL-ANSWER-TEXT");
+				});
+
+				test("an answer that is a directory or a symlink never hides the log's rows", () => {
+					const { root, dir, file } = tree();
+					writeFileSync(join(dir, "A.jsonl"), say("LOG-ROW") + "\n");
+					mkdirSync(join(dir, "A.md"));
+					expect(readTranscript(file, "A", true).lines).toEqual(["LOG-ROW", "no final answer file"]);
+					writeFileSync(join(dir, "B.jsonl"), say("LOG-ROW") + "\n");
+					writeFileSync(join(root, "real.md"), "LEAK\n");
+					try {
+						symlinkSync(join(root, "real.md"), join(dir, "B.md"), "file");
+					} catch (e) {
+						console.warn(`skipped file link: creation refused (${(e as NodeJS.ErrnoException).code})`);
+						return;
+					}
+					expect(readTranscript(file, "B", true).lines).toEqual(["LOG-ROW", "no final answer file"]);
+				});
+
+				test("a session with no file, or one not ending in .jsonl, says so and does not throw", async () => {
+					const { s, ui } = await squad();
+					for (const getSessionFile of [undefined, () => "x.txt"]) {
+						(s.ctx.sessionManager as { getSessionFile?: () => string }).getSessionFile = getSessionFile;
+						await s.sub("cockpit");
+						const c = ui.opened.at(-1)!.component;
+						open(c);
+						expect(show(c)).toContain("no session file");
+						c.handleInput!("q");
+					}
+				});
+
+				test("closing the cockpit, by q or by Esc from the top, drops the open transcript: a later redraw opens no log", async () => {
+					const { s, ui } = await squad();
+					writeFileSync(join(session(s), "A.jsonl"), say("ROW") + "\n");
+					for (const close of [["q"], ["\x1b", "\x1b", "\x1b"]]) {
+						await s.sub("cockpit");
+						const c = ui.opened.at(-1)!.component;
+						open(c);
+						expect(show(c)).toContain("TRANSCRIPT A");
+						const op = watch("openSync");
+						for (const k of close) c.handleInput!(k);
+						op.mockClear();
+						ended(s);
+						expect(op.mock.calls.filter(call => String(call[0]).endsWith("A.jsonl"))).toHaveLength(0);
+						op.mockRestore();
+					}
+				});
+
+				test("Enter opens the transcript although the run's files were deleted after the cockpit opened", async () => {
+					const { s, ui } = await squad();
+					writeFileSync(join(session(s), "A.jsonl"), say("STILL-HERE") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					rmSync(join(s.dir, "runs"), { recursive: true, force: true });
+					open(c);
+					expect(show(c)).toContain("STILL-HERE");
 					c.handleInput!("q");
 				});
 			});

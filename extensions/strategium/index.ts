@@ -1,4 +1,4 @@
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -276,39 +276,59 @@ const sidOf = (ctx: { sessionManager: { getSessionId(): string } }) => ctx.sessi
 const TAIL_BYTES = 512 * 1024; // the newest part of a child's .jsonl the cockpit reads
 const FINAL_BYTES = 64 * 1024; // the head of its final answer (.md)
 type TranscriptRead = { id: string; stamp: string; lines: string[] };
-/** Up to `len` bytes of the file from `from`, through one handle. */
-function readSlice(file: string, from: number, len: number): string {
+const NOT_FILE = Object.assign(new Error("not a regular file"), { code: "not a regular file" });
+/** A regular file opened for reading, with the size and mtime of the open handle (a race between a check and the open cannot swap in a link); undefined when absent. A link, directory or FIFO throws before any open. */
+function openRegular(file: string): { fd: number; size: number; mtimeMs: number } | undefined {
+	const l = lstatSync(file, { throwIfNoEntry: false });
+	if (!l) return undefined;
+	if (!l.isFile()) throw NOT_FILE;
 	const fd = openSync(file, "r");
 	try {
-		const buf = Buffer.alloc(len);
-		return buf.toString("utf8", 0, readSync(fd, buf, 0, len, from));
-	} finally {
+		const st = fstatSync(fd);
+		if (!st.isFile()) throw NOT_FILE;
+		return { fd, size: st.size, mtimeMs: st.mtimeMs };
+	} catch (e) {
 		closeSync(fd);
+		throw e;
 	}
+}
+/** Up to `len` bytes of the open file from `from`. */
+function readSlice(fd: number, from: number, len: number): string {
+	const buf = Buffer.allocUnsafe(len);
+	return buf.toString("utf8", 0, readSync(fd, buf, 0, len, from));
 }
 /**
  * The rows of agent `id`'s transcript, from `<session file minus .jsonl>/<id>.jsonl` (omp writes a child's files beside its parent's) and, when `finished`, its `<id>.md`.
- * The id is checked before it becomes a path; only a regular file is opened (lstat: a link is refused). Bounded: the last TAIL_BYTES of the log, the first FINAL_BYTES of the answer.
+ * The id is checked before it becomes a path (a `.` is a nested agent, never read); only a regular file is opened, and its own handle is stat'ed. Bounded: the last TAIL_BYTES of the log, the first FINAL_BYTES of the answer.
  * `prev` is returned as is while both files keep their size and mtime. Never throws: a problem is one reason row.
  */
 export function readTranscript(sessionFile: string | undefined, id: string, finished: boolean, prev?: TranscriptRead): TranscriptRead {
 	const reason = (r: string): TranscriptRead => ({ id, stamp: r, lines: [r] });
-	if (!/^[A-Za-z0-9][\w.-]{0,63}$/.test(id) || id.includes("..")) return reason("invalid agent id");
-	if (!sessionFile?.endsWith(".jsonl")) return reason("no session file");
-	const log = `${sessionFile.slice(0, -6)}/${id}.jsonl`;
-	const md = `${sessionFile.slice(0, -6)}/${id}.md`;
+	if (id.includes(".")) return reason(`${id}: a nested agent; its transcript is not read`);
+	if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return reason(`${id}: not a transcript id`);
+	if (!sessionFile?.endsWith(".jsonl")) return reason("no session file: this session is not saved, so its agents' transcripts are not either");
+	const base = `${sessionFile.slice(0, -6)}/${id}`;
+	const fds: number[] = [];
 	try {
-		const st = lstatSync(log, { throwIfNoEntry: false });
-		if (!st?.isFile()) return reason("no transcript yet");
-		const ans = finished ? lstatSync(md, { throwIfNoEntry: false }) : undefined;
-		const stamp = `${st.size}:${st.mtimeMs}:${finished ? (ans?.isFile() ? `${ans.size}:${ans.mtimeMs}` : "none") : "live"}`;
+		const log = openRegular(`${base}.jsonl`);
+		if (!log) return reason("no transcript yet: omp writes it after the agent's first reply");
+		fds.push(log.fd);
+		let ans: { fd: number; size: number; mtimeMs: number } | undefined;
+		try {
+			ans = finished ? openRegular(`${base}.md`) : undefined;
+		} catch {
+			ans = undefined; // a bad answer file (directory, link, unreadable) is no answer; the log's rows still show
+		}
+		if (ans) fds.push(ans.fd);
+		const stamp = `${log.size}:${log.mtimeMs}:${finished ? (ans ? `${ans.size}:${ans.mtimeMs}` : "none") : "live"}`;
 		if (prev?.id === id && prev.stamp === stamp) return prev;
-		const cut = st.size > TAIL_BYTES;
-		const tail = readSlice(log, Math.max(0, st.size - TAIL_BYTES), Math.min(st.size, TAIL_BYTES));
-		const final = finished ? (ans?.isFile() ? readSlice(md, 0, Math.min(ans.size, FINAL_BYTES)) : null) : undefined;
-		return { id, stamp, lines: transcriptLines(tail, cut, final) };
-	} catch {
-		return reason("transcript unreadable");
+		const tail = readSlice(log.fd, Math.max(0, log.size - TAIL_BYTES), Math.min(log.size, TAIL_BYTES));
+		const final = finished ? (ans ? readSlice(ans.fd, 0, Math.min(ans.size, FINAL_BYTES)) : null) : undefined;
+		return { id, stamp, lines: transcriptLines(tail, log.size > TAIL_BYTES, final) };
+	} catch (e) {
+		return reason(`transcript unreadable: ${(e as NodeJS.ErrnoException).code ?? "error"}`);
+	} finally {
+		for (const fd of fds) closeSync(fd);
 	}
 }
 
@@ -1268,6 +1288,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const closed = () => {
 			cockpit.close = undefined;
 			cockpit.overlay = undefined;
+			cockpit.nav = {}; // a closed cockpit reads no transcript on a later redraw
+			cockpit.transcript = undefined;
 		};
 		// Not awaited: the command returns at once and the overlay lives until Esc or q.
 		Promise.resolve(

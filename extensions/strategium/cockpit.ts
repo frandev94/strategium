@@ -157,8 +157,8 @@ export function transcriptLines(tail: string, cut: boolean, final?: string | nul
 			const [first, ...rest] = blockOf(textOf(m.content));
 			if (first !== undefined) out.push(rowOf(`user: ${first}`), ...rest);
 		} else if (m.role === "toolResult") {
-			const first = rowOf(textOf(m.content).split("\n", 1)[0]);
-			out.push(`← ${oneLine(m.toolName) || "?"} ${m.isError === true ? "error" : "ok"}: ${first}`.trimEnd().slice(0, ROW_CAP));
+			const first = textOf(m.content).split("\n", 1)[0];
+			out.push(rowOf(`← ${oneLine(m.toolName) || "?"} ${m.isError === true ? "error" : "ok"}: ${first}`));
 		} else if (m.role === "assistant") {
 			for (const b of Array.isArray(m.content) ? m.content.map(obj) : typeof m.content === "string" ? [{ type: "text", text: m.content }] : []) {
 				if (b.type === "text" && typeof b.text === "string") {
@@ -172,7 +172,7 @@ export function transcriptLines(tail: string, cut: boolean, final?: string | nul
 		}
 	}
 	const finale = final === undefined ? [] : final === null ? ["no final answer file"] : ["final answer:", ...blockOf(final)];
-	if (!out.length && !finale.length) return ["no messages yet"];
+	if (!out.length && !finale.length) return cut ? ["… earlier entries not shown"] : ["no messages yet"];
 	const all = [...out, ...finale];
 	return all.length > KEEP_ROWS || cut ? ["… earlier entries not shown", ...all.slice(-KEEP_ROWS)] : all;
 }

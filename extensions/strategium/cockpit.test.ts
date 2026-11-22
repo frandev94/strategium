@@ -2219,7 +2219,7 @@ describe("transcriptLines", () => {
 		const tail = `ial"}}\n${jl(msg("user", "kept"))}`;
 		expect(transcriptLines(tail, true)).toEqual(["… earlier entries not shown", "user: kept"]);
 		expect(transcriptLines(jl(msg("user", "first"), msg("user", "second")), false)).toEqual(["user: first", "user: second"]);
-		expect(transcriptLines("x".repeat(1000), true)).toEqual(["no messages yet"]);
+		expect(transcriptLines("x".repeat(1000), true)).toEqual(["… earlier entries not shown"]);
 	});
 	test("a text block is capped at 40 lines and each row at 400 chars", () => {
 		const rows = transcriptLines(jl(msg("assistant", [{ type: "text", text: Array.from({ length: 50 }, (_, i) => `l${i}`).join("\n") }])), false);
@@ -2430,5 +2430,64 @@ describe("transcript rendering", () => {
 		const rows = draw(trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta")), 50, 14);
 		expect(rows.join("\n")).toContain("row 60");
 		expect(rows.some(l => l.startsWith("TRANSCRIPT ApothecaryBeta"))).toBe(true);
+	});
+});
+
+describe("transcript boundaries (#125 penance)", () => {
+	const rowsOf = (...ms: unknown[]) => transcriptLines(jl(...ms), false);
+	test("a text block of exactly 40 lines has no `more lines` row", () => {
+		const rows = rowsOf(msg("assistant", [{ type: "text", text: Array.from({ length: 40 }, (_, i) => `l${i}`).join("\n") }]));
+		expect(rows).toHaveLength(40);
+		expect(rows.at(-1)).toBe("l39");
+	});
+	test("a row of exactly 400 chars is kept whole; 401 is cut with an ellipsis", () => {
+		expect(rowsOf(msg("user", "a".repeat(394)))).toEqual([`user: ${"a".repeat(394)}`]);
+		const [cut] = rowsOf(msg("user", "a".repeat(395)));
+		expect(cut).toHaveLength(400);
+		expect(cut.endsWith("…")).toBe(true);
+	});
+	test("exactly 1000 rows with no cut carry no notice; 1001 do", () => {
+		const many = (n: number) => transcriptLines(jl(...Array.from({ length: n }, (_, i) => msg("user", `m${i}`))), false);
+		expect(many(1000)).toHaveLength(1000);
+		expect(many(1000)[0]).toBe("user: m0");
+		expect(many(1001)[0]).toBe("… earlier entries not shown");
+	});
+	test("an entry that is not a message is skipped even when it carries a message role", () => {
+		expect(rowsOf({ type: "custom", message: { role: "user", content: "LEAK" } })).toEqual(["no messages yet"]);
+	});
+	test("a toolResult with no tool name says `?`; a long one stays within 400 chars", () => {
+		expect(rowsOf(msg("toolResult", "x"))).toEqual(["← ? ok: x"]);
+		const [row] = rowsOf(msg("toolResult", "a".repeat(300), { toolName: "t".repeat(300) }));
+		expect(row.length).toBeLessThanOrEqual(400);
+	});
+	test("a toolResult row is never cut inside a surrogate pair", () => {
+		const [row] = rowsOf(msg("toolResult", `${"a".repeat(391)}😀`, { toolName: "t" }));
+		expect(row).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/);
+		expect(row.length).toBeLessThanOrEqual(400);
+	});
+	test("a whitespace-only text block adds no row", () => {
+		expect(rowsOf(msg("assistant", [{ type: "text", text: " \n  " }, { type: "text", text: "real" }]))).toEqual(["real"]);
+	});
+	test("a cut tail with no complete message says the head is not shown, not `no messages yet`", () => {
+		expect(transcriptLines("x".repeat(1000), true)).toEqual(["… earlier entries not shown"]);
+		expect(transcriptLines("", false)).toEqual(["no messages yet"]);
+	});
+	test("the view keeps the notice with 1001 rows (the notice and the newest 1000)", () => {
+		const lines = ["… earlier entries not shown", ...Array.from({ length: 1000 }, (_, i) => `r${i}`)];
+		const v = trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta"), { transcript: { id: "ApothecaryBeta", lines } });
+		expect(v.detail!.lines).toHaveLength(1001);
+		expect(v.detail!.lines[0]).toBe("… earlier entries not shown");
+	});
+	test("enter on a detail with no target returns the nav unchanged, with no transcript key", () => {
+		const v = trView(trNav("squad:beta"));
+		const n = navigate(v, "enter");
+		expect(n).toStrictEqual(v.nav);
+		expect(n).not.toHaveProperty("detail.transcript");
+	});
+	test("the narrow footer hints enter transcript at exactly its width, not one cell less", () => {
+		const hint = "esc back · q close · enter transcript";
+		const foot = (w: number) => draw(trView(trNav("agent:ApothecaryBeta")), w).at(-1)!;
+		expect(foot(Bun.stringWidth(hint))).toBe(hint);
+		expect(foot(Bun.stringWidth(hint) - 1)).toBe("esc back · q close");
 	});
 });

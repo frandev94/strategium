@@ -134,7 +134,7 @@ function assistantText(text: string) {
 	return JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } });
 }
 function penanceJsonl() {
-	const out = [JSON.stringify({ type: "session_init", prompt: "SECRET-INIT " + "x".repeat(300 * 1024) })]; // one 300 KiB line the view must skip
+	const out = [JSON.stringify({ type: "session_init", prompt: "SECRET-INIT " + "x".repeat(600 * 1024) })]; // one 600 KiB line, over the 512 KiB the view reads: the head is cut, so the notice shows
 	out.push(JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "Build squad alpha: the cockpit transcript" }] } }));
 	for (let i = 1; i < 60; i++) { // 60 messages, every row kind; thinking is never shown
 		const m = (message: object) => JSON.stringify({ type: "message", message });
@@ -1208,6 +1208,7 @@ async function stepsCockpitTranscript(R: Run) {
 	await step("alpha-squad", ["ret"]);
 	await step("alpha-transcript", ["ret"], true);
 	await step("alpha-up", Array.from({ length: 10 }, () => "up"));
+	await step("alpha-head", Array.from({ length: 60 }, () => "up")); // to the first row: the notice of the cut head
 	await step("alpha-back", ["bksp"]);
 	await step("alpha-top", ["esc"]);
 	await step("delta-line", ["down"]);
@@ -1255,12 +1256,14 @@ function checksCockpitTranscript(C: Ctx) {
 	C.ck("alpha-transcript: footer esc/bksp back · q close · ↑↓ scroll", footerRow(a).includes("esc/bksp back · q close · ↑↓ scroll"), footerRow(a), "esc/bksp back · q close · ↑↓ scroll", a);
 	const u = transcriptTitle(snapOf(C, "alpha-up"));
 	C.ck("alpha-up: ↑×10 moved a up (window left the bottom)", !!t?.[2] && !!u?.[2] && +u[2] < +t[2] && +u[3] < +u[4], [t?.slice(2), u?.slice(2)], "a and b lower", snapOf(C, "alpha-up"));
+	const h = snapOf(C, "alpha-head");
+	C.ck("alpha-head: the first row is `… earlier entries not shown` and a = 1 (the 600 KiB init line is cut, not shown)", h.has("… earlier entries not shown") && transcriptTitle(h)?.[2] === "1" && !h.has("SECRET-INIT"), transcriptTitle(h)?.slice(2), "a = 1 with the notice", h);
 	const ab = snapOf(C, "alpha-back");
 	C.ck("alpha-back: Bksp returns to SQUAD alpha", ab.rowsText.some(r => r.startsWith("╟─") && r.includes("SQUAD alpha")) && !ab.has("TRANSCRIPT"), null, "SQUAD alpha", ab);
 	const top = snapOf(C, "alpha-top"), m0 = markers(snapOf(C, "alpha-line")), m1 = markers(top);
 	C.ck("alpha-top: Esc returns to the top level, ▸ on the same cell", top.has("BATTLE-BROTHERS") && m0.length === 1 && Bun.deepEquals(m0, m1), m1, m0, top);
 	const d = snapOf(C, "delta-reason");
-	C.ck("delta-reason: TRANSCRIPT DeltaBrother says no transcript yet", transcriptTitle(d)?.[1] === "DeltaBrother" && d.has("no transcript yet"), transcriptTitle(d)?.[0], "no transcript yet", d);
+	C.ck("delta-reason: TRANSCRIPT DeltaBrother gives the exact reason", transcriptTitle(d)?.[1] === "DeltaBrother" && d.has("no transcript yet: omp writes it after the agent's first reply"), transcriptTitle(d)?.[0], "no transcript yet: omp writes it after the agent's first reply", d);
 	const dt = snapOf(C, "delta-top"), n0 = markers(snapOf(C, "delta-line")), n1 = markers(dt);
 	C.ck("delta-top: two Backs return to the top level, ▸ on the same cell", dt.has("BATTLE-BROTHERS") && n0.length === 1 && Bun.deepEquals(n0, n1), n1, n0, dt);
 	const ba = snapOf(C, "beta-agent");
