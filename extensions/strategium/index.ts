@@ -275,7 +275,8 @@ const sidOf = (ctx: { sessionManager: { getSessionId(): string } }) => ctx.sessi
 
 const TAIL_BYTES = 512 * 1024; // the newest part of a child's .jsonl the cockpit reads
 const FINAL_BYTES = 64 * 1024; // the head of its final answer (.md)
-const HEAD_BYTES = 64 * 1024; // the head of a cut log, where the agent's brief is looked for
+const HEAD_CHUNK = 64 * 1024; // read size while looking for the agent's brief in the head of a cut log
+const HEAD_BYTES = 512 * 1024; // how far into the log that look goes (session_init and skill prompts come first)
 type TranscriptRead = { id: string; stamp: string; lines: string[] };
 const NOT_FILE = Object.assign(new Error("not a regular file"), { code: "not a regular file" });
 /** A regular file opened for reading, with the size and mtime of the open handle; undefined when absent. A link, directory or FIFO seen by lstat throws before any open. Not race-proof: a link swapped in between the lstat and the open is followed, and the fstat only confirms that what was opened is a regular file. */
@@ -297,6 +298,23 @@ function openRegular(file: string): { fd: number; size: number; mtimeMs: number 
 function readSlice(fd: number, from: number, len: number): string {
 	const buf = Buffer.allocUnsafe(len);
 	return buf.toString("utf8", 0, readSync(fd, buf, 0, len, from));
+}
+/** The brief row of the log's first `limit` bytes, read in HEAD_CHUNK pieces up to the first complete `user` message (a line is parsed only once whole, and only once). */
+function headBrief(fd: number, limit: number): string | undefined {
+	let buf = Buffer.alloc(0);
+	let from = 0;
+	while (buf.length < limit) {
+		const chunk = Buffer.allocUnsafe(Math.min(HEAD_CHUNK, limit - buf.length));
+		const n = readSync(fd, chunk, 0, chunk.length, buf.length);
+		if (n <= 0) break;
+		buf = Buffer.concat([buf, chunk.subarray(0, n)]);
+		const nl = buf.lastIndexOf(10);
+		if (nl < from) continue;
+		const row = briefRow(buf.toString("utf8", from, nl + 1));
+		if (row !== undefined) return row;
+		from = nl + 1;
+	}
+	return undefined;
 }
 /**
  * The rows of agent `id`'s transcript, from `<session file minus .jsonl>/<id>.jsonl` (omp writes a child's files beside its parent's) and, when `finished`, its `<id>.md`.
@@ -326,7 +344,7 @@ export function readTranscript(sessionFile: string | undefined, id: string, fini
 		const tail = readSlice(log.fd, Math.max(0, log.size - TAIL_BYTES), Math.min(log.size, TAIL_BYTES));
 		const final = finished ? (ans ? readSlice(ans.fd, 0, Math.min(ans.size, FINAL_BYTES)) : null) : undefined;
 		const cut = log.size > TAIL_BYTES;
-		return { id, stamp, lines: transcriptLines(tail, cut, final, cut ? briefRow(readSlice(log.fd, 0, HEAD_BYTES)) : undefined) };
+		return { id, stamp, lines: transcriptLines(tail, cut, final, cut ? headBrief(log.fd, Math.min(HEAD_BYTES, log.size - TAIL_BYTES)) : undefined) };
 	} catch (e) {
 		return reason(`transcript unreadable: ${(e as NodeJS.ErrnoException).code ?? "error"}`);
 	} finally {

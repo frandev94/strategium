@@ -5537,6 +5537,35 @@ describe("cockpit", () => {
 					expect(rd.mock.calls).toHaveLength(0);
 				});
 
+				test("the brief is found behind a 200 KiB session_init line, and never past the start of the tail", () => {
+					const { dir, file } = tree();
+					const user = (text: string) => JSON.stringify({ type: "message", message: { role: "user", content: text } });
+					const init = JSON.stringify({ type: "session_init", systemPrompt: "p".repeat(200 * KB) }) + "\n";
+					const pad = say("x".repeat(1000)) + "\n";
+					writeFileSync(join(dir, "A.jsonl"), init + user("DEEP-BRIEF") + "\n" + pad.repeat(600) + say("TAIL-MARK") + "\n");
+					expect(readTranscript(file, "A", false).lines.slice(0, 2)).toEqual(["user: DEEP-BRIEF", "… earlier entries not shown"]);
+					// the only user message is beyond the 512 KiB head cap: no brief
+					writeFileSync(join(dir, "B.jsonl"), init + pad.repeat(700) + user("TOO-FAR") + "\n" + pad.repeat(600));
+					expect(readTranscript(file, "B", false).lines.join("\n")).not.toContain("TOO-FAR");
+				});
+
+				test("the throttle is keyed by id: another agent's transcript is read at once", async () => {
+					vi.useFakeTimers();
+					const { s, ui } = await squad();
+					writeFileSync(join(session(s), "A.jsonl"), say("ROW-AAAA") + "\n");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					open(c);
+					expect(show(c)).toContain("ROW-AAAA");
+					c.handleInput!("q");
+					writeFileSync(join(session(s), "A.jsonl"), say("ROW-NEW") + "\n");
+					await s.sub("cockpit");
+					const d = ui.opened.at(-1)!.component;
+					open(d);
+					expect(show(d)).toContain("ROW-NEW");
+					d.handleInput!("q");
+				});
+
 				test("with no transcript open the redraw never reads the child's file", async () => {
 					vi.useFakeTimers();
 					const { s, ui } = await squad();
@@ -5624,7 +5653,7 @@ describe("cockpit", () => {
 					spies.push(alloc);
 					const t = readTranscript(file, "A", true).lines.join("\n");
 					expect(bytes(rd)).toBeGreaterThan(0);
-					expect(bytes(rd)).toBeLessThanOrEqual(512 * KB + 64 * KB + 64 * KB); // tail, answer and the head the brief is looked for in
+					expect(bytes(rd)).toBeLessThanOrEqual(512 * KB + 64 * KB + 512 * KB); // tail, answer and the head the brief is looked for in
 					expect(Math.max(...alloc.mock.calls.map(c => c[0]))).toBeLessThanOrEqual(512 * KB); // never a buffer the size of the file
 					expect(t).toContain("TAIL-MARK");
 					expect(t).toContain("FIRST-LINE");

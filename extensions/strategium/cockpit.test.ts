@@ -2512,6 +2512,13 @@ describe("transcript boundaries (#125 penance)", () => {
 		expect(v.detail!.lines[0]).toBe("… earlier entries not shown");
 		expect(v.detail!.lines.at(-1)).toBe("r1099");
 	});
+	test("the view keeps both header rows (brief and notice) with 1100 rows after them", () => {
+		const lines = ["user: brief", "… earlier entries not shown", ...Array.from({ length: 1100 }, (_, i) => `r${i}`)];
+		const v = trView(trNav("agent:ApothecaryBeta", {}, "ApothecaryBeta"), { transcript: { id: "ApothecaryBeta", lines } });
+		expect(v.detail!.lines).toHaveLength(1002);
+		expect(v.detail!.lines.slice(0, 2)).toEqual(["user: brief", "… earlier entries not shown"]);
+		expect(v.detail!.lines.at(-1)).toBe("r1099");
+	});
 	test("the agent's brief leads a cut transcript, above the notice; an uncut one has no extra row", () => {
 		const head = jl(msg("assistant", "x"), msg("user", `do\nthis ${"b".repeat(500)}`));
 		const brief = briefRow(head)!;
