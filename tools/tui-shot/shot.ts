@@ -1078,7 +1078,8 @@ function checksCockpitDetail(C: Ctx) {
 		const [open, saw, sent] = C.R.notes[name] as [boolean, string, string[]], s = snapOf(C, name);
 		if (!saw) { C.say(`${name.padEnd(15)} skip: not delivered, omp's onTerminalInput saw nothing`); continue; }
 		seen.add(name);
-		C.say(`${name.padEnd(15)} sent=${JSON.stringify(sent.join(""))} onTerminalInput saw=${JSON.stringify(saw)}` + (!sent[0].endsWith("_") && sent.join("") !== saw ? "  not faithful: conhost rewrote it" : ""));
+		const show = (v: string) => JSON.stringify(v).replaceAll("\x7f", "\\x7f"); // JSON.stringify leaves DEL raw
+		C.say(`${name.padEnd(15)} sent=${show(sent.join(""))} onTerminalInput saw=${show(saw)}` + (!sent[0].endsWith("_") && sent.join("") !== saw ? "  not faithful: conhost rewrote it" : ""));
 		if (name !== "q-closed" && name !== "narrow-closed") C.ck(`${name}: cockpit still open (alternate buffer)`, open && s.type === "alternate", s.type, "alternate", s);
 		const bad = range(0, s.rows).filter(i => oneOf(s.at(i, 0), "╔║╟╚") && !oneOf(s.at(i, s.cols - 1), "╗║╢╝"));
 		C.ck(`${name}: every framed row ends at col ${s.cols - 1}`, bad.length === 0, `rows ${repr(bad)}`, null, s);

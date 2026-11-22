@@ -5457,7 +5457,7 @@ describe("cockpit", () => {
 					expect(await detailOf(r, rui, "scout S · returned")).toContain("cost: $0.42");
 				});
 
-				test("a miss at the first draw is kept: a file that shows up later is not read", async () => {
+				test("a miss at the first draw is read again when the detail opens: a file that shows up later shows its cost", async () => {
 					const { s } = await squad();
 					scout(s, "running");
 					at(MIN);
@@ -5465,9 +5465,18 @@ describe("cockpit", () => {
 					const r = setup("sess-0001", s.dir);
 					const rui = uiCtx(r);
 					await r.start();
-					expect(await detailOf(r, rui, "scout S · returned")).toContain("cost: unknown");
+					await r.sub("cockpit");
+					const c = rui.opened.at(-1)!.component;
+					for (let i = 0; i < 20 && !show(c).includes("scout S · returned"); i++) {
+						c.handleInput!("\x1b[B");
+						c.handleInput!("\r");
+						if (!show(c).includes("scout S · returned")) c.handleInput!("\x7f");
+					}
+					expect(show(c)).toContain("cost: unknown");
 					writeRow(r, "S", { since: T0, at: T0, cost: 9 });
-					expect(await detailOf(r, rui, "scout S · returned")).toContain("cost: unknown");
+					evalSpawn(r); // a redraw while the detail is open
+					expect(show(c)).toContain("cost: $9");
+					c.handleInput!("q");
 				});
 
 				test("a row older than the deploy never enters the detail of the returned agent", async () => {
@@ -5480,7 +5489,8 @@ describe("cockpit", () => {
 					expect(await detailOf(s, ui, "scout S · returned")).toContain("cost: unknown");
 				});
 
-				test("a new run key forgets the rows of the old run's agents", async () => {
+				// final.clear() in resetCockpit is not observable: an id only enters `final` once it is deployed and not active, deployed is cleared with it, and an agent that ends in the new run was active first (the draw drops its entry then). So this checks the reachable half: an id spawned again under the new key.
+				test("a new run key does not hand the old run's row to an agent spawned again under the same id", async () => {
 					const { s, ui } = await squad();
 					evalSpawn(s);
 					writeRow(s, "E", { since: T0, at: T0, cost: 0.42 });

@@ -471,12 +471,13 @@ function fit(line: string, width: number): string {
 	return `${out}…${RESET}`;
 }
 
-/** `text` as rows of at most `width` cells: greedy on spaces, a word wider than the room hard-split by grapheme, so no text is dropped; the leading spaces of `text` indent its first row. A run of whitespace inside a row stays as spaces (aligned columns); one at a break is dropped. An empty text is one blank row. */
+/** `text` as rows of at most `width` cells: greedy on spaces, a word wider than the room hard-split by grapheme, so no text is dropped; the leading spaces of `text` indent every row (hanging indent, capped so 2 cells remain). A run of whitespace inside a row stays as spaces (aligned columns); one at a break is dropped. An empty text is one blank row. */
 export function wrap(text: string, width: number): string[] {
 	if (!text.trim()) return [""];
 	const rows: string[] = [];
-	let cur = (/^ */.exec(text)![0]).slice(0, Math.max(0, width - 2));
-	let curW = cur.length;
+	const ind = (/^ */.exec(text)![0]).slice(0, Math.max(0, width - 2));
+	let cur = ind;
+	let curW = ind.length;
 	let used = false; // cur holds a word, not just the indent
 	const add = (s: string, w: number, sep: string) => {
 		cur += (used ? sep : "") + s;
@@ -485,8 +486,8 @@ export function wrap(text: string, width: number): string[] {
 	};
 	const flush = () => {
 		rows.push(cur);
-		cur = "";
-		curW = 0;
+		cur = ind;
+		curW = ind.length;
 		used = false;
 	};
 	let end = 0; // end of the previous word: the gap before the next is the text in between
@@ -685,7 +686,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 		if (view.detail) {
 			const rows = view.detail.lines.flatMap(l => wrap(l, width - 2));
 			const sc = detailWindow(rows.length, head.length + 1, height, win);
-			return withHeight([...head, paint(pal.gold, view.detail.title + sc.suffix)], rows.slice(sc.from, sc.to).map(r => `  ${paint(pal.parchment, r)}`), "", paint(pal.iron, "esc back · q close"), height).map(l => fit(l, width));
+			return withHeight([...head, paint(pal.gold, fit(view.detail.title, width - Bun.stringWidth(sc.suffix)) + sc.suffix)], rows.slice(sc.from, sc.to).map(r => `  ${paint(pal.parchment, r)}`), "", paint(pal.iron, "esc back · q close"), height).map(l => fit(l, width));
 		}
 		const body = [
 			...head,
@@ -714,7 +715,7 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 	if (view.detail) {
 		const rows = view.detail.lines.flatMap(l => wrap(l, inner - 2));
 		const sc = detailWindow(rows.length, head.length + 2, height, win);
-		const dt = fit(paint(pal.gold, view.detail.title + sc.suffix), inner - 4); // keeps at least one cell of rule
+		const dt = paint(pal.gold, fit(view.detail.title, inner - 4 - Bun.stringWidth(sc.suffix)) + sc.suffix); // the title is cut, not the scroll position; keeps at least one cell of rule
 		const back = "esc/bksp back · q close · ↑↓ scroll";
 		return withHeight([g(fit(top, width)), ...head, `${g("╟─ ")}${dt}${g(` ${"─".repeat(inner - 3 - Bun.stringWidth(dt))}╢`)}`], rows.slice(sc.from, sc.to).map(r => row(` ${paint(pal.parchment, r)}`)), row(""), g(`╚═ ${back} ${"═".repeat(inner - 3 - Bun.stringWidth(back))}╝`), height);
 	}

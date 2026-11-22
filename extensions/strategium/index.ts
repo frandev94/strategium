@@ -1119,13 +1119,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		return row && row.since >= (job.at ?? 0) ? row : undefined;
 	};
 	/** A deployed agent ended: log it once, keep it in the registry as done or failed, and note its squad as failed or not. */
-	const endJob = (key: string, sid: string, id: string, ok: boolean) => {
+	const endJob = (key: string, id: string, ok: boolean) => {
 		const job = cockpit.deployed.get(id);
 		if (job?.state !== "active") return;
 		job.state = ok ? "done" : "failed";
 		job.ended = Date.now();
-		// shortcut: the row is read once (here or at the first draw after a restart), so what the agent wrote after this read is lost; upgrade if the detail of a returned agent must keep following its file.
-		cockpit.final.set(id, ownRow(sid, id, job));
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
 		log(key, job.who, ok ? "✓ returned" : "✗ failed", ok ? "ok" : "fail");
 	};
@@ -1148,7 +1146,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const rows = new Map<string, Live>();
 		for (const [id, job] of cockpit.deployed) {
 			if (job.state !== "active") {
-				if (!cockpit.final.has(id)) cockpit.final.set(id, ownRow(run.sid, id, job));
+				// shortcut: a valid row is read once, so what the agent wrote after it is lost; a miss (no file yet, a rename in flight, half a file) is read again only while its detail is open; upgrade if the detail of a returned agent must keep following its file.
+				if (!cockpit.final.get(id) && (!cockpit.final.has(id) || cockpit.nav.detail?.id === `agent:${id}`)) cockpit.final.set(id, ownRow(run.sid, id, job));
+				const r = cockpit.final.get(id);
+				if (r) rows.set(id, r);
 				continue;
 			}
 			cockpit.final.delete(id); // an id spawned again drops the row of the agent that ended under it
@@ -1178,7 +1179,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
 		}
 		cockpit.input = {
-			live: new Map([...[...cockpit.final].filter((e): e is [string, Live] => !!e[1]), ...rows]),
+			live: rows,
 			now,
 			key: run.key,
 			untimed: cockpit.clock?.bk ? undefined : run.untimed,
@@ -2205,7 +2206,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} escalated to VETERAN` : `${ic.brother} battle-brother deployed`, veteran ? "fail" : undefined);
 				if (veteran) cockpit.notes[squad] = { ...cockpit.notes[squad], veteran: true };
 				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active", at: Date.now() });
-			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, run.sid, p.id, p.status === "completed");
+			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
 		}
 		drawCockpit(run, ctx);
 	});
@@ -2216,7 +2217,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn } = {}) {
 		const ends = jobEnds(asObj(e).messages).filter(j => cockpit.deployed.get(j.id)?.state === "active");
 		const run = ends.length ? ownRun(sidOf(ctx)) : undefined;
 		if (!run) return;
-		for (const j of ends) endJob(run.key, run.sid, j.id, j.status === "completed");
+		for (const j of ends) endJob(run.key, j.id, j.status === "completed");
 		drawCockpit(run, ctx);
 	});
 

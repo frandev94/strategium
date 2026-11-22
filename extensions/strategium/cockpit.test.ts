@@ -1653,6 +1653,8 @@ describe("the selected line renders inside the frame", () => {
 		const last = (w: number) => draw(cockpitView(FULL()), w).at(-1)!;
 		for (const w of [100, 140]) expect(last(w)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active · enter open ═+╝$/);
 		expect(last(72)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active ═+╝$/);
+		expect(last(76)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active ═+╝$/); // the widest the old hint stays, still with a rule cell
+		expect(last(77)).toMatch(/^╚═ esc\/q close · ↑↓ line · ←→ station · tab box · home active · enter open ═+╝$/); // the first width where `enter open` leaves a rule cell
 		expect(draw(cockpitView(FULL()), 50).at(-1)).toBe("esc/q close");
 	});
 	test("property: every line is at most the width and exactly the width from 72 columns, with or without a selection", () => {
@@ -1926,10 +1928,21 @@ describe("detail normalisation", () => {
 });
 
 describe("wrap", () => {
-	test("breaks on spaces, splits a word longer than the width, keeps the indent of the first row", () => {
+	test("hanging indent: every row keeps the leading spaces of the first, capped so 2 cells remain", () => {
+		const path = "    extensions/strategium/a-very-long-file-name.ts";
+		const rows = wrap(path, 20);
+		expect(rows.length).toBeGreaterThan(2);
+		for (const row of rows) {
+			expect(row.startsWith("    ")).toBe(true);
+			expect(Bun.stringWidth(row)).toBeLessThanOrEqual(20);
+		}
+		expect(rows.map(x => x.trim()).join("")).toBe(path.trim());
+		expect(wrap("        abcdef", 6)).toEqual(["    ab", "    cd", "    ef"]);
+	});
+	test("breaks on spaces, splits a word longer than the width, keeps the indent on every row", () => {
 		expect(wrap("aaa bbb ccc", 7)).toEqual(["aaa bbb", "ccc"]);
 		expect(wrap("abcdefghij", 4)).toEqual(["abcd", "efgh", "ij"]);
-		expect(wrap("  indented text here", 10)).toEqual(["  indented", "text here"]);
+		expect(wrap("  indented text here", 10)).toEqual(["  indented", "  text", "  here"]);
 		expect(wrap("", 10)).toEqual([""]);
 	});
 	test("wide graphemes never overflow", () => {
@@ -2009,6 +2022,25 @@ describe("detail rendering", () => {
 						expect(rows.at(-1)).toBe("esc back · q close");
 					}
 				}
+	});
+	test("words of inner-1 and inner cells drop nothing and cut nothing, wide and narrow", () => {
+		for (const width of [100, 50]) {
+			const inner = width - 2;
+			const chronicle = [{ at: "10:00", who: "CAPTAIN", text: `${"Q".repeat(inner - 1)} ${"Z".repeat(inner)} END-OF-ENTRY` }];
+			const t = draw(open(cockpitView(DETAIL({ chronicle })).chronicle[0].id, { chronicle }), width).join("\n");
+			expect(t).not.toContain("…");
+			expect(t.match(/Q/g)).toHaveLength(inner - 1);
+			expect(t.match(/Z/g)).toHaveLength(inner);
+			expect(t).toContain("END-OF-ENTRY");
+		}
+	});
+	test("a long detail title is cut, not its scroll position", () => {
+		const id = `A${"x".repeat(150)}`;
+		const deployed = new Map<string, Deployed>([[id, dep({ role: "apothecary", station: "Skirmish", at: 120_000 })]]);
+		for (const width of [100, 50]) {
+			const title = draw(open(`agent:${id}`, { deployed }), width, 9).find(l => l.includes("APOTHECARY"))!;
+			expect(title).toMatch(/…\s?· \d+–\d+\/\d+ *(─+╢)?$/);
+		}
 	});
 	test("with no height every row is drawn, uncut, without a range suffix", () => {
 		for (const width of [50, 100]) {
@@ -2126,7 +2158,7 @@ describe("review fixes", () => {
 			expect(wrap("aa  bb    cc", 7)).toEqual(["aa  bb", "cc"]);
 		});
 		test("a word wider than the row hard-splits after an indent, and a wide grapheme in a one-cell row still moves on", () => {
-			expect(wrap("  abcdefghij", 6)).toEqual(["  abcd", "efghij"]);
+			expect(wrap("  abcdefghij", 6)).toEqual(["  abcd", "  efgh", "  ij"]);
 			expect(wrap("漢字", 1)).toEqual(["漢", "字"]);
 		});
 	});
