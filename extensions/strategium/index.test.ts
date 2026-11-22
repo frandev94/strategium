@@ -90,6 +90,7 @@ const shared = (sid: string, dir: string, footer: string[], notes: string[] = []
 
 // omp loads ~/.omp/agent/.env into the process; a default theatre there must not change what the tests expect.
 delete process.env.STRATEGIUM_THEATRE;
+delete process.env.STRATEGIUM_NAMES;
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -99,6 +100,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_COCKPIT_KEY;
 	delete process.env.STRATEGIUM_COCKPIT_THEME;
 	delete process.env.STRATEGIUM_RELIC;
+	delete process.env.STRATEGIUM_NAMES;
 	for (const k of Object.keys(process.env)) if (k.startsWith("STRATEGIUM_CASTER")) delete process.env[k];
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
@@ -3417,7 +3419,7 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default, or names on|off|default; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
@@ -7547,5 +7549,346 @@ describe("the debrief at end", () => {
 		launched(b, "bb9");
 		ended(b, "bb9", "completed");
 		expect(mdOf(await b.call({ action: "end", key: "K-1", takeover: "sess-0001" }))).toContain("| S1 | light | 1 | 0 | 0 | failed | stopped |");
+	});
+});
+
+describe("agent names (#133)", () => {
+	type S = ReturnType<typeof setup>;
+	type Verdict = { block?: true; reason?: string; model?: string; note?: string } | undefined;
+	const SQUADS = [
+		{ id: "S1", parallel: true, files: ["a.ts"], tier: "light" },
+		{ id: "S2", parallel: true, files: ["b.ts"] },
+		{ id: "S3", parallel: false, files: ["c.ts"] },
+	];
+	const open = async (on = true, repo = true) => {
+		if (on) process.env.STRATEGIUM_NAMES = "1";
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		if (repo) await s.call({ action: "repo", repo: s.dir });
+		await s.call({ action: "slices", slices: SQUADS });
+		return s;
+	};
+	const nameOf = async (s: S, params: Record<string, unknown>) => {
+		const out = await s.call({ action: "name", ...params });
+		expect(out).toMatch(/^NAME \S+$/);
+		return out.slice(5);
+	};
+	const spawn = (s: S, agent: string, spawnKey?: string, extra: object = {}) => s.handlers.before_subagent_spawn[0]({ agent, spawnKey, ...extra }, s.ctx) as Verdict;
+	const task = (s: S, items: object[]) => s.handlers.tool_call[0]({ toolName: "task", input: { tasks: items } }, s.ctx) as Verdict;
+	const item = (agent: string, name?: string, extra: object = {}) => ({ agent, name, task: "do the work", ...extra });
+	const saved = (s: S) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")) as { names?: Record<string, unknown>[]; agents?: Record<string, { id: string }>; builds?: Record<string, number> };
+	const GUARD = "strategium action name";
+
+	describe("names off (the default)", () => {
+		test("name is an ERROR naming the setting, slices has no NAMES line, and no names are written", async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			expect(await s.call({ action: "name", agent: "scout" })).toBe("ERROR names are off: /strategium-config names on or STRATEGIUM_NAMES=1");
+			expect(await s.call({ action: "slices", slices: SQUADS })).toBe("SQUADS S1 (parallel, light), S2 (parallel), S3");
+			expect(saved(s).names).toBeUndefined();
+		});
+
+		test("nothing is refused: a squad-id name and an unnamed item pass, and so does an unlabelled eval spawn", async () => {
+			const s = await open(false);
+			expect(task(s, [item("battle-brother", "S1", { isolated: true }), item("battle-brother", "S2", { isolated: true }), item("scout")])).toBeUndefined();
+			expect(spawn(s, "battle-brother", "S1")?.block).toBeUndefined();
+			expect(spawn(s, "apothecary", "whatever", { invocationKind: "eval" })?.block).toBeUndefined();
+			expect(saved(s).names).toBeUndefined();
+		});
+	});
+
+	describe("allocation through the action", () => {
+		test("Brother, then Penitent after its spawn, then Veteran: one surname, and the run file keeps them", async () => {
+			const s = await open();
+			const brother = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			expect(brother).toMatch(/^Brother[A-Z][a-z]+$/);
+			expect(await nameOf(s, { agent: "battle-brother", squad: "S1" })).toBe(brother);
+			expect(spawn(s, "battle-brother", brother)?.block).toBeUndefined();
+			const surname = brother.slice("Brother".length);
+			expect(await nameOf(s, { agent: "battle-brother", squad: "S1" })).toBe(`Penitent${surname}`);
+			expect(await nameOf(s, { agent: "veteran", squad: "S1" })).toBe(`Veteran${surname}`);
+			expect(saved(s).names?.[0]).toMatchObject({ name: brother, agent: "battle-brother", squad: "S1", spawned: true });
+		});
+
+		test("each role has its title, with Interrogator, Adept and the Servitor designation", async () => {
+			const s = await open();
+			const titles: [string, RegExp][] = [
+				["librarian", /^Librarian[A-Z]/],
+				["archmagos", /^Archmagos[A-Z]/],
+				["scout", /^Scout[A-Z]/],
+				["inquisitor", /^Inquisitor[A-Z]/],
+				["confessor", /^Confessor[A-Z]/],
+				["apothecary", /^Apothecary[A-Z]/],
+				["security-reviewer", /^Interrogator[A-Z]/],
+				["task", /^Adept[A-Z]/],
+				["sonic", /^Servitor[A-Z]{2}[1-9][0-9]?$/],
+			];
+			for (const [agent, re] of titles) expect(await nameOf(s, { agent })).toMatch(re);
+		});
+
+		test("30 calls: no duplicate, every name <= 28, and no digit except in a servitor", async () => {
+			const s = await open();
+			const agents = ["scout", "librarian", "sonic", "task", "inquisitor", "confessor"];
+			const all: string[] = [];
+			for (let i = 0; i < 30; i++) all.push(await nameOf(s, { agent: agents[i % agents.length] }));
+			expect(new Set(all).size).toBe(30);
+			for (const n of all) {
+				expect(n.length).toBeLessThanOrEqual(28);
+				if (!n.startsWith("Servitor")) expect(n).not.toMatch(/\d/);
+			}
+		});
+
+		test("three parallel calls hand out three distinct names", async () => {
+			const s = await open();
+			const got = await Promise.all([1, 2, 3].map(() => nameOf(s, { agent: "scout" })));
+			expect(new Set(got).size).toBe(3);
+			expect(saved(s).names?.filter(e => e.agent === "scout").length).toBe(3);
+		});
+
+		test("a later run of the same session never gets a name an earlier one issued", async () => {
+			const s = await open();
+			const first = await Promise.all(Array.from({ length: 3 }, () => nameOf(s, { agent: "archmagos" })));
+			await s.call({ action: "end" });
+			await s.call({ action: "begin", key: "K-2" });
+			const second = await Promise.all(Array.from({ length: 3 }, () => nameOf(s, { agent: "archmagos" })));
+			for (const n of second) expect(first).not.toContain(n);
+		});
+
+		test("errors: no agent, a builder without a declared squad, again with no earlier name", async () => {
+			const s = await open();
+			const before = saved(s).names?.length;
+			expect(await s.call({ action: "name" })).toStartWith("ERROR");
+			expect(await s.call({ action: "name", agent: "battle-brother", squad: "nope" })).toStartWith("ERROR");
+			expect(await s.call({ action: "name", agent: "battle-brother" })).toStartWith("ERROR");
+			expect(await s.call({ action: "name", agent: "scout", again: true })).toStartWith("ERROR");
+			expect(saved(s).names?.length).toBe(before);
+		});
+
+		test("again keeps the persona once the name has spawned", async () => {
+			const s = await open();
+			const first = await nameOf(s, { agent: "inquisitor" });
+			expect(await nameOf(s, { agent: "inquisitor", again: true })).toBe(first);
+			spawn(s, "inquisitor", first);
+			const next = await nameOf(s, { agent: "inquisitor", again: true });
+			expect(next).not.toBe(first);
+			expect(next).toStartWith(first);
+		});
+	});
+
+	describe("slices NAMES line", () => {
+		test("one name per live parallel squad, stable while unspawned, skipped once that squad's Brother has spawned", async () => {
+			const s = await open();
+			const names = (out: string) => out.split("\n").find(l => l.startsWith("NAMES "));
+			const out = await s.call({ action: "slices", slices: SQUADS });
+			expect(out.split("\n")[0]).toBe("SQUADS S1 (parallel, light), S2 (parallel), S3");
+			const line = names(out)!;
+			expect(line).toMatch(/^NAMES S1=Brother[A-Z][a-z]+, S2=Brother[A-Z][a-z]+$/);
+			expect(names(await s.call({ action: "slices", slices: SQUADS }))).toBe(line);
+			const s1 = line.match(/S1=(\w+)/)![1];
+			spawn(s, "battle-brother", s1);
+			expect(names(await s.call({ action: "slices", slices: SQUADS }))).toMatch(/^NAMES S2=Brother[A-Z][a-z]+$/);
+		});
+
+		test("a refused squad list writes no names", async () => {
+			const s = await open();
+			const before = saved(s).names;
+			await s.call({ action: "slices", slices: [{ id: "A", parallel: true, files: ["x"] }, { id: "B", parallel: true, files: ["x"] }] });
+			expect(saved(s).names).toEqual(before);
+		});
+	});
+
+	describe("the guard (names on)", () => {
+		test("handed-out names pass, with or without a repo", async () => {
+			for (const repo of [true, false]) {
+				const s = await open(true, repo);
+				const a = await nameOf(s, { agent: "scout" });
+				const b = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+				const c = await nameOf(s, { agent: "battle-brother", squad: "S2" });
+				expect(task(s, [item("scout", a), item("battle-brother", b, { isolated: true }), item("battle-brother", c, { isolated: true })])).toBeUndefined();
+			}
+		});
+
+		test("a missing, foreign, wrong-agent, already-spawned or duplicate name refuses the whole call, naming the action", async () => {
+			const s = await open();
+			const scout = await nameOf(s, { agent: "scout" });
+			const other = await nameOf(s, { agent: "scout" });
+			const lib = await nameOf(s, { agent: "librarian" });
+			spawn(s, "scout", other);
+			const refused: [string, object[]][] = [
+				["missing", [item("scout")]],
+				["blank", [item("scout", "  ")]],
+				["foreign", [item("scout", "Whoever")]],
+				["wrong agent", [item("scout", lib)]],
+				["already spawned", [item("scout", other)]],
+				["duplicate", [item("scout", scout), item("scout", scout)]],
+				["one bad item in a good call", [item("librarian", lib), item("scout", "Nope")]],
+				["an item without agent is a task", [{ name: scout, task: "x" }]],
+			];
+			for (const [why, items] of refused) {
+				const v = task(s, items);
+				expect([why, v?.block]).toEqual([why, true]);
+				expect(v?.reason).toContain(GUARD);
+				expect(v?.reason).toEndWith("call strategium action name");
+			}
+		});
+
+		test("a builder's refusal reason asks for its squad too", async () => {
+			const s = await open();
+			expect(task(s, [item("battle-brother", "S1", { isolated: true })])?.reason).toContain("squad");
+		});
+
+		test("an eval spawn needs a handed-out label (the suffix omp adds is ignored) and spawns once", async () => {
+			const s = await open();
+			const evalSpawn = (key?: string) => spawn(s, "apothecary", key, { invocationKind: "eval" });
+			expect(evalSpawn("Nobody")?.reason).toContain(GUARD);
+			expect(evalSpawn(undefined)?.block).toBe(true);
+			const name = await nameOf(s, { agent: "apothecary" });
+			expect(evalSpawn(`${name}-2`)?.block).toBeUndefined();
+			expect(evalSpawn(name)?.reason).toContain(GUARD);
+		});
+
+		test("a refused spawn leaves its name unspent", async () => {
+			const s = await open();
+			const name = await nameOf(s, { agent: "archmagos" });
+			expect(spawn(s, "archmagos", name)?.block).toBe(true); // the archmagos is off in this session
+			expect(saved(s).names?.[0]?.spawned).toBeUndefined();
+			expect(await nameOf(s, { agent: "archmagos", again: true })).toBe(name);
+		});
+	});
+
+	describe("storage across a restart", () => {
+		test("the same names, the same surname continued, and the guard still accepts a handed-out name", async () => {
+			const s = await open();
+			const brother = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			const scout = await nameOf(s, { agent: "scout" });
+			spawn(s, "battle-brother", brother);
+			const r = setup("sess-0001", s.dir);
+			expect(saved(s).names?.map(e => e.name)).toEqual(expect.arrayContaining([brother, scout]));
+			expect(r.handlers.tool_call[0]({ toolName: "task", input: { tasks: [item("scout", scout)] } }, r.ctx)).toBeUndefined();
+			expect(r.handlers.tool_call[0]({ toolName: "task", input: { tasks: [item("scout", "Stranger")] } }, r.ctx)).toMatchObject({ block: true });
+			expect(await r.call({ action: "name", agent: "battle-brother", squad: "S1" })).toBe(`NAME Penitent${brother.slice("Brother".length)}`);
+		});
+
+		test("malformed entries in the run file are dropped when it is read", async () => {
+			const s = await open();
+			const good = await nameOf(s, { agent: "scout" });
+			const file = join(s.dir, "runs", "sess-0001.json");
+			const run = JSON.parse(readFileSync(file, "utf8"));
+			const before = run.names.length;
+			run.names.push({ name: "bad name!", agent: "scout", surname: "x" }, { name: 7 }, null, { name: "TooLong".repeat(6), agent: "scout", surname: "x" }, { name: "Ghost", agent: "nobody", surname: "x" }, { name: good, agent: "scout", surname: "dup" });
+			writeFileSync(file, JSON.stringify(run));
+			const r = setup("sess-0001", s.dir);
+			const call = (name: string) => r.handlers.tool_call[0]({ toolName: "task", input: { tasks: [item("scout", name)] } }, r.ctx) as Verdict;
+			expect(call(good)).toBeUndefined();
+			for (const bad of ["bad name!", "Ghost", "TooLong".repeat(6)]) expect(call(bad)?.block).toBe(true);
+			expect(await r.call({ action: "name", agent: "scout" })).toMatch(/^NAME /);
+			const kept = saved(r).names?.map(e => e.name);
+			expect(kept).toContain(good);
+			expect(kept?.length).toBe(before + 1); // the entries that were there, plus the scout just named
+		});
+
+		test("a run file whose names is not a list reads as no names", async () => {
+			const s = await open();
+			const file = join(s.dir, "runs", "sess-0001.json");
+			writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), names: "oops" }));
+			const r = setup("sess-0001", s.dir);
+			expect(await r.call({ action: "name", agent: "scout" })).toMatch(/^NAME /);
+		});
+	});
+
+	describe("mapping a builder to its squad through its name", () => {
+		const launch = (s: S, items: object[], ids: string[]) =>
+			s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: items }, details: { progress: ids.map((id, index) => ({ index, id, status: "running" })) }, isError: false }, s.ctx));
+
+		test("a tool_result binds each agent id to its squad, with a brief that never says build squad", async () => {
+			const s = await open();
+			const one = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			const two = await nameOf(s, { agent: "battle-brother", squad: "S2" });
+			const items = [item("battle-brother", one, { isolated: true }), item("battle-brother", two, { isolated: true })];
+			expect(task(s, items)).toBeUndefined();
+			launch(s, items, ["bb-1", "bb-2"]);
+			expect([saved(s).agents?.["bb-1"]?.id, saved(s).agents?.["bb-2"]?.id]).toEqual(["S1", "S2"]);
+		});
+
+		test("the tier hook finds the squad by the name, suffix included, and the ladder climbs", async () => {
+			const s = await open();
+			const name = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			expect(spawn(s, "battle-brother", name)).toEqual({ model: "@smol:medium", note: "Strategium tier light" });
+			expect(spawn(s, "battle-brother", `${name}-2`)?.model).toBe("@task:medium");
+			expect(saved(s).builds).toEqual({ S1: 2 });
+		});
+
+		test("the spawned mark and builds are written together", async () => {
+			const s = await open();
+			const name = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			spawn(s, "battle-brother", name);
+			expect(saved(s).builds).toEqual({ S1: 1 });
+			expect(saved(s).names?.[0]?.spawned).toBe(true);
+		});
+
+		test("a veteran named for S2 runs heavy and records its squad", async () => {
+			const s = await open();
+			const name = await nameOf(s, { agent: "veteran", squad: "S2" });
+			expect(spawn(s, "veteran", name)?.model).toBe("@slow:high");
+			expect(saved(s).names?.find(e => e.name === name)?.spawned).toBe(true);
+		});
+
+		test("after a redraft the same squad id gets a new surname and is a Brother again", async () => {
+			const s = await open();
+			const old = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			spawn(s, "battle-brother", old);
+			await s.call({ action: "redraft" });
+			expect(saved(s).names?.[0]?.old).toBe(true);
+			await s.call({ action: "slices", slices: SQUADS });
+			const fresh = await nameOf(s, { agent: "battle-brother", squad: "S1" });
+			expect(fresh).toStartWith("Brother");
+			expect(fresh.slice("Brother".length)).not.toBe(old.slice("Brother".length));
+		});
+	});
+
+	describe("the setting", () => {
+		const line = async (s: S) => (await s.call({ action: "status" })).split("\n").find(l => l.startsWith("NAMES "));
+
+		test("status shows NAMES off (default)", async () => {
+			const s = setup();
+			expect(await line(s)).toBe("NAMES off (default)");
+		});
+
+		test("names on|off saves the choice and applies at once; default drops the file", async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.sub("config", "names on");
+			expect(readFileSync(join(s.dir, "names"), "utf8")).toBe("on");
+			expect(s.notes.at(-1)).toContain("names: on (/strategium-config)");
+			expect(await line(s)).toBe("NAMES on (/strategium-config)");
+			expect(await s.call({ action: "name", agent: "scout" })).toMatch(/^NAME Scout/);
+			await s.sub("config", "names off");
+			expect(readFileSync(join(s.dir, "names"), "utf8")).toBe("off");
+			expect(await s.call({ action: "name", agent: "scout" })).toStartWith("ERROR names are off");
+			await s.sub("config", "names default");
+			expect(existsSync(join(s.dir, "names"))).toBe(false);
+			expect(s.notes.at(-1)).toContain("names: off (default)");
+		});
+
+		test("STRATEGIUM_NAMES picks it (1/0), other values are ignored, and a saved choice wins", async () => {
+			process.env.STRATEGIUM_NAMES = "1";
+			const s = setup();
+			expect(await line(s)).toBe("NAMES on (STRATEGIUM_NAMES)");
+			await s.sub("config", "names off");
+			expect(await line(s)).toBe("NAMES off (/strategium-config)");
+			process.env.STRATEGIUM_NAMES = "yes";
+			await s.sub("config", "names default");
+			expect(await line(s)).toBe("NAMES off (default)");
+		});
+
+		test("a bad names argument is refused and writes no file", async () => {
+			const s = setup();
+			for (const bad of ["names maybe", "names ON", "names"]) {
+				await s.sub("config", bad);
+				expect(s.notes.at(-1)).toContain("config takes");
+			}
+			expect(existsSync(join(s.dir, "names"))).toBe(false);
+		});
 	});
 });
