@@ -533,6 +533,14 @@ describe("isVia / viaOf", () => {
 			{ key: "a\x1bb", reason: "estimate" },
 			{ key: "a\x7fb", reason: "estimate" },
 			{ key: "a\tb", reason: "estimate" },
+			{ key: "a\u0085b", reason: "estimate" },
+			{ key: "a\u2029b", reason: "estimate" },
+			{ key: "a\u200bb", reason: "estimate" },
+			{ key: "a\u200fb", reason: "estimate" },
+			{ key: "a\u202ab", reason: "estimate" },
+			{ key: "a\u202eb", reason: "estimate" },
+			{ key: "a\u2066b", reason: "estimate" },
+			{ key: "a\u2069b", reason: "estimate" },
 			{ key: 3, reason: "estimate" },
 			null,
 			"P",
@@ -636,5 +644,26 @@ describe("poolOf / dueAlert: wall time and group booking", () => {
 			{ ts: t(5), event: "alert", key: "A", pool: 5, p: 50 },
 		] as unknown as Ev[];
 		expect(dueAlert(evs, "A", at(6))).toBeUndefined();
+	});
+});
+
+describe("poolOf: who joins a group", () => {
+	const A: Ev = { ts: t(0), event: "start", key: "A", booked: 10, via: pb };
+	test("a parent with via estimate is not pooled with its sub-task", () => {
+		const evs: Ev[] = [{ ts: t(0), event: "start", key: "P", booked: 10, via: { key: "P", reason: "estimate" } }, { ...A, ts: t(1) }];
+		expect(poolOf(evs, "A", at(3))?.keys).toEqual(["A"]);
+		expect(poolOf(evs, "P", at(3))).toBeUndefined();
+	});
+	test("a parent that is itself via another parent keeps its sub-tasks' group without it", () => {
+		const evs: Ev[] = [{ ts: t(0), event: "start", key: "P", booked: 10, via: { key: "G", reason: "parent booking" } }, { ...A, ts: t(1) }];
+		expect(poolOf(evs, "A", at(3))).toEqual({ parent: "P", keys: ["A"], booked: 10, el: 2 });
+		expect(poolOf(evs, "P", at(3))?.parent).toBe("G");
+	});
+	test("the sum is taken in milliseconds and divided once", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 10, via: pb, prior: 0.1 },
+			{ ts: t(0), event: "start", key: "B", booked: 10, via: pb, prior: 0.2 },
+		];
+		expect(poolOf(evs, "A", at(0))?.el).toBe(0.3);
 	});
 });

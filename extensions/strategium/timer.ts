@@ -161,7 +161,7 @@ export function isVia(v: unknown): v is Via {
 		key.length >= 1 &&
 		key.length <= 64 &&
 		key === key.trim() &&
-		!/[\x00-\x1f\x7f\u0085\u2028\u2029]/.test(key) &&
+		!/[\x00-\x1f\x7f\u0085\u200b-\u200f\u2028-\u202e\u2066-\u2069]/.test(key) &&
 		(VIA_REASONS as readonly unknown[]).includes(reason)
 	);
 }
@@ -185,20 +185,22 @@ export function poolOf(evs: Ev[], key: string, now: Date): { parent: string; key
 		const v = viaOf(evs, k);
 		return v?.reason === "parent booking" && v.key === parent;
 	};
+	const ownBooking = (k: string) => bookedMin(evs, k) !== undefined && !viaOf(evs, k);
 	const starts = new Set(evs.filter(e => e.event === "start").map(e => e.key));
 	let parent: string;
 	if (via?.reason === "parent booking") parent = via.key;
-	else if (bookedMin(evs, key) !== undefined && [...starts].some(k => through(k, key))) parent = key;
+	else if (ownBooking(key) && [...starts].some(k => through(k, key))) parent = key;
 	else return undefined;
-	const keys = [...starts].filter(k => through(k, parent) || (k === parent && bookedMin(evs, k) !== undefined)).sort();
+	const keys = [...starts].filter(k => through(k, parent) || (k === parent && ownBooking(k))).sort();
 	let booked: number | undefined;
 	for (const e of evs) if (e.event === "start" && e.booked !== undefined && keys.includes(e.key)) booked = e.booked;
 	if (booked === undefined) return undefined;
 	// Wall time: the union of the keys' spans (overlap counted once) plus each key's prior and adjustments.
 	const mine = evs.filter(e => keys.includes(e.key));
-	let el = 0;
-	for (const s of stretches(mine.filter(isSpan), now)) el += (s.end - s.start) / 60_000;
-	for (const e of mine) if (e.event === "start" || e.event === "adjust") el += e.prior ?? 0;
+	let ms = 0;
+	for (const s of stretches(mine.filter(isSpan), now)) ms += s.end - s.start;
+	for (const e of mine) if (e.event === "start" || e.event === "adjust") ms += (e.prior ?? 0) * 60_000;
+	const el = Math.max(0, ms / 60_000);
 	return { parent, keys, booked, el };
 }
 

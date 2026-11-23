@@ -10564,6 +10564,38 @@ describe("via on begin and switch", () => {
 		expect(b.shown()).toContain("4/4 min");
 	});
 
+	test("a sub-task starting after a stopped sibling shows the group's minutes in footer, TIMER and clock", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 4, via: pb });
+		setSystemTime(T(9, 2));
+		await s.call({ action: "switch", key: "K-2", booked: 4, via: pb });
+		setSystemTime(T(9, 3));
+		s.start();
+		expect(s.shown()).toContain("3/4 min");
+		expect(s.shown()).not.toContain("1/4 min");
+		expect(s.calls.map(c => (c[0] as { content: string }).content)).toEqual(["TIMER 50% K-2 3/4 min via P (shared K-1+K-2)"]);
+	});
+
+	test("a switch whose end fails carries via in the retry hint", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1", theatre: "github" });
+		failAlarm();
+		s.ctx.ui.notify = () => {
+			throw new Error("notify broke");
+		};
+		const out = await s.call({ action: "switch", key: "K-2", booked: 30, via: pb });
+		expect(out).toBe("ERROR K-1 ended but K-2 did not begin: notify broke; call strategium begin key K-2 theatre github booked 30 via key P reason parent booking");
+	});
+
+	test("changing only the via reason on an open key writes a new start", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 60, via: { key: "P", reason: "parent booking" } });
+		await s.call({ action: "begin", key: "K-1", booked: 60, via: { key: "P", reason: "estimate" } });
+		expect(starts(s.dir).map(e => e.via?.reason)).toEqual(["parent booking", "estimate"]);
+	});
+
 	test("a key without via alerts exactly as before", async () => {
 		const s = setup();
 		setSystemTime(T(9, 0));
