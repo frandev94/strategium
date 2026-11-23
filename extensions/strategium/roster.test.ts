@@ -556,3 +556,42 @@ describe("honours (#135)", () => {
 		}
 	});
 });
+
+describe("runOutcomes with ratings (#141, D6)", () => {
+	const rated = (rating: string) => ({ rating, evidence: ["I-3"], model: "@task", effort: "medium" });
+	const penitent = (squad: string, surname: string, extra: Partial<NameEntry> = {}) => ({ ...builder(squad, surname, extra), name: `Penitent${surname}` });
+	test("a corrupted latest builder whose job ended ok fell", () => {
+		const o = runOutcomes({ names: [builder("a", "Lorenzo")], builds: { a: 1 }, ended: { a: "ok" }, ratings: { BrotherLorenzo: rated("corrupted") } });
+		expect(o).toEqual([{ brother: "Lorenzo", squad: "a", kind: "fell", penances: 0 }]);
+		expect(applyRun(map({}), o, false).Lorenzo).toEqual(svc({ falls: 1, squads: 1 }));
+	});
+	test("a corrupted latest builder with no ended entry still fell", () => {
+		expect(runOutcomes({ names: [builder("a", "Lorenzo")], builds: { a: 1 }, ratings: { BrotherLorenzo: rated("corrupted") } })).toEqual([{ brother: "Lorenzo", squad: "a", kind: "fell", penances: 0 }]);
+	});
+	test("a corrupted round-1 builder followed by an ok penance leaves the penance", () => {
+		const names = [builder("a", "Lorenzo"), penitent("a", "Lorenzo")];
+		const o = runOutcomes({ names, builds: { a: 2 }, ended: { a: "ok" }, ratings: { BrotherLorenzo: rated("corrupted") } });
+		expect(o).toEqual([{ brother: "Lorenzo", squad: "a", kind: "penance", penances: 1 }]);
+	});
+	test("a corrupted penance, the latest spawned builder, makes the squad fall", () => {
+		const names = [builder("a", "Lorenzo"), penitent("a", "Lorenzo")];
+		const o = runOutcomes({ names, builds: { a: 2 }, ended: { a: "ok" }, ratings: { PenitentLorenzo: rated("corrupted") } });
+		expect(o[0]).toMatchObject({ kind: "fell", penances: 1 });
+	});
+	test("a retired corrupted builder gives no outcome", () => {
+		expect(runOutcomes({ names: [builder("a", "Lorenzo", { old: true })], builds: { a: 1 }, ratings: { BrotherLorenzo: rated("corrupted") } })).toEqual([]);
+	});
+	test("a corrupted rating under Name-2 counts for Name", () => {
+		const o = runOutcomes({ names: [builder("a", "Lorenzo")], builds: { a: 1 }, ended: { a: "ok" }, ratings: { "BrotherLorenzo-2": rated("corrupted") } });
+		expect(o[0]).toMatchObject({ kind: "fell" });
+	});
+	test("proven and proven-regression change nothing", () => {
+		const base = { names: [builder("a", "Lorenzo")], builds: { a: 1 }, ended: { a: "ok" } };
+		for (const r of ["proven", "proven-regression"]) expect(runOutcomes({ ...base, ratings: { BrotherLorenzo: rated(r) } })).toEqual(runOutcomes(base));
+	});
+	test("a corrupted rating on a non-builder changes nothing", () => {
+		const base = { names: [builder("a", "Lorenzo")], builds: { a: 1 }, ended: { a: "ok" } };
+		expect(runOutcomes({ ...base, ratings: { ScoutPaulus: rated("corrupted") } })).toEqual(runOutcomes(base));
+		expect(runOutcomes({ ...base, ratings: "junk" })).toEqual(runOutcomes(base));
+	});
+});

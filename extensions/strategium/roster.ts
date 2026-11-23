@@ -2,7 +2,7 @@
 // Nothing here throws to a caller that handles a tool call: a busy lock or a bad file comes back as a value.
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { NameEntry } from "./names";
+import { baseId, type NameEntry } from "./names";
 import { writeAtomic } from "./timer";
 
 export type Service = { passed: number; penances: number; falls: number; squads: number; purity: number; halo: number; laurel: number };
@@ -40,19 +40,26 @@ const isBuilder = (e: NameEntry) => (e.agent === "battle-brother" || e.agent ===
 
 /**
  * D3: one outcome per squad whose latest builder ended and that has a not-retired builder name.
- * Reads a hand-edited run file: anything but "ok"/"failed" in `ended` or a safe integer in `builds` is ignored.
+ * D6 (#141): a squad whose latest spawned (else last) not-retired builder holds a `corrupted` rating also fell, ended or not.
+ * Reads a hand-edited run file: anything but "ok"/"failed" in `ended` or a safe integer in `builds` is ignored; `ratings` is read for its keys and `rating` only.
  */
-export function runOutcomes(run: { names?: readonly NameEntry[]; builds?: unknown; ended?: unknown }): Outcome[] {
-	if (!Array.isArray(run.names) || !isObject(run.ended)) return [];
+export function runOutcomes(run: { names?: readonly NameEntry[]; builds?: unknown; ended?: unknown; ratings?: unknown }): Outcome[] {
+	if (!Array.isArray(run.names)) return [];
+	const names = run.names as NameEntry[];
+	const ended = isObject(run.ended) ? run.ended : {};
 	const builds = isObject(run.builds) ? run.builds : {};
+	const rated = isObject(run.ratings) ? Object.entries(run.ratings).filter(([, r]) => isObject(r) && r.rating === "corrupted").map(([id]) => baseId(id)) : [];
 	const out: Outcome[] = [];
-	for (const [squad, end] of Object.entries(run.ended)) {
-		if (end !== "ok" && end !== "failed") continue;
-		const own = (run.names as NameEntry[]).filter(e => isBuilder(e) && e.squad === squad);
+	for (const squad of new Set([...Object.keys(ended), ...names.filter(isBuilder).map(e => e.squad as string)])) {
+		const end = ended[squad];
+		const own = names.filter(e => isBuilder(e) && e.squad === squad);
+		const latest = own.findLast(e => e.spawned) ?? own.at(-1);
+		const fell = end === "failed" || (latest !== undefined && rated.includes(latest.name));
+		if (!fell && end !== "ok") continue;
 		const brother = own[0]?.surname;
 		if (!brother || !NAME_RE.test(brother)) continue;
 		const n = count(builds[squad]);
-		const kind = end === "failed" ? "fell" : own.some(e => e.agent === "veteran" && e.spawned) ? "saved" : n <= 1 ? "first" : "penance";
+		const kind = fell ? "fell" : own.some(e => e.agent === "veteran" && e.spawned) ? "saved" : n <= 1 ? "first" : "penance";
 		out.push({ brother, squad, kind, penances: Math.max(0, n - 1) });
 	}
 	return out;

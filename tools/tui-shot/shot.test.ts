@@ -77,6 +77,11 @@ test("only the cockpit-names replay runs with names on", () => {
 	expect(Object.entries(REPLAYS).filter(([, sc]) => sc.names).map(([n]) => n)).toEqual(["cockpit-names"]);
 });
 
+test("the cockpit-ratings replay runs on the ratings seed with names off", () => {
+	expect(REPLAYS["cockpit-ratings"]).toMatchObject({ r: "#141", seed: "ratings", kind: "FIXED", ext: true });
+	expect(REPLAYS["cockpit-ratings"].names).toBeUndefined();
+});
+
 test("parseArgs rejects an unknown flag, a missing value and a bad seed", () => {
 	expect(parseArgs(["--bogus"])).toEqual({ error: "unrecognized arguments: --bogus" });
 	expect(parseArgs(["--rep=q-close"])).toHaveProperty("error"); // no prefix abbreviations

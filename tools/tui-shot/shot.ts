@@ -156,6 +156,17 @@ SEEDS.names = {
 	},
 };
 
+// #141: the Captain's ratings (names off): AlphaPenance (the newest agent of squad alpha) proven with a regression, DeltaBrother corrupted, ApothecaryBeta proven. The detail seed's rows carry the badges.
+const model = { model: "@task", effort: "medium" };
+SEEDS.ratings = {
+	...SEEDS.detail,
+	extra: { ...SEEDS.detail.extra, ratings: {
+		AlphaPenance: { rating: "proven-regression", evidence: ["I-2 regression"], ...model },
+		DeltaBrother: { rating: "corrupted", evidence: ["I-3", "acceptance red"], ...model },
+		ApothecaryBeta: { rating: "proven", evidence: ["inquisitor PASS"], ...model },
+	} },
+};
+
 // #125: the transcript view. The detail seed plus generated transcripts (never copied from a real session; shapes as omp writes a child's .jsonl).
 function assistantText(text: string) {
 	return JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } });
@@ -1391,6 +1402,41 @@ function checksCockpitNames(C: Ctx) {
 	C.ck("closed: q closes the cockpit (normal buffer)", q.type === "normal" && !q.framed(), q.type, "normal", q);
 }
 
+// cockpit-ratings (#141): wide frame, squad delta's detail (down to the first seal line, Tab to squad alpha, down to squad delta, Enter), back, resize to 60, q. Item order is the detail seed's.
+const RATINGS_STEPS: [name: string, seqs: string[], png?: boolean][] = [
+	["down", KEYS.down], ["tab-squad", KEYS.tab], ["down-delta", KEYS.down], ["squad", ["\r"], true], ["squad-back", KEYS.esc],
+];
+async function stepsCockpitRatings(R: Run) {
+	await R.open(); await R.snap("wide", true);
+	for (const [name, seqs, png] of RATINGS_STEPS) {
+		for (const s of seqs) { R.send(s); await R.sleep(0.03); }
+		await R.sleep(0.7); await R.snap(name, !!png);
+	}
+	await R.resize(60, R.rows); await R.sleep(1.5); await R.snap("narrow", true);
+	for (const s of KEYS.q) { R.send(s); await R.sleep(0.03); }
+	await R.sleep(0.7); await R.snap("closed");
+}
+function checksCockpitRatings(C: Ctx) {
+	const B = cockpit.RATING_BADGES(true), w = snapOf(C, "wide");
+	const rowOf = (s: Snap, text: string) => s.rowsText.find(r => r.includes(text)) ?? "";
+	const alpha = rowOf(w, "squad alpha"), delta = rowOf(w, "squad delta"), apo = rowOf(w, "ApothecaryBeta");
+	C.ck("wide: the BATTLE-BROTHERS box is there at 140 cols", w.cols === 140 && w.has("BATTLE-BROTHERS"), w.cols, 140, w);
+	C.ck("wide: the squad alpha row has the regression glyph", alpha !== "" && alpha.includes(B["proven-regression"]), alpha, `squad alpha ${B["proven-regression"]} …`, w);
+	C.ck("wide: the squad delta row has the corrupted glyph", delta !== "" && delta.includes(B.corrupted), delta, `squad delta ${B.corrupted} …`, w);
+	C.ck("wide: the ApothecaryBeta row has the proven glyph", apo !== "" && apo.includes(B.proven), apo, `ApothecaryBeta ${B.proven}`, w);
+	const d = snapOf(C, "squad");
+	C.ck("squad: the detail names SQUAD delta", d.rowsText.some(r => r.startsWith("╟─") && r.includes("SQUAD delta")), null, "SQUAD delta", d);
+	C.ck("squad: rating: corrupted · @task · medium", d.has("rating: corrupted · @task · medium"), null, "rating: corrupted · @task · medium", d);
+	C.ck("squad: evidence: I-3", d.has("evidence: I-3"), null, "evidence: I-3", d);
+	const b = snapOf(C, "squad-back");
+	C.ck("squad-back: the boxes are back", b.type === "alternate" && b.has("BATTLE-BROTHERS"), b.type, "alternate, BATTLE-BROTHERS", b);
+	const n = snapOf(C, "narrow"), rated = n.rowsText.map((r, y) => [r, y] as const).filter(([r]) => Object.values(B).some(g => r.includes(g)));
+	C.ck("narrow: 60 columns, with the rated rows on screen", n.cols === 60 && rated.length > 0, [n.cols, rated.length], "60, > 0", n);
+	C.ck("narrow: every rated row ends before col 60", rated.every(([, y]) => n.lastCol(y) < 60), rated.map(([, y]) => n.lastCol(y)), "< 60", n);
+	const q = snapOf(C, "closed");
+	C.ck("closed: q closes the cockpit (normal buffer)", q.type === "normal" && !q.framed(), q.type, "normal", q);
+}
+
 // name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, caster (true: run with the fake caster on whatever --caster says), settle (false: wait only for the first heartbeat), steps, checks
 type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; caster?: boolean; names?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
 export const REPLAYS: Record<string, Replay> = {
@@ -1422,6 +1468,7 @@ export const REPLAYS: Record<string, Replay> = {
 	"cockpit-detail": { r: "#124", kind: "FIXED", seed: "detail", ext: true, steps: stepsCockpitDetail, checks: checksCockpitDetail },
 	"cockpit-transcript": { r: "#125", kind: "FIXED", seed: "transcript", ext: true, steps: stepsCockpitTranscript, checks: checksCockpitTranscript },
 	"cockpit-names": { r: "#135", kind: "FIXED", seed: "names", ext: true, names: true, steps: stepsCockpitNames, checks: checksCockpitNames },
+	"cockpit-ratings": { r: "#141", kind: "FIXED", seed: "ratings", ext: true, steps: stepsCockpitRatings, checks: checksCockpitRatings },
 };
 
 // shortcut: only the entities Chromium's --dump-dom writes in text (amp, lt, gt, quot, apos, nbsp, numeric); a full table if that ever changes

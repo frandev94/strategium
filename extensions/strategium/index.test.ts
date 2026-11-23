@@ -6906,6 +6906,125 @@ describe("cockpit", () => {
 			});
 		});
 	});
+
+	describe("the rate action (#141)", () => {
+		type S = ReturnType<typeof setup>;
+		const deploy = (s: S, id: string, agent = "scout") => s.handlers.before_subagent_spawn.forEach(h => h({ invocationKind: "eval", agent, spawnKey: id }, s.ctx));
+		const good = { action: "rate", agent: "Scout1", rating: "proven", evidence: ["I-3"], model: "@task", effort: "medium" };
+		const runFile = (s: S) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")) as { ratings?: Record<string, unknown> };
+		// The agent's row shows only under a station, so the todo has one with a scout task.
+		const rigged = async () => {
+			const { s, ui } = await running();
+			s.todo([{ name: "Auspex", tasks: [{ content: "[scout] Recon", status: "in_progress" }] }]);
+			deploy(s, "Scout1");
+			return { s, ui };
+		};
+
+		test("records the rating in the run file and says so; a re-rate replaces it and says what it was", async () => {
+			const { s } = await rigged();
+			expect(await s.call(good)).toBe("RATED Scout1 proven model=@task effort=medium evidence=1");
+			expect(runFile(s).ratings).toEqual({ Scout1: { rating: "proven", evidence: ["I-3"], model: "@task", effort: "medium" } });
+			expect(await s.call({ ...good, rating: "proven-regression", evidence: ["I-4", "I-5"], effort: "HIGH" })).toBe("RATED Scout1 proven-regression (was proven) model=@task effort=high evidence=2");
+			expect(runFile(s).ratings).toEqual({ Scout1: { rating: "proven-regression", evidence: ["I-4", "I-5"], model: "@task", effort: "high" } });
+		});
+
+		test("each refusal, in order, writes nothing", async () => {
+			const { s } = await rigged();
+			const refused = (p: object) => s.call({ ...good, ...p });
+			expect(await refused({ agent: undefined })).toBe("ERROR rate needs agent");
+			expect(await refused({ agent: "Ghost" })).toBe("ERROR Ghost is not an agent of this run: pass the agent id the task result shows");
+			expect(await refused({ rating: "great" })).toBe("ERROR rating must be proven, proven-regression or corrupted");
+			expect(await refused({ rating: undefined })).toBe("ERROR rating must be proven, proven-regression or corrupted");
+			expect(await refused({ evidence: undefined })).toBe("ERROR rate needs evidence: finding IDs, the failing check or the breached rule");
+			expect(await refused({ evidence: [] })).toBe("ERROR rate needs evidence: finding IDs, the failing check or the breached rule");
+			expect(await refused({ evidence: ["  "] })).toBe("ERROR rate needs evidence: finding IDs, the failing check or the breached rule");
+			expect(await refused({ evidence: Array(9).fill("x") })).toBe("ERROR at most 8 evidence items");
+			expect(await refused({ evidence: ["x".repeat(201)] })).toBe("ERROR evidence item too long (max 200 characters)");
+			expect(await refused({ model: undefined })).toBe("ERROR rate needs model: the model the agent ran on, e.g. @task");
+			expect(await refused({ model: "m".repeat(61) })).toBe("ERROR model too long (max 60 characters)");
+			for (const effort of [undefined, "", "two words", "9x", "x".repeat(17)]) expect(await refused({ effort })).toBe("ERROR effort must be one word such as low, medium, high or default");
+			expect(runFile(s).ratings).toBeUndefined();
+		});
+
+		test("no run, no rating", async () => {
+			expect(await setup().call(good)).toBe("ERROR no active run in this session");
+		});
+
+		test("a subagent cannot rate", async () => {
+			const { s } = await rigged();
+			s.ctx.agent = { kind: "sub" };
+			expect(await s.call(good)).toBe("ERROR strategium tool is for the main session only");
+			expect(runFile(s).ratings).toBeUndefined();
+		});
+
+		test("corrupted is sticky: only a corrupted rating replaces it", async () => {
+			const { s } = await rigged();
+			await s.call({ ...good, rating: "corrupted", evidence: ["I-9"] });
+			for (const rating of ["proven", "proven-regression"]) expect(await s.call({ ...good, rating })).toBe("ERROR Scout1 is corrupted for the rest of the run");
+			expect(await s.call({ ...good, rating: "corrupted", evidence: ["I-10"] })).toBe("RATED Scout1 corrupted (was corrupted) model=@task effort=medium evidence=1");
+			expect(runFile(s).ratings).toEqual({ Scout1: { rating: "corrupted", evidence: ["I-10"], model: "@task", effort: "medium" } });
+		});
+
+		test("the rating shows on the agent's row, and after a restart the saved run and registry still know it", async () => {
+			const { s, ui } = await rigged();
+			expect(await peek(s, ui)).not.toContain("✦");
+			await s.call(good);
+			expect(await peek(s, ui)).toContain("✦");
+			const r = setup("sess-0001", s.dir);
+			const rui = uiCtx(r);
+			await r.start();
+			expect(await peek(r, rui)).toContain("✦");
+			expect(await r.call({ ...good, rating: "corrupted" })).toContain("(was proven)");
+		});
+
+		test("a hand-edited run file keeps only the entries that pass the same checks", async () => {
+			const { s } = await rigged();
+			await s.call(good);
+			const file = join(s.dir, "runs", "sess-0001.json");
+			const run = JSON.parse(readFileSync(file, "utf8"));
+			const ok = run.ratings.Scout1;
+			run.ratings = { Scout1: ok, "": ok, "bad\nkey": ok, ["k".repeat(129)]: ok, A: { ...ok, rating: "great" }, B: { ...ok, evidence: [] }, C: { ...ok, evidence: Array(9).fill("x") }, D: { ...ok, model: "" }, E: { ...ok, effort: "Two Words" }, F: "proven", G: { ...ok, extra: 1 } };
+			writeFileSync(file, JSON.stringify(run));
+			const r = setup("sess-0001", s.dir);
+			await r.start();
+			expect(await r.call({ action: "end" })).toContain("RATINGS 2: proven 2");
+		});
+
+		test("a run file whose ratings is not an object reads as none", async () => {
+			const { s } = await rigged();
+			const file = join(s.dir, "runs", "sess-0001.json");
+			writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), ratings: ["x"] }));
+			const r = setup("sess-0001", s.dir);
+			await r.start();
+			expect(await r.call({ action: "end" })).not.toContain("RATINGS");
+		});
+
+		test("end puts the ratings in the debrief and the result", async () => {
+			const { s } = await rigged();
+			await s.call(good);
+			const out = await s.call({ action: "end" });
+			expect(out).toContain("RATINGS 1: proven 1");
+			const dir = join(s.dir, "debriefs");
+			expect(readFileSync(join(dir, readdirSync(dir)[0]), "utf8")).toContain("## Ratings");
+		});
+
+		test("without a rate call the end result, the debrief and the run file have no ratings", async () => {
+			const { s } = await rigged();
+			expect(runFile(s).ratings).toBeUndefined();
+			expect("ratings" in runFile(s)).toBe(false);
+			const out = await s.call({ action: "end" });
+			expect(out).not.toContain("RATINGS");
+			const dir = join(s.dir, "debriefs");
+			expect(readFileSync(join(dir, readdirSync(dir)[0]), "utf8")).not.toContain("Ratings");
+		});
+
+		test("a redraft keeps the ratings", async () => {
+			const { s } = await rigged();
+			await s.call(good);
+			await s.call({ action: "redraft" });
+			expect(runFile(s).ratings).toHaveProperty("Scout1");
+		});
+	});
 });
 
 describe("cost tiers", () => {
@@ -8517,6 +8636,58 @@ console.log("FAILED " + failed);`;
 			expect(outs.map(o => o.trim())).toEqual(["FAILED 0", "FAILED 0"]);
 			expect(roster(dir).Lorenzo.passed).toBe(100);
 			expect(existsSync(join(dir, "roster.lock"))).toBe(false);
+		});
+	});
+
+	describe("ratings feed the record (#141, D6)", () => {
+		const rate = (s: S, agent: string, rating: string) => s.call({ action: "rate", agent, rating, evidence: ["I-3"], model: "@task", effort: "medium" });
+		// A builder that is named, spawned and still running, so the cockpit registry knows its id.
+		const running = async (s: S, squad: string) => {
+			const name = await nameFor(s, "battle-brother", squad);
+			spawn(s, "battle-brother", name);
+			returned(s, "battle-brother", name, squad, "running");
+			return name;
+		};
+
+		test("a corrupted latest builder: the FALL line, and at end a fall in the roster even though its job completed", async () => {
+			const s = await open();
+			const name = await running(s, "S1");
+			expect(await rate(s, name, "corrupted")).toBe(`RATED ${name} corrupted model=@task effort=medium evidence=1\nFALL ${surname(name)} squad S1 at end`);
+			returned(s, "battle-brother", name, "S1", "completed");
+			expect(await s.call({ action: "end" })).toContain("ROSTER 1 squad(s) recorded");
+			expect(roster(s.dir)[surname(name)]).toEqual(svc({ falls: 1, squads: 1 }));
+		});
+
+		test("a proven builder has no FALL line and the record is the plain pass", async () => {
+			const s = await open();
+			const name = await running(s, "S1");
+			expect(await rate(s, name, "proven")).not.toContain("FALL");
+			expect(await rate(s, name, "proven-regression")).not.toContain("FALL");
+			returned(s, "battle-brother", name, "S1", "completed");
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(name)]).toEqual(svc({ passed: 1, squads: 1, purity: 1 }));
+		});
+
+		test("a corrupted round-1 builder followed by a penance: no FALL line for the old one and the penance result stays", async () => {
+			const s = await open();
+			const first = await running(s, "S1");
+			returned(s, "battle-brother", first, "S1", "completed");
+			const penance = await running(s, "S1");
+			expect(await rate(s, first, "corrupted")).not.toContain("FALL");
+			returned(s, "battle-brother", penance, "S1", "completed");
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(first)]).toMatchObject({ falls: 0, passed: 1 });
+		});
+
+		test("a corrupted scout never touches the roster", async () => {
+			const s = await open();
+			const name = await running(s, "S1");
+			const scout = lastLine(await s.call({ action: "name", agent: "scout" })).slice(5);
+			s.handlers.before_subagent_spawn[0]({ invocationKind: "eval", agent: "scout", spawnKey: scout }, s.ctx);
+			expect(await rate(s, scout, "corrupted")).not.toContain("FALL");
+			returned(s, "battle-brother", name, "S1", "completed");
+			await s.call({ action: "end" });
+			expect(roster(s.dir)[surname(name)]).toEqual(svc({ passed: 1, squads: 1, purity: 1 }));
 		});
 	});
 });

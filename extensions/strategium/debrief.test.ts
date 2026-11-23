@@ -594,3 +594,72 @@ describe("debrief honours (#135)", () => {
 		expect(r.summary.at(-1)).not.toContain("\n");
 	});
 });
+
+describe("debrief ratings", () => {
+	type R = NonNullable<DebriefInput["ratings"]>[string];
+	const rate = (rating: R["rating"], model: string, effort: string, evidence: string[] = ["I-1"]): R => ({ rating, model, effort, evidence });
+	const evs = [start(0), spawn(1, "battle-brother", { squad: "alpha" }), stop(10)];
+	const three = {
+		AlphaBrother: rate("proven", "@task", "medium"),
+		DeltaBrother: rate("corrupted", "@task", "medium", ["I-3", "acceptance red"]),
+		ApothecaryBeta: rate("proven-regression", "@plan", "high"),
+	};
+	const agents: AgentCost[] = [{ id: "AlphaBrother", role: "battle-brother", squad: "alpha" }, { id: "ApothecaryBeta", role: "apothecary", squad: "beta" }];
+
+	test("without ratings the output is the same as with none or an empty record", () => {
+		const plain = debrief(input(evs, { agents }));
+		for (const ratings of [undefined, {}]) {
+			const r = debrief(input(evs, { agents, ratings }));
+			expect(r).toEqual(plain);
+		}
+		expect(plain.markdown).not.toContain("## Ratings");
+		expect(plain.summary.join("\n")).not.toContain("RATINGS");
+	});
+
+	test("the section sits after Squads and before Agents spawned, and after Honours when names are on", () => {
+		const md = debrief(input(evs, { ratings: three })).markdown;
+		expect(md.indexOf("## Squads")).toBeLessThan(md.indexOf("## Ratings"));
+		expect(md.indexOf("## Ratings")).toBeLessThan(md.indexOf("## Agents spawned"));
+		const named = debrief(input(evs, { ratings: three, honours: { rows: [] } })).markdown;
+		expect(named.indexOf("## Honours")).toBeLessThan(named.indexOf("## Ratings"));
+		expect(section(md, "Ratings").startsWith("\nFrom the Captain's rate action (the reviewers' verdicts).\n")).toBe(true);
+	});
+
+	test("per-agent rows keep stored order and join role and squad from agents, else a dash", () => {
+		const body = section(debrief(input(evs, { ratings: three, agents })).markdown, "Ratings");
+		const lines = body.split("\n").filter(l => l.startsWith("| "));
+		expect(lines[0]).toBe("| Agent | Role | Squad | Rating | Model | Effort | Evidence |");
+		expect(lines[1]).toBe("| AlphaBrother | battle-brother | alpha | proven | @task | medium | I-1 |");
+		expect(lines[2]).toBe("| DeltaBrother | — | — | corrupted | @task | medium | I-3, acceptance red |");
+		expect(lines[3]).toBe("| ApothecaryBeta | apothecary | beta | proven with a regression | @plan | high | I-1 |");
+	});
+
+	test("evidence is one line, pipes escaped, cut at 200", () => {
+		const ratings = { A: rate("corrupted", "m", "low", ["a|b\nc", "x".repeat(300)]) };
+		const line = section(debrief(input(evs, { ratings })).markdown, "Ratings").split("\n").find(l => l.startsWith("| A "))!;
+		expect(line).toContain("a\\|b c, ");
+		expect(line).not.toContain("x".repeat(201));
+		expect(line.split(" | ").at(-1)!.replace(/ \|$/, "").replace(/\\/g, "").length).toBeLessThanOrEqual(200);
+	});
+
+	test("per-tier table groups by model then effort, counts each verdict and totals", () => {
+		const ratings = { ...three, B: rate("proven", "@task", "high"), C: rate("proven", "@task", "medium") };
+		const lines = section(debrief(input(evs, { ratings })).markdown, "Ratings").split("\n").filter(l => l.startsWith("| "));
+		const i = lines.indexOf("| Model | Effort | Proven | Proven with a regression | Corrupted | Agents |");
+		expect(i).toBeGreaterThan(0);
+		expect(lines.slice(i + 1)).toEqual([
+			"| @plan | high | 0 | 1 | 0 | 1 |",
+			"| @task | high | 1 | 0 | 0 | 1 |",
+			"| @task | medium | 2 | 0 | 1 | 3 |",
+			"| Total | — | 3 | 1 | 1 | 5 |",
+		]);
+	});
+
+	test("the summary counts each verdict, omitting zeros, after HONOURS and COST", () => {
+		const s = debrief(input(evs, { ratings: three, honours: { rows: [] } })).summary;
+		expect(s.at(-1)).toBe("RATINGS 3: proven 1, proven-regression 1, corrupted 1");
+		expect(s.findIndex(l => l.startsWith("HONOURS"))).toBeLessThan(s.length - 1);
+		const one = debrief(input(evs, { ratings: { A: rate("corrupted", "m", "low") } })).summary;
+		expect(one.at(-1)).toBe("RATINGS 1: corrupted 1");
+	});
+});
