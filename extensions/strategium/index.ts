@@ -1359,30 +1359,35 @@ function settle(run: Run, agents: Record<string, Slice>, touched: Slice[]): Run 
 // assignments and wrappers (env, time, sudo, then...). It may be named by path (./node_modules/.bin/jest, /usr/bin/pytest,
 // C:\tools\bun.exe) and carry .exe or .cmd on Windows.
 const EXT = String.raw`(?:\.exe|\.cmd)?`;
-// NAME=v, NAME+=v, NAME[i]=v. Every part stops at a separator, so a scan from each command start cannot run to the end
-// of the line again and again; the one nested form, $(..), cannot contain a bracket or a quote.
-const ASSIGN = String.raw`\w+(?:\[[^\]\s;&|()\x60]*\])?\+?=(?:[^\s;&|()\x60]|\$\([^\s;&|()\x60]*\))*`;
+// NAME=v, NAME+=v, NAME[i]=v. Every part stops at a separator (WORD), so a scan from each command start cannot run to the
+// end of the line again and again; the nested forms $(..) and $((..)) cannot contain a bracket or a quote.
+// SP is a blank that is not a newline: a newline already starts a command, so crossing it would rescan the rest again.
+const SP = String.raw`[^\S\n]`;
+const WORD = String.raw`[^\s;&|()\x60]`;
+const ASSIGN = String.raw`\w+(?:\[[^\]\s;&|()\x60]*\])?\+?=(?:${WORD}|\$\(\(?${WORD}*\)\)?)*`;
 const COMMAND_START = String.raw`(?:^|[;&|(\n\x60])`;
 const RUNNER = new RegExp(
-	String.raw`${COMMAND_START}\s*` +
-		String.raw`(?:(?:${ASSIGN}|(?:env|time|exec|nohup|sudo|xargs|nice|stdbuf|setsid|doas|watch|coproc)(?:\s+-\S+(?:\s+\d\S*)?)*|then|do|else|elif|if|while|until|!|\{|timeout(?:\s+-\S+(?:\s+[\d.]\S*)?)*\s+[\d.][\w.]*)\s+)*` +
+	String.raw`${COMMAND_START}${SP}*` +
+		String.raw`(?:(?:${ASSIGN}|(?:env|time|exec|nohup|sudo|xargs|nice|stdbuf|setsid|doas|watch|coproc)(?:${SP}+-${WORD}+(?:${SP}+\d${WORD}*)?)*|then|do|else|elif|if|while|until|!|\{|timeout(?:${SP}+-${WORD}+(?:${SP}+[\w.]${WORD}*)?)*${SP}+[\d.][\w.]*)${SP}+)*` +
 		String.raw`(?:[^\s;&|()\x60"'<>=]*[\\/])?` +
 		String.raw`(?:bun${EXT}\s+(?:test|run)\b|bunx${EXT}\s|npx${EXT}\s|(?:npm|pnpm|yarn)${EXT}\s+(?:test|t|run|run-script|exec|build)\b` +
 		String.raw`|(?:tsc|jest|vitest|pytest|gradle|mvn|playwright)${EXT}\b|(?:cargo|go|dotnet)${EXT}\s+(?:test|build)\b)`,
 );
-const WRITE_WORD = new RegExp(String.raw`${COMMAND_START}\s*(?:${ASSIGN}\s+)*(?:rm|rmdir|mv|cp|touch|truncate|tee|ln)\b`);
-// git's global options (-C dir, -c k=v, --git-dir=x) come before the subcommand and must not hide it.
-const WRITE_GIT = /\bgit\s+(?:(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?|-\w)\s+)*(checkout\s+(\S+\s+)?--(?=\s|$)|checkout\s+\.(?=\s|$)|(restore|reset\s+--hard|clean|stash|apply|am|rm|mv)\b)/;
+const WRITE_WORD = new RegExp(String.raw`${COMMAND_START}${SP}*(?:${ASSIGN}${SP}+)*(?:rm|rmdir|mv|cp|touch|truncate|tee|ln)\b`);
+// git's global options (-C dir, -c k=v, --git-dir=x) come before the subcommand and must not hide it; at most eight, so
+// each `git` start reads a bounded stretch.
+const WRITE_GIT = /\bgit\s+(?:(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?|-\w)\s+){0,8}(checkout\s+(\S+\s+)?--(?=\s|$)|checkout\s+\.(?=\s|$)|(restore|reset\s+--hard|clean|stash|apply|am|rm|mv)\b)/;
 // A redirect, unless it goes to a file descriptor, /dev/null or a scratch place.
-const WRITE_REDIRECT = /\d*>>?(?!>)(?!\s*(?:&[\d-]|\/dev\/null\b|["']?(?:\$\{?(?:TEMP|TMP|TMPDIR)\}?|\/tmp\/|%TEMP%|(?:out|local):\/\/)))/;
+const WRITE_REDIRECT = />>?(?!>)(?!\s*(?:&[\d-]|\/dev\/null\b|["']?(?:\$\{?(?:TEMP|TMP|TMPDIR)\}?|\/tmp\/|%TEMP%|(?:out|local):\/\/)))/;
 
 // Linear rewrites (one flat regex pass each) that put a command back where the two patterns above look for it:
 // ${IFS} is a space; a redirection (with its {fd} or digit and its word) is no command word; the `)` that ends a case
-// pattern and the `{` that opens a function body or group are separators. \d{0,2} and the separator-free words keep
-// each start from rescanning the line.
+// pattern (the word stays: it may be a command in a subshell) and the `{` that opens a function body or group are
+// separators. \d{0,2} and the separator-free words keep each start from rescanning the line.
 const REDIRECTION = /(?:\{\w+\}|\d{0,2})(?:<<<|<<-?|<>|[<>]&|&>>?|>>?|<)[ \t]*[^\s;&|()\x60]+/g;
-const CASE_ARM = /(?:^|[;\n]|\bin\b)\s*\(?[^\s;&()\x60]+\)/g;
-const asCommands = (s: string) => s.replace(/\$\{IFS\}|\$IFS\b/g, " ").replace(CASE_ARM, ";").replace(/\{(?=\s)/g, ";").replace(REDIRECTION, "");
+const CASE_ARM = /(?:^|[;\n]|\bin\b)[ \t]*\(?[^\s;&()\x60]+[ \t]*\)/g;
+const asCommands = (s: string) =>
+	s.replace(/\$\{IFS\}|\$IFS\b/g, " ").replace(CASE_ARM, m => `${m.slice(0, -1)};`).replace(/\{(?=\s)/g, ";").replace(REDIRECTION, "");
 
 /**
  * Why a bash command is not allowed for the Captain during a run: test and build runners, and file writes.
@@ -1396,8 +1401,9 @@ export function bashBlock(command: string): string | undefined {
 		.replace(/(?<!<)<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2(?=\n|$)/g, "<<HEREDOC$3")
 		.replace(/(>>?\s*)?('[^']*'|"[^"]*")/g, (m, redir) => (redir ? m : '""'));
 	// A backslash before a word character is an escape (r\m); a Windows path keeps its own, so both readings are checked.
+	// A runner is also looked for in the command as written: `$IFS` inside an assignment value is no space there.
 	const readings = [asCommands(cmd), asCommands(cmd.replace(/\\(?=\w)/g, ""))];
-	if (readings.some(r => RUNNER.test(r))) return "Strategium: the Captain runs no builds or test suites. Delegate the check to a sonic agent.";
+	if (RUNNER.test(cmd) || readings.some(r => RUNNER.test(r))) return "Strategium: the Captain runs no builds or test suites. Delegate the check to a sonic agent.";
 	if (readings.some(r => WRITE_WORD.test(r)) || /\bsed\s+(-\w*i|--in-place)/.test(cmd) || /\bperl\s+-\w*i/.test(cmd) || WRITE_GIT.test(cmd) || WRITE_REDIRECT.test(cmd))
 		return "Strategium: the Captain writes no files through bash during a run. Delegate the change to an agent; scratch output may only be redirected into $TEMP.";
 	return undefined;
