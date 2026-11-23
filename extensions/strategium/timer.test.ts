@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,6 +21,7 @@ import {
 	overlapMin,
 	overlaps,
 	poolOf,
+	safeName,
 	splitMin,
 	release,
 	viaOf,
@@ -232,6 +233,7 @@ describe("ticket claims across processes", () => {
 			expect(await race(dir, "dead0001")).toBe(1);
 			expect(readFileSync(lockPath(dir, "RACE-1"), "utf8")).toMatch(/^s[0-7]$/);
 			expect(existsSync(`${lockPath(dir, "RACE-1")}.force`)).toBe(false);
+			expect(readdirSync(join(dir, "claims")).filter(f => f.includes(".from-"))).toEqual([]);
 		}));
 	test("takeover naming the wrong holder is refused", () =>
 		withDir(async dir => {
@@ -286,6 +288,51 @@ describe("ticket claims across processes", () => {
 			deadLock(dir);
 			writeFileSync(`${lockPath(dir, "RACE-1")}.force`, `session-dead0001 ${Date.now() - 6 * 60_000}`);
 			expect(() => claim(dir, "RACE-1", "me", "dead0001")).not.toThrow();
+		}));
+	test("a guard created but not yet written still blocks the takeover", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			// The winner has created the guard and not yet written its timestamp: empty is not stale.
+			writeFileSync(`${lockPath(dir, "RACE-1")}.force`, "");
+			expect(() => claim(dir, "RACE-1", "me", "dead0001")).toThrow();
+			expect(holds(dir, "RACE-1", "me")).toBe(false);
+		}));
+	test("an empty guard six minutes old is stale", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			const g = `${lockPath(dir, "RACE-1")}.force`;
+			writeFileSync(g, "");
+			const old = new Date(Date.now() - 6 * 60_000);
+			utimesSync(g, old, old);
+			expect(() => claim(dir, "RACE-1", "me", "dead0001")).not.toThrow();
+			expect(holds(dir, "RACE-1", "me")).toBe(true);
+		}));
+	test("a half-written guard is not age zero: it blocks while fresh", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			writeFileSync(`${lockPath(dir, "RACE-1")}.force`, "s3 ");
+			expect(() => claim(dir, "RACE-1", "me", "dead0001")).toThrow();
+		}));
+	test("a second takeover of the same dead holder loses even when it deletes the first's guard", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			const lock = lockPath(dir, "RACE-1");
+			// The first takeover is past its guard and holds the per-holder marker, not yet swapped;
+			// the second sees a stale guard, deletes it and takes its own.
+			writeFileSync(`${lock}.from-${safeName("session-dead0001")}`, "");
+			writeFileSync(`${lock}.force`, "s1 1");
+			expect(() => claim(dir, "RACE-1", "s2", "dead0001")).toThrow();
+			expect(holds(dir, "RACE-1", "s2")).toBe(false);
+		}));
+	test("a marker six minutes old, with no guard, does not block a takeover", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			const m = `${lockPath(dir, "RACE-1")}.from-${safeName("session-dead0001")}`;
+			writeFileSync(m, "");
+			const old = new Date(Date.now() - 6 * 60_000);
+			utimesSync(m, old, old);
+			expect(() => claim(dir, "RACE-1", "me", "dead0001")).not.toThrow();
+			expect(holds(dir, "RACE-1", "me")).toBe(true);
 		}));
 	test("a guard one minute old blocks the takeover", () =>
 		withDir(async dir => {
