@@ -2017,7 +2017,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						dispose: () => {
 							open = false;
 							clearInterval(timer);
-							if (cockpit.close === close) abortCaster(); // an old overlay disposed late must not abort the current one's call
+							if (cockpit.close === close) closed(); // the host tore it down: free the cockpit so it opens again; an old overlay disposed late must not touch the current one
 						},
 					};
 				},

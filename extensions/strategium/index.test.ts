@@ -3525,6 +3525,23 @@ describe("cockpit", () => {
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
 
+	test("the host disposing the overlay frees the cockpit; a late dispose of an old overlay leaves the open one alone", async () => {
+		const { s, ui } = await running();
+		await s.sub("cockpit");
+		expect(ui.opened.length).toBe(1);
+		ui.opened[0].component.dispose!(); // the host tears it down: no Esc, no q
+		await s.sub("cockpit");
+		expect(ui.opened.length).toBe(2);
+		ui.opened[0].component.dispose!(); // the old overlay, disposed late, while the new one is open
+		await s.sub("cockpit");
+		expect(ui.opened.length).toBe(2); // still refused: the cockpit is open
+		ui.opened[1].component.dispose!();
+		ui.opened[1].component.dispose!(); // idempotent
+		await s.sub("cockpit");
+		expect(ui.opened.length).toBe(3);
+		ui.opened[2].component.handleInput!("q");
+	});
+
 	describe("the cockpit theme", () => {
 		const BG = /\x1b\[48;(?:2;24;13;16|5;\d+)m/; // blood-angels Night, at either colour depth
 		const raw = (ui: ReturnType<typeof uiCtx>) => {
