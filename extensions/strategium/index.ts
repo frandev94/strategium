@@ -1081,8 +1081,8 @@ function corruptedSource(run: Run, id: string, named: boolean): boolean {
 function reuseSources(text: string): string[] {
 	const out: string[] = [];
 	for (const line of text.split("\n")) {
-		const m = /^[-*>_`#"'(\t ]*(?:\d{1,9}[.)][-*>_`#"'(\t ]*)?reuse[ \t]*:[ \t*_`<>"'[]*(?:agent:\/\/)?(\w[\w.-]*)(?![\w/])/i.exec(line);
-		if (!m) continue;
+		const m = /^[-*>_`#"'(\t ]*(?:\d{1,9}[.)][-*>_`#"'(\t ]*)?reuse[ \t]*:[ \t*_`<>"'[]*(?:agent:\/\/)?(\w[\w.-]*)(\/?)/i.exec(line);
+		if (!m || m[2]) continue; // an id followed by / is a path, not an agent
 		let id = m[1];
 		while (/[.-]$/.test(id)) id = id.slice(0, -1);
 		out.push(id);

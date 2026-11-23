@@ -9421,7 +9421,7 @@ describe("reuse a proven builder (#143)", () => {
 				const s = await open();
 				await built(s, ["A"], "corrupted");
 				const t0 = performance.now();
-				for (const t of [`${"1.".repeat(20_000)}x`, `${"- ".repeat(20_000)}x`, `${"# ".repeat(20_000)}Reuse`, `Reuse:${'" '.repeat(20_000)}`]) task(s, [item(t)]);
+				for (const t of [`${"1.".repeat(20_000)}x`, `${"- ".repeat(20_000)}x`, `${"# ".repeat(20_000)}Reuse`, `Reuse:${'" '.repeat(20_000)}`, `Reuse:${"_".repeat(40_000)}/`]) task(s, [item(t)]);
 				expect(performance.now() - t0).toBeLessThan(500);
 			});
 		});
