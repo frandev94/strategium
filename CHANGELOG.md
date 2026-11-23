@@ -1,3 +1,10 @@
+## [0.2.50] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* A mid-run todo rebuild no longer logs the station twice
+- *(cockpit)* The chronicle keeps its station and waiting seal across a restart and a rebuild
+- *(cockpit)* Seed the chronicle's station and waiting seal from the run's phases
 ## [0.2.49] - 2026-11-23
 
 ### 🐛 Bug Fixes
