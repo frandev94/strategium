@@ -2385,7 +2385,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						if (!entry) return text("ERROR record needs text");
 						if (entry.length > 200) return text("ERROR record needs text of at most 200 characters");
 						const kind = secretKind(params.text as string);
-						if (kind) return text(`ERROR record refused: the text looks like a secret (${kind}); nothing was written`);
+						if (kind) return text(`ERROR the text looks like a secret (${kind}); nothing was written; rephrase without the value`);
 						if (!vault.dir) return text("ERROR no vault set (/strategium-config vault <absolute folder>)");
 						const c = loadContract(vault.dir);
 						if ("error" in c) return text(`ERROR vault ${vault.dir}: ${c.error}`);

@@ -8956,7 +8956,8 @@ describe("names in the cockpit (#135)", () => {
 	}, 30000);
 
 	test("a roster written after the run opened still decorates a builder named later", async () => {
-		const s = await open();
+		const random = spyOn(Math, "random").mockReturnValue(0.99); // S1 and S2 draw from the end of the pool, so neither can take Lorenzo
+		const s = await open().finally(() => random.mockRestore());
 		await peek(s); // the roster is read now, while it is missing
 		writeFileSync(join(s.dir, "roster.json"), JSON.stringify({ version: 1, brothers: { Lorenzo: LORENZO } }));
 		expect(await named(s, "battle-brother", "S3")).toBe("BrotherLorenzo"); // S1 and S2 took their names at `slices`, S3 is the sequential squad
@@ -10136,7 +10137,7 @@ describe("vault record (#152)", () => {
 		for (const [text, kind] of [[`token ${GH}`, "token"], ["API_KEY=x", "NAME=value"]] as const) {
 			for (const note of [undefined, "Projects/K.md", "Other/x.md"]) {
 				const out = await s.call({ action: "record", text, note });
-				expect(out).toBe(`ERROR record refused: the text looks like a secret (${kind}); nothing was written`);
+				expect(out).toBe(`ERROR the text looks like a secret (${kind}); nothing was written; rephrase without the value`);
 				expect(out).not.toContain(GH);
 			}
 		}

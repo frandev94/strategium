@@ -30,7 +30,7 @@ const headingOk = (h: unknown): h is string => typeof h === "string" && h.length
 /** A vault-relative `.md` path of at most 200 chars. `wild` allows `*` inside a segment and `**` as a whole segment (a glob); otherwise no `*` (a note). */
 function pathOk(p: unknown, wild: boolean): p is string {
 	if (typeof p !== "string" || p.length > 200 || !p.endsWith(".md")) return false;
-	return p.split(/[\\/]/).every((s) => s !== "" && !s.startsWith(".") && !/[ .]$/.test(s) && !/[:<>"|?\x00-\x1f]/.test(s) && (wild ? s === "**" || !s.includes("**") : !s.includes("*")));
+	return p.split(/[\\/]/).every((s) => s !== "" && !s.startsWith(".") && !/[ .]$/.test(s) && !/[:<>"|?\x00-\x1f]/.test(s) && (wild ? s === "**" || (!s.includes("**") && !/[[\]{}]/.test(s)) : !s.includes("*")));
 }
 
 const notesOk = (n: unknown): n is string[] => Array.isArray(n) && n.length >= 1 && n.length <= 32 && n.every((g) => pathOk(g, true));
@@ -77,7 +77,7 @@ export function loadContract(vault: string): ContractResult {
 
 /** One line, trimmed, capped without splitting a surrogate pair. */
 function clean(v: string, max: number): string {
-	const s = v.replace(/[\r\n]+/g, " ").trim();
+	const s = v.replace(/[\x00-\x1f\u2028\u2029]+/g, " ").trim();
 	if (s.length <= max) return s;
 	const c = s.charCodeAt(max - 1);
 	return s.slice(0, c >= 0xd800 && c <= 0xdbff ? max - 1 : max);
@@ -184,7 +184,6 @@ export function matchNote(glob: string, note: string): boolean {
 			ni = ++mark;
 		} else return false;
 	}
-	while (g[gi] === "**") gi++;
 	return gi === g.length;
 }
 

@@ -482,7 +482,7 @@ describe("loadContract notes and noteHeading (#152)", () => {
 	});
 
 	test("refuses each bad glob and the whole contract with it", () => {
-		const bad: unknown[] = ["/x.md", "C:\\x.md", "../x.md", ".obsidian/*.md", "a/**b/c.md", "a/***/c.md", "a/?.md", "x.txt", "a//b.md", "a/b /c.md", "a/" + "x".repeat(198) + ".md", 5, null, {}];
+		const bad: unknown[] = ["/x.md", "C:\\x.md", "../x.md", ".obsidian/*.md", "a/**b/c.md", "a/***/c.md", "a/?.md", "a/[ab].md", "a/]x.md", "a/{a,b}.md", "a/x}.md", "x.txt", "a//b.md", "a/b /c.md", "a/" + "x".repeat(198) + ".md", 5, null, {}];
 		for (const g of bad) {
 			put({ ...GOOD, notes: [g] });
 			expect(err(loadContract(vault))).toBe(NOTES_BAD);
@@ -516,6 +516,7 @@ describe("matchNote (#152)", () => {
 		yes("a*b*c.md", "aXbYc.md");
 		no("a*b*c.md", "acb.md");
 		no("ab*ba.md", "aba.md"); // the parts must not overlap
+		no("a*bc*c.md", "abc.md"); // the last part must not reuse the characters of the one before
 		yes("*.md", "x.md");
 	});
 
@@ -627,6 +628,7 @@ describe("recordNote (#152)", () => {
 	test("refuses today's daily (any case on win32) and a missing note, which is not created", () => {
 		mkdirSync(join(vault, "Daily"));
 		writeFileSync(join(vault, "Daily", "2026-11-21.md"), "d");
+		if (process.platform === "win32") expect(rec("DAILY/2026-11-21.md")).toBe("note is today's daily");
 		expect(rec("Daily/2026-11-21.md")).toBe("note is today's daily");
 		expect(readFileSync(join(vault, "Daily", "2026-11-21.md"), "utf8")).toBe("d");
 		expect(rec("Projects/New.md")).toBe("note missing");
@@ -709,6 +711,7 @@ describe("secretKind (#152)", () => {
 		["credential", "password=hunter2"],
 		["credential", "client_secret = x"],
 		["credential", "api_key: AbCdEf0123456789xyz"],
+		["credential", "token: " + "a".repeat(16)],
 		["key-like string", "key " + "aB3dEf6hIj9lMn2pQr5tUv8xYz1BcD4F".repeat(2).slice(0, 40)],
 	];
 	test.each(refuse)("refuses %s: %s", (kind, text) => {
@@ -717,6 +720,15 @@ describe("secretKind (#152)", () => {
 
 	test("never echoes: the kind is one of the five names", () => {
 		for (const [, t] of refuse) expect(["token", "private key", "NAME=value", "credential", "key-like string"]).toContain(secretKind(t) ?? "");
+	});
+
+	test("credential with a colon: 15 characters pass, 16 are refused", () => {
+		expect(secretKind("token: " + "a".repeat(15))).toBeUndefined();
+		expect(secretKind("token: " + "a".repeat(16))).toBe("credential");
+	});
+
+	test("formatLine turns any control character and U+2028/U+2029 into a space", () => {
+		expect(formatLine("{text}", { time: "t", key: "k", text: "a\tb\x00c\u2028d\u2029e\x1bf\r\ng" })).toBe("a b c d e f g");
 	});
 
 	const pass = [
