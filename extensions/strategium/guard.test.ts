@@ -150,7 +150,7 @@ describe("bash writes, every pattern", () => {
 describe("heredoc scan reads like the regex it replaced", () => {
 	test.each([
 		// the word shrinks to a terminator that exists: <<EOFX ends at the line EO, so the later bun test is a command
-		'cat <<EOFX\nEOFX\necho "<<Z"\nEO\nbun test\nZ', "cat <<'EOF\nbun test\nEOF", "cat <<EOF\n\nEOF\nbun test\n",
+		'cat <<EOFX\nEOFX\necho "<<Z"\nEO\nbun test\nZ', "cat <<'EOF\nbun test\nEOF", "cat <<EOF\n\nEOF\nbun test\n", "cat <<'EOF\nx\nbun test\nEOF",
 	])("refuses %j", cmd => expect(bashBlock(cmd)).toContain(RUNNER_MSG));
 	test("allows a spaced opener word", () => expect(bashBlock("cat << EOF\nbun test\nEOF")).toBeUndefined());
 });
