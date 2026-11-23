@@ -3773,14 +3773,16 @@ describe("cockpit", () => {
 		});
 		test("Enter and the arrows do nothing on the final screen", async () => {
 			const { s, ui } = await running();
+			s.todo(sealTodo("in_progress"));
 			await s.sub("cockpit");
 			const comp = ui.opened[0].component;
 			await s.call({ action: "end" });
 			const before = comp.render(72).join("\n");
-			for (const k of ["\r", "\t", "\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"]) comp.handleInput!(k);
+			for (const k of ["\t", "\r", "\t", "\r", "\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"]) comp.handleInput!(k);
 			expect(comp.render(72).join("\n")).toBe(before);
 			expect(ui.draws.closed).toBe(0);
-			comp.handleInput!("q");
+			comp.handleInput!("\x1b"); // no detail opened behind the screen: esc closes
+			expect(ui.draws.closed).toBe(1);
 		});
 		test("a session change closes the final screen", async () => {
 			const { s, ui } = await running();
