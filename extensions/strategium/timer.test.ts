@@ -233,6 +233,7 @@ describe("ticket claims across processes", () => {
 			expect(await race(dir, "dead0001")).toBe(1);
 			expect(readFileSync(lockPath(dir, "RACE-1"), "utf8")).toMatch(/^s[0-7]$/);
 			expect(existsSync(`${lockPath(dir, "RACE-1")}.force`)).toBe(false);
+			expect(readdirSync(join(dir, "claims")).filter(f => f.includes(".from-"))).toEqual([]);
 		}));
 	test("takeover naming the wrong holder is refused", () =>
 		withDir(async dir => {
@@ -322,6 +323,16 @@ describe("ticket claims across processes", () => {
 			writeFileSync(`${lock}.force`, "s1 1");
 			expect(() => claim(dir, "RACE-1", "s2", "dead0001")).toThrow();
 			expect(holds(dir, "RACE-1", "s2")).toBe(false);
+		}));
+	test("a marker six minutes old, with no guard, does not block a takeover", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			const m = `${lockPath(dir, "RACE-1")}.from-${safeName("session-dead0001")}`;
+			writeFileSync(m, "");
+			const old = new Date(Date.now() - 6 * 60_000);
+			utimesSync(m, old, old);
+			expect(() => claim(dir, "RACE-1", "me", "dead0001")).not.toThrow();
+			expect(holds(dir, "RACE-1", "me")).toBe(true);
 		}));
 	test("a guard one minute old blocks the takeover", () =>
 		withDir(async dir => {

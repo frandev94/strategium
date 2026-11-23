@@ -24,6 +24,8 @@ const holder = (lock: string) => {
  * enough). Under an exclusive `<lock>.force` guard the lock is replaced only if it still names that holder:
  * a compare-and-swap, so of several sessions taking over the same dead holder exactly one wins, and a holder
  * that changed in between is never stolen.
+ * The guard alone cannot guarantee one winner (two takeovers may both judge it stale), so the point of no
+ * return is an exclusive `<lock>.from-<holder>` marker: one per dead holder, removed after the swap.
  */
 export function claim(dir: string, key: string, sid: string, takeover?: string): void {
 	const lock = lockPath(dir, key);
