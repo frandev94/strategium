@@ -1,3 +1,18 @@
+## [0.2.42] - 2026-11-23
+
+### 🚀 Features
+
+- *(extension)* Reuse a proven battle-brother for a squad's next round
+
+### 🐛 Bug Fixes
+
+- *(extension)* Reuse marker read per line in any markdown form; full SEED
+- *(extension)* Reuse never offers a retired or corrupted builder
+- *(extension)* Reuse id boundary without backtracking
+
+### 📚 Documentation
+
+- Reuse a proven battle-brother, and redraft versus corruption
 ## [0.2.41] - 2026-11-23
 
 ### 🚀 Features
