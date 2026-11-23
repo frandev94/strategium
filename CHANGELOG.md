@@ -1,3 +1,13 @@
+## [0.2.62] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(timer)* A takeover guard created but not yet written still blocks
+- *(timer)* One takeover per dead holder reaches the lock swap
+
+### 🧪 Testing
+
+- *(timer)* An old marker expires and no marker is left after a takeover
 ## [0.2.61] - 2026-11-23
 
 ### 🚀 Features
