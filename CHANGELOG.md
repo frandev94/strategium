@@ -1,3 +1,17 @@
+## [0.2.45] - 2026-11-23
+
+### 🚀 Features
+
+- *(extension)* The Captain records decisions in the vault
+
+### 🐛 Bug Fixes
+
+- *(extension)* The secret filter lets paths and branch names through
+- *(extension)* Note globs refuse brackets; secret refusal says how to go on
+
+### 📚 Documentation
+
+- The record action, vault notes and the secret filter
 ## [0.2.44] - 2026-11-23
 
 ### 🚀 Features
