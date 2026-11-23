@@ -3009,24 +3009,24 @@ describe("relic", () => {
 	});
 });
 
-describe("caster box", () => {
+describe("servo-skull box", () => {
 	const SIX = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty ".repeat(6).trim();
 	const work: Phase[] = [{ name: "Skirmish", tasks: Array.from({ length: 12 }, (_, i) => ({ content: `[battle-brother] Build squad s${i + 1}`, status: i % 2 ? "pending" : "in_progress" })) }];
-	const caster = (over: Partial<NonNullable<ViewInput["caster"]>> = {}) => ({ station: "Skirmish", text: "Alpha just went green.", dim: false, at: 0, ...over });
-	const cast = (over: Partial<ViewInput> = {}) => input({ phases: work, chronicle: many(20), now: 30_000, caster: caster(), ...over });
+	const servoSkull = (over: Partial<NonNullable<ViewInput["servoSkull"]>> = {}) => ({ station: "Skirmish", text: "Alpha just went green.", dim: false, at: 0, ...over });
+	const cast = (over: Partial<ViewInput> = {}) => input({ phases: work, chronicle: many(20), now: 30_000, servoSkull: servoSkull(), ...over });
 	const draw = (inp: ViewInput, width: number, height?: number, relic = false) => renderCockpit(cockpitView(inp), width, 0, TRUE, height, relic).map(plain);
 	const ruleAt = (out: string[], title: string) => out.findIndex(l => l.startsWith("╟─ ") && l.includes(title));
 	const rowsOf = (out: string[]) => {
-		const from = ruleAt(out, "CASTER");
+		const from = ruleAt(out, "SERVO-SKULL");
 		const to = out.findIndex(l => l.includes("CHRONICLE"));
 		return out.slice(from + 1, to);
 	};
 
-	test("view.caster carries the title with station and age, and is absent without input", () => {
-		expect(cockpitView(cast()).caster).toEqual({ title: "CASTER · Skirmish · <1m", text: "Alpha just went green.", dim: false });
-		expect(cockpitView(cast({ now: 3 * 60_000 + 5 })).caster!.title).toBe("CASTER · Skirmish · 3m");
-		expect(cockpitView(cast({ caster: caster({ at: undefined }) })).caster!.title).toBe("CASTER · Skirmish");
-		expect(cockpitView(cast({ caster: undefined })).caster).toBeUndefined();
+	test("view.servo-skull carries the title with station and age, and is absent without input", () => {
+		expect(cockpitView(cast()).servoSkull).toEqual({ title: "SERVO-SKULL · Skirmish · <1m", text: "Alpha just went green.", dim: false });
+		expect(cockpitView(cast({ now: 3 * 60_000 + 5 })).servoSkull!.title).toBe("SERVO-SKULL · Skirmish · 3m");
+		expect(cockpitView(cast({ servoSkull: servoSkull({ at: undefined }) })).servoSkull!.title).toBe("SERVO-SKULL · Skirmish");
+		expect(cockpitView(cast({ servoSkull: undefined })).servoSkull).toBeUndefined();
 	});
 
 	test.each([140, 100, 72])("at width %i the rule sits between the last box and the CHRONICLE, every line keeps its edges, the chronicle keeps 6 rows", width => {
@@ -3035,7 +3035,7 @@ describe("caster box", () => {
 			expect(out).toHaveLength(45);
 			for (const l of out) expect(Bun.stringWidth(l)).toBe(width);
 			for (const l of out) expect(/^[╔║╟╚]/.test(l) && /[╗║╢╝]$/.test(l)).toBe(true);
-			const c = ruleAt(out, "CASTER · Skirmish · <1m");
+			const c = ruleAt(out, "SERVO-SKULL · Skirmish · <1m");
 			const lastBox = out.findLastIndex(l => l.includes("└"));
 			expect(c).toBeGreaterThan(lastBox);
 			expect(out.findIndex(l => l.includes("CHRONICLE"))).toBeGreaterThan(c);
@@ -3045,7 +3045,7 @@ describe("caster box", () => {
 	});
 
 	test("seven wrapped rows show five, the fifth ends in …, and no word is cut", () => {
-		const rows = rowsOf(draw(cast({ caster: caster({ text: SIX }) }), 100)).map(l => l.slice(1, -1).trim());
+		const rows = rowsOf(draw(cast({ servoSkull: servoSkull({ text: SIX }) }), 100)).map(l => l.slice(1, -1).trim());
 		expect(rows).toHaveLength(5);
 		expect(rows[4].endsWith("…")).toBe(true);
 		for (const r of rows.slice(0, 4)) expect(SIX.includes(r)).toBe(true);
@@ -3053,79 +3053,79 @@ describe("caster box", () => {
 	});
 
 	test("a word wider than the row is split, nothing overflows the frame", () => {
-		const out = draw(cast({ caster: caster({ text: "x".repeat(300) }) }), 72);
+		const out = draw(cast({ servoSkull: servoSkull({ text: "x".repeat(300) }) }), 72);
 		for (const l of out) expect(Bun.stringWidth(l)).toBe(72);
 		expect(rowsOf(out)).toHaveLength(5);
 	});
 
-	test("shrink order: caster rows first (down to 1), then box lines, then chronicle rows", () => {
-		const inp = cast({ caster: caster({ text: SIX }) });
+	test("shrink order: servo-skull rows first (down to 1), then box lines, then chronicle rows", () => {
+		const inp = cast({ servoSkull: servoSkull({ text: SIX }) });
 		const stat = (h: number) => {
 			const out = draw(inp, 100, h);
-			return { caster: rowsOf(out).length, box: out.filter(l => /[▶○] (Build|squad)/.test(l) || /squad s\d/.test(l)).length, chron: eventLines(out).length, len: out.length };
+			return { servoSkull: rowsOf(out).length, box: out.filter(l => /[▶○] (Build|squad)/.test(l) || /squad s\d/.test(l)).length, chron: eventLines(out).length, len: out.length };
 		};
 		const tall = stat(60);
-		expect(tall.caster).toBe(5);
+		expect(tall.servoSkull).toBe(5);
 		let prev = tall;
-		let casterDone = false;
+		let servoSkullDone = false;
 		let boxesDone = false;
 		for (let h = 59; h >= 12; h--) {
 			const s = stat(h);
 			expect(s.len).toBe(h);
-			expect(s.caster).toBeLessThanOrEqual(prev.caster);
+			expect(s.servoSkull).toBeLessThanOrEqual(prev.servoSkull);
 			expect(s.box).toBeLessThanOrEqual(prev.box);
 			expect(s.chron).toBeLessThanOrEqual(prev.chron);
-			if (s.box < tall.box) expect(s.caster).toBe(1); // boxes give up lines only once the caster is at 1 row
+			if (s.box < tall.box) expect(s.servoSkull).toBe(1); // boxes give up lines only once the servo-skull is at 1 row
 			if (s.chron < 6 && s.chron < prev.chron) {
-				expect(s.caster).toBe(1);
+				expect(s.servoSkull).toBe(1);
 				expect(s.box).toBeLessThanOrEqual(2); // chronicle falls only after the boxes are at their floor
 			}
-			if (s.caster === 1) casterDone = true;
-			if (casterDone && s.box < tall.box) boxesDone = true;
+			if (s.servoSkull === 1) servoSkullDone = true;
+			if (servoSkullDone && s.box < tall.box) boxesDone = true;
 			prev = s;
 		}
-		expect(casterDone && boxesDone).toBe(true);
+		expect(servoSkullDone && boxesDone).toBe(true);
 	});
 
 	test("empty states draw iron, a summary draws parchment", () => {
-		const row = (dim: boolean) => renderCockpit(cockpitView(cast({ caster: caster({ text: "listening…", dim }) })), 100, 0, TRUE, 45).find(l => l.includes("listening…"))!;
+		const row = (dim: boolean) => renderCockpit(cockpitView(cast({ servoSkull: servoSkull({ text: "listening…", dim }) })), 100, 0, TRUE, 45).find(l => l.includes("listening…"))!;
 		expect(row(true)).toContain(`${TRUE.iron}listening…`);
 		expect(row(false)).toContain(`${TRUE.parchment}listening…`);
 	});
 
-	test("narrow: the caster line costs a row, so the chronicle keeps at least 6 rows at any tight height", () => {
+	test("narrow: the servo-skull line costs a row, so the chronicle keeps at least 6 rows at any tight height", () => {
 		for (let h = 14; h <= 40; h++) expect(eventLines(draw(cast(), 60, h)).length).toBeGreaterThanOrEqual(6);
 	});
 
-	test("narrow: one `caster: first sentence` line under the header, cut to the width", () => {
-		const out = draw(cast({ caster: caster({ text: "First sentence. Second one." }) }), 60, 40);
-		expect(out.filter(l => l.includes("caster:"))).toEqual(["caster: First sentence."]);
-		expect(out.findIndex(l => l.includes("caster:"))).toBeGreaterThan(out.findIndex(l => l.includes("STRATEGIUM")));
-		expect(out.findIndex(l => l.includes("caster:"))).toBeLessThan(out.findIndex(l => l.includes("CHRONICLE")));
-		const long = draw(cast({ caster: caster({ text: "word ".repeat(40) }) }), 60, 40).find(l => l.includes("caster:"))!;
+	test("narrow: one `servo-skull: first sentence` line under the header, cut to the width", () => {
+		const out = draw(cast({ servoSkull: servoSkull({ text: "First sentence. Second one." }) }), 60, 40);
+		expect(out.filter(l => l.includes("servo-skull:"))).toEqual(["servo-skull: First sentence."]);
+		expect(out.findIndex(l => l.includes("servo-skull:"))).toBeGreaterThan(out.findIndex(l => l.includes("STRATEGIUM")));
+		expect(out.findIndex(l => l.includes("servo-skull:"))).toBeLessThan(out.findIndex(l => l.includes("CHRONICLE")));
+		const long = draw(cast({ servoSkull: servoSkull({ text: "word ".repeat(40) }) }), 60, 40).find(l => l.includes("servo-skull:"))!;
 		expect(Bun.stringWidth(long)).toBeLessThanOrEqual(60);
 		expect(long.endsWith("…")).toBe(true);
-		expect(draw(cast({ caster: caster({ text: "nothing new", dim: true }) }), 60, 40)).toContain("caster: nothing new");
-		expect(draw(cast({ caster: undefined }), 60, 40).join("\n")).not.toContain("caster:");
+		expect(draw(cast({ servoSkull: servoSkull({ text: "nothing new", dim: true }) }), 60, 40)).toContain("servo-skull: nothing new");
+		expect(draw(cast({ servoSkull: undefined }), 60, 40).join("\n")).not.toContain("servo-skull:");
 	});
 
-	test("the detail and transcript views hide the caster in both layouts", () => {
+	test("the detail and transcript views hide the servo-skull in both layouts", () => {
 		const id = "squad:s1";
 		const base = cast({ slices: [{ id: "s1" }], nav: { cursor: { id, at: 0 }, detail: { id } } });
 		const withTranscript = cast({ slices: [{ id: "s1" }], deployed: new Map([["B1", dep({ role: "battle-brother", station: "Skirmish", squad: "s1" })]]), transcript: { id: "B1", lines: ["a row"] }, nav: { cursor: { id, at: 0 }, detail: { id, transcript: "B1" } } });
 		for (const inp of [base, withTranscript]) for (const w of [100, 60]) {
 			const out = draw(inp, w, 30).join("\n");
 			expect(cockpitView(inp).detail).toBeDefined();
-			expect(out).not.toMatch(/CASTER|caster:/);
+			expect(out).not.toMatch(/SERVO-SKULL|servo-skull:/);
 		}
 	});
 
-	test("caster off draws exactly what main draws: no CASTER, same bytes with the field absent or undefined", () => {
+	test("servo-skull off draws exactly what main draws: no SERVO-SKULL, same bytes with the field absent or undefined", () => {
 		for (const w of [100, 60]) for (const relic of [false, true]) {
-			const a = renderCockpit(cockpitView(cast({ caster: undefined })), w, 0, TRUE, 40, relic);
-			const { caster: _, ...rest } = cast();
+			const a = renderCockpit(cockpitView(cast({ servoSkull: undefined })), w, 0, TRUE, 40, relic);
+			const { servoSkull: _, ...rest } = cast();
 			expect(renderCockpit(cockpitView(rest as ViewInput), w, 0, TRUE, 40, relic)).toEqual(a);
-			expect(a.join("\n")).not.toMatch(/CASTER|caster:/);
+			expect(a.join("\n")).not.toMatch(/SERVO-SKULL|servo-skull:/);
 		}
 	});
 });

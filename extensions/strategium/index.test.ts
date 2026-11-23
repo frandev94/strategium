@@ -112,7 +112,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_RELIC;
 	delete process.env.STRATEGIUM_NAMES;
 	delete process.env.STRATEGIUM_VAULT;
-	for (const k of Object.keys(process.env)) if (k.startsWith("STRATEGIUM_CASTER")) delete process.env[k];
+	for (const k of Object.keys(process.env)) if (k.startsWith("STRATEGIUM_SERVO_SKULL")) delete process.env[k];
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
@@ -3674,7 +3674,7 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default, or names on|off|default, or vault <absolute folder>|off|default; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or servo-skull on|off|default, or names on|off|default, or vault <absolute folder>|off|default; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
@@ -3945,7 +3945,7 @@ describe("cockpit", () => {
 		});
 	});
 
-	describe("the caster", () => {
+	describe("the servo-skull", () => {
 		type Call = { model: unknown; context: { systemPrompt: string[]; messages: { role: string; content: string }[] }; options: { apiKey: unknown; disableReasoning: boolean; maxTokens: number; signal: AbortSignal } };
 		const reply = (text: string, extra: object = {}) => ({ stopReason: "stop", content: [{ type: "text", text }], usage: { input: 100, output: 20, cacheRead: 30, cacheWrite: 0, totalTokens: 150, cost: { total: 0.002 } }, ...extra });
 		const timers: { fn: () => void; ms: number }[] = [];
@@ -3977,7 +3977,7 @@ describe("cockpit", () => {
 			if (o.open !== false) await s.sub("cockpit");
 			return { s, ui, calls };
 		}
-		// Two frames: the caster looks at every second one, like the children's files.
+		// Two frames: the servo-skull looks at every second one, like the children's files.
 		const tick = async () => {
 			timers.at(-1)!.fn();
 			timers.at(-1)!.fn();
@@ -3988,20 +3988,20 @@ describe("cockpit", () => {
 		const cockpitJson = (s: { dir: string }) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8"));
 		const debriefOf = (s: { dir: string }) => readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8");
 
-		test("off: no call and no CASTER box, and the run report never mentions the caster", async () => {
+		test("off: no call and no SERVO-SKULL box, and the run report never mentions the servo-skull", async () => {
 			const { s, ui, calls } = await casting();
 			await tick();
 			t0(300);
 			station(s, "Draft");
 			await tick();
 			expect(calls).toHaveLength(0);
-			expect(shownText(ui)).not.toContain("CASTER");
+			expect(shownText(ui)).not.toContain("SERVO-SKULL");
 			await s.call({ action: "end" });
-			expect(debriefOf(s)).not.toContain("caster");
+			expect(debriefOf(s)).not.toContain("servo-skull");
 		});
 
 		test("on and open: one call through the resolved role alias, and the summary is drawn", async () => {
-			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			const { ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
 			expect(shownText(ui)).toContain("listening…");
 			await tick();
 			expect(calls).toHaveLength(1);
@@ -4009,12 +4009,12 @@ describe("cockpit", () => {
 			expect(calls[0].options).toMatchObject({ disableReasoning: true, maxTokens: 200, apiKey: { resolverFor: "sess-0001" } });
 			expect(calls[0].options.signal.aborted).toBe(false);
 			expect(calls[0].context.messages[0].content).toContain("STATION: no station yet");
-			expect(shownText(ui)).toContain("CASTER · no station yet");
+			expect(shownText(ui)).toContain("SERVO-SKULL · no station yet");
 			expect(shownText(ui)).toContain("Alpha is green.");
 		});
 
 		test("nothing changed for three intervals: still one call", async () => {
-			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			const { ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
 			await tick();
 			for (const sec of [61, 122, 183, 244]) {
 				t0(sec);
@@ -4025,7 +4025,7 @@ describe("cockpit", () => {
 		});
 
 		test("a changed state calls again only after the interval", async () => {
-			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			const { s, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
 			await tick();
 			t0(30);
 			station(s, "Draft");
@@ -4037,8 +4037,8 @@ describe("cockpit", () => {
 			expect(calls[1].context.messages[0].content).toContain("STATION: Plan");
 		});
 
-		test("STRATEGIUM_CASTER_EVERY_MIN=2 is respected", async () => {
-			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_EVERY_MIN: "2" } });
+		test("STRATEGIUM_SERVO_SKULL_EVERY_MIN=2 is respected", async () => {
+			const { s, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1", STRATEGIUM_SERVO_SKULL_EVERY_MIN: "2" } });
 			await tick();
 			station(s, "Draft");
 			t0(61);
@@ -4050,7 +4050,7 @@ describe("cockpit", () => {
 		});
 
 		test("one call at a time: a state change while a call is in flight starts none", async () => {
-			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			const { s, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: () => new Promise(() => {}) });
 			await tick();
 			station(s, "Draft");
 			t0(300);
@@ -4059,7 +4059,7 @@ describe("cockpit", () => {
 		});
 
 		test("closing the cockpit aborts the call in flight and no call starts after", async () => {
-			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: () => new Promise(() => {}) });
 			await tick();
 			expect(calls[0].options.signal.aborted).toBe(false);
 			ui.opened[0].component.handleInput!("q");
@@ -4071,7 +4071,7 @@ describe("cockpit", () => {
 		});
 
 		test("the host disposing the overlay aborts the call in flight and no call starts after", async () => {
-			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: () => new Promise(() => {}) });
 			await tick();
 			ui.opened[0].component.dispose!();
 			expect(calls[0].options.signal.aborted).toBe(true);
@@ -4083,7 +4083,7 @@ describe("cockpit", () => {
 
 		test("a reply that lands after the close is not shown, but its cost is kept", async () => {
 			let land!: (v: unknown) => void;
-			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(r => (land = r)) });
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: () => new Promise(r => (land = r)) });
 			await tick();
 			ui.opened[0].component.handleInput!("q");
 			land(reply("Too late."));
@@ -4091,7 +4091,7 @@ describe("cockpit", () => {
 			expect(calls).toHaveLength(1);
 			await s.sub("cockpit");
 			expect(shownText(ui)).not.toContain("Too late.");
-			expect(cockpitJson(s).caster).toEqual({ cost: 0.002, calls: 1, tokens_in: 100, tokens_out: 20, cache_read: 30, cache_write: 0 });
+			expect(cockpitJson(s)["servo-skull"]).toEqual({ cost: 0.002, calls: 1, tokens_in: 100, tokens_out: 20, cache_read: 30, cache_write: 0 });
 		});
 
 		const cockpitPath = (s: { dir: string }) => join(s.dir, "runs", "sess-0001.cockpit");
@@ -4099,7 +4099,7 @@ describe("cockpit", () => {
 
 		test("a reply that lands after `end` never recreates runs/<sid>.cockpit and its cost is written nowhere", async () => {
 			const landing: { land?: (v: unknown) => void } = {};
-			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: pending(landing) });
+			const { s, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: pending(landing) });
 			await tick();
 			expect(calls).toHaveLength(1);
 			await s.call({ action: "end" });
@@ -4111,7 +4111,7 @@ describe("cockpit", () => {
 
 		test("a reply that lands after the run changed is ignored and its cost is not added to the new run", async () => {
 			const landing: { land?: (v: unknown) => void } = {};
-			const { s, ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: pending(landing) });
+			const { s, ui } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: pending(landing) });
 			await tick();
 			await s.call({ action: "end" });
 			await s.call({ action: "begin", key: "K-2" });
@@ -4119,11 +4119,11 @@ describe("cockpit", () => {
 			await Bun.sleep(0);
 			await s.sub("cockpit");
 			expect(shownText(ui)).not.toContain("Stale.");
-			expect(existsSync(cockpitPath(s)) ? cockpitJson(s).caster : undefined).toBeUndefined();
+			expect(existsSync(cockpitPath(s)) ? cockpitJson(s)["servo-skull"] : undefined).toBeUndefined();
 		});
 
 		test("ending the run aborts the call in flight", async () => {
-			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			const { s, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: () => new Promise(() => {}) });
 			await tick();
 			expect(calls[0].options.signal.aborted).toBe(false);
 			await s.call({ action: "end" });
@@ -4131,7 +4131,7 @@ describe("cockpit", () => {
 		});
 
 		test("a session switch resets the cockpit and aborts the call in flight", async () => {
-			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			const { s, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: () => new Promise(() => {}) });
 			await tick();
 			expect(calls[0].options.signal.aborted).toBe(false);
 			await s.handlers.session_switch[0]({}, s.ctx);
@@ -4140,37 +4140,37 @@ describe("cockpit", () => {
 
 		test("stopReason error is shown as `call failed: <errorMessage>`, one clean line cut to 40 characters, and its cost is added", async () => {
 			const msg = `rate limited\n${"m".repeat(100)}`;
-			const { s, ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => reply("half", { stopReason: "error", errorMessage: msg, headers: { authorization: "Bearer SECRET" } }) });
+			const { s, ui } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: async () => reply("half", { stopReason: "error", errorMessage: msg, headers: { authorization: "Bearer SECRET" } }) });
 			await tick();
 			expect(shownText(ui)).toContain(`call failed: rate limited ${"m".repeat(27)}`);
 			expect(shownText(ui)).not.toContain("m".repeat(28));
 			expect(shownText(ui)).not.toContain("SECRET");
 			expect(shownText(ui)).not.toContain("half");
-			expect(cockpitJson(s).caster.calls).toBe(1);
+			expect(cockpitJson(s)["servo-skull"].calls).toBe(1);
 		});
 
 		test("the resolved model id is kept in the spend, shown in the run report and in /strategium-config", async () => {
-			const { s } = await casting({ env: { STRATEGIUM_CASTER: "1" }, resolve: () => ({ id: `fast-${"x".repeat(60)}` }) });
+			const { s } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, resolve: () => ({ id: `fast-${"x".repeat(60)}` }) });
 			await s.sub("config");
 			expect(s.notes.at(-1)).toContain("model @smol · every");
 			await tick();
 			const id = `fast-${"x".repeat(35)}`;
-			expect(cockpitJson(s).caster.model).toBe(id);
+			expect(cockpitJson(s)["servo-skull"].model).toBe(id);
 			await s.sub("config");
-			expect(s.notes.at(-1)).toContain(`caster: on (STRATEGIUM_CASTER) · model @smol → ${id} · every 1 min`);
+			expect(s.notes.at(-1)).toContain(`servo-skull: on (STRATEGIUM_SERVO_SKULL) · model @smol → ${id} · every 1 min`);
 			const again = setup("sess-0001", s.dir);
 			await again.start();
 			await again.call({ action: "end" });
-			expect(debriefOf(s)).toContain(`| caster | caster | 1 call · ${id} | 100 | 20 | 30 |`);
+			expect(debriefOf(s)).toContain(`| servo-skull | servo-skull | 1 call · ${id} | 100 | 20 | 30 |`);
 		});
 
 		describe("empty states", () => {
 			const raw = (ui: { opened: { component: { render(w: number): string[] } }[] }) => ui.opened.at(-1)!.component.render(100);
 			const sgr = (lines: string[], text: string) => lines.find(l => l.includes(text))!.split(text)[0].match(/(\x1b\[[0-9;]*m)[^\x1b]*$/)![1];
-			const title = (lines: string[]) => plain(lines.find(l => plain(l).includes("CASTER ·"))!);
+			const title = (lines: string[]) => plain(lines.find(l => plain(l).includes("SERVO-SKULL ·"))!);
 
 			test("`listening…` draws dim and with no age; a summary draws normal with its age", async () => {
-				const { ui } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+				const { ui } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
 				const before = raw(ui);
 				expect(title(before)).not.toMatch(/· (<1m|\d+m)/);
 				const dim = sgr(before, "listening…");
@@ -4181,7 +4181,7 @@ describe("cockpit", () => {
 			});
 
 			test("`nothing new` draws dim and with no age", async () => {
-				const { ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => reply("") });
+				const { ui } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: async () => reply("") });
 				const dim = sgr(raw(ui), "listening…");
 				await tick();
 				const after = raw(ui);
@@ -4192,7 +4192,7 @@ describe("cockpit", () => {
 		});
 
 		test("an abort caused by the close clears the attempt, so reopening calls again", async () => {
-			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: () => new Promise(() => {}) });
 			await tick();
 			ui.opened[0].component.handleInput!("q");
 			await s.sub("cockpit");
@@ -4201,7 +4201,7 @@ describe("cockpit", () => {
 		});
 
 		test("a failed call keeps the attempt: no retry on the same state, however long it waits", async () => {
-			const { calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => Promise.reject(new Error("boom")) });
+			const { calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: async () => Promise.reject(new Error("boom")) });
 			await tick();
 			for (const sec of [61, 122, 183]) {
 				t0(sec);
@@ -4212,7 +4212,7 @@ describe("cockpit", () => {
 
 		test("a throw is shown as `call failed: <message>`, cut to 40 characters, and never carries headers", async () => {
 			const err = Object.assign(new Error(`bad ${"k".repeat(100)}`), { headers: { authorization: "Bearer SECRET" } });
-			const { ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => Promise.reject(err) });
+			const { ui } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: async () => Promise.reject(err) });
 			await tick();
 			expect(shownText(ui)).toContain(`call failed: bad ${"k".repeat(36)}`);
 			expect(shownText(ui)).not.toContain("k".repeat(37));
@@ -4223,7 +4223,7 @@ describe("cockpit", () => {
 			const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort(new DOMException("The operation timed out.", "TimeoutError")));
 			try {
 				const { ui } = await casting({
-					env: { STRATEGIUM_CASTER: "1" },
+					env: { STRATEGIUM_SERVO_SKULL: "1" },
 					answer: c => (c.options.signal.aborted ? Promise.reject(c.options.signal.reason) : new Promise(() => {})),
 				});
 				await tick();
@@ -4235,20 +4235,20 @@ describe("cockpit", () => {
 		});
 
 		test("stopReason aborted is a failed call and its cost is added", async () => {
-			const { s, ui } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: async () => reply("half an answer", { stopReason: "aborted" }) });
+			const { s, ui } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: async () => reply("half an answer", { stopReason: "aborted" }) });
 			await tick();
 			expect(shownText(ui)).toContain("call failed");
 			expect(shownText(ui)).not.toContain("half an answer");
-			expect(cockpitJson(s).caster).toEqual({ cost: 0.002, calls: 1, tokens_in: 100, tokens_out: 20, cache_read: 30, cache_write: 0 });
+			expect(cockpitJson(s)["servo-skull"]).toEqual({ cost: 0.002, calls: 1, tokens_in: 100, tokens_out: 20, cache_read: 30, cache_write: 0 });
 		});
 
-		test("a throw while building the facts leaves the caster not in flight", async () => {
+		test("a throw while building the facts leaves the servo-skull not in flight", async () => {
 			const real = Bun.stripANSI;
 			const spy = spyOn(Bun, "stripANSI").mockImplementation(s => {
-				if (s.startsWith("station: ")) throw new Error("facts"); // only casterFacts builds such a line
+				if (s.startsWith("station: ")) throw new Error("facts"); // only servoSkullFacts builds such a line
 				return real(s);
 			});
-			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			const { s, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
 			try {
 				await tick();
 				expect(calls).toHaveLength(0);
@@ -4262,7 +4262,7 @@ describe("cockpit", () => {
 		});
 
 		test("a disposed old overlay does not abort the call of the current one", async () => {
-			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer: () => new Promise(() => {}) });
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer: () => new Promise(() => {}) });
 			await tick();
 			ui.opened[0].component.handleInput!("q");
 			await s.sub("cockpit");
@@ -4275,14 +4275,14 @@ describe("cockpit", () => {
 		});
 
 		test("an alias that does not resolve is one reason row and no call", async () => {
-			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, resolve: () => undefined });
+			const { ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, resolve: () => undefined });
 			await tick();
 			expect(calls).toHaveLength(0);
 			expect(shownText(ui)).toContain("no model for @smol");
 		});
 
 		test("a host with no models API is the same reason row", async () => {
-			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, open: false });
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, open: false });
 			delete (s.ctx as Record<string, unknown>).models;
 			await s.sub("cockpit");
 			await tick();
@@ -4291,14 +4291,14 @@ describe("cockpit", () => {
 		});
 
 		test("no configured auth is one reason row and no call", async () => {
-			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, auth: false });
+			const { ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, auth: false });
 			await tick();
 			expect(calls).toHaveLength(0);
 			expect(shownText(ui)).toContain("no auth");
 		});
 
 		test("a host with no model registry is no auth", async () => {
-			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, open: false });
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, open: false });
 			delete (s.ctx as Record<string, unknown>).modelRegistry;
 			await s.sub("cockpit");
 			await tick();
@@ -4308,15 +4308,15 @@ describe("cockpit", () => {
 
 		test("a bare model id is not a role alias: reason row, nothing resolved", async () => {
 			let resolved = 0;
-			const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_MODEL: "x/y" }, resolve: () => void resolved++ });
+			const { ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1", STRATEGIUM_SERVO_SKULL_MODEL: "x/y" }, resolve: () => void resolved++ });
 			await tick();
 			expect(calls).toHaveLength(0);
 			expect(resolved).toBe(0);
 			expect(shownText(ui)).toContain("not a role alias: x/y");
 		});
 
-		test("a role alias from STRATEGIUM_CASTER_MODEL is the one resolved", async () => {
-			const { calls } = await casting({ env: { STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_MODEL: "@fast:low" } });
+		test("a role alias from STRATEGIUM_SERVO_SKULL_MODEL is the one resolved", async () => {
+			const { calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1", STRATEGIUM_SERVO_SKULL_MODEL: "@fast:low" } });
 			await tick();
 			expect(calls[0].model).toEqual({ spec: "@fast:low" });
 		});
@@ -4326,7 +4326,7 @@ describe("cockpit", () => {
 			["returns stopReason error", async () => reply("", { stopReason: "error" })],
 		] as const) {
 			test(`completeSimple ${name}: call failed, and no second call for the same state`, async () => {
-				const { ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" }, answer });
+				const { ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" }, answer });
 				await tick();
 				expect(shownText(ui)).toContain("call failed");
 				for (const sec of [61, 122, 183]) {
@@ -4337,79 +4337,105 @@ describe("cockpit", () => {
 			});
 		}
 
-		test("the cost is summed in runs/<sid>.cockpit, survives a restart and is a caster row in the run report", async () => {
-			const { s, calls } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+		test("the cost is summed in runs/<sid>.cockpit, survives a restart and is a servo-skull row in the run report", async () => {
+			const { s, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
 			await tick();
 			station(s, "Draft");
 			t0(61);
 			await tick();
 			expect(calls).toHaveLength(2);
-			expect(cockpitJson(s).caster).toEqual({ cost: 0.004, calls: 2, tokens_in: 200, tokens_out: 40, cache_read: 60, cache_write: 0 });
+			expect(cockpitJson(s)["servo-skull"]).toEqual({ cost: 0.004, calls: 2, tokens_in: 200, tokens_out: 40, cache_read: 60, cache_write: 0 });
 			const again = setup("sess-0001", s.dir);
 			await again.start();
 			await again.call({ action: "end" });
-			expect(debriefOf(s)).toMatch(/\| caster \| caster \| 2 calls \| 200 \| 40 \| 60 \| \$0\.004 \|/);
-			expect(debriefOf(s)).toContain("Agents and the cockpit caster only");
+			expect(debriefOf(s)).toMatch(/\| servo-skull \| servo-skull \| 2 calls \| 200 \| 40 \| 60 \| \$0\.004 \|/);
+			expect(debriefOf(s)).toContain("Agents and the cockpit servo-skull only");
 		});
 
 		for (const bad of [{ cost: "x", calls: 1, tokens_in: 1, tokens_out: 1 }, { cost: 1, calls: 1.5, tokens_in: 1, tokens_out: 1 }, { cost: -1, calls: 1, tokens_in: 1, tokens_out: 1 }, { cost: 1, calls: 1, tokens_in: 1 }, "no", null]) {
-			test(`a malformed caster field ${JSON.stringify(bad)} reads as none and does not void the rest`, async () => {
-				const { s } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+			test(`a malformed servo-skull field ${JSON.stringify(bad)} reads as none and does not void the rest`, async () => {
+				const { s } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
 				await tick();
-				writeFileSync(join(s.dir, "runs", "sess-0001.cockpit"), JSON.stringify({ ...cockpitJson(s), caster: bad }));
+				writeFileSync(join(s.dir, "runs", "sess-0001.cockpit"), JSON.stringify({ ...cockpitJson(s), "servo-skull": bad }));
 				const again = setup("sess-0001", s.dir);
 				await again.start();
 				await again.call({ action: "end" });
-				expect(debriefOf(s)).not.toContain("| caster |");
+				expect(debriefOf(s)).not.toContain("| servo-skull |");
 			});
 		}
 
-		test("STRATEGIUM_CASTER_FAKE shows its text with no completeSimple call, and still counts the call", async () => {
-			const { s, ui, calls } = await casting({ env: { STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_FAKE: "Fake commentary." }, resolve: () => undefined, auth: false });
+		test("STRATEGIUM_SERVO_SKULL_FAKE shows its text with no completeSimple call, and still counts the call", async () => {
+			const { s, ui, calls } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1", STRATEGIUM_SERVO_SKULL_FAKE: "Fake commentary." }, resolve: () => undefined, auth: false });
 			await tick();
 			expect(calls).toHaveLength(0);
 			expect(shownText(ui)).toContain("Fake commentary.");
-			expect(cockpitJson(s).caster).toEqual({ cost: 0, calls: 1, tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 });
+			expect(cockpitJson(s)["servo-skull"]).toEqual({ cost: 0, calls: 1, tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 });
 		});
 
-		test("/strategium-config caster on|off|default saves the choice, applies it at once and wins over the env", async () => {
-			const { s, ui } = await casting({ env: { STRATEGIUM_CASTER: "1" } });
+		test("/strategium-config servo-skull on|off|default saves the choice, applies it at once and wins over the env", async () => {
+			const { s, ui } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
 			await s.sub("config");
-			expect(s.notes.at(-1)).toContain("caster: on (STRATEGIUM_CASTER) · model @smol · every 1 min");
-			await s.sub("config", "caster off");
-			expect(readFileSync(join(s.dir, "caster"), "utf8")).toBe("off");
-			expect(s.notes.at(-1)).toContain("caster: off (/strategium-config)");
+			expect(s.notes.at(-1)).toContain("servo-skull: on (STRATEGIUM_SERVO_SKULL) · model @smol · every 1 min");
+			await s.sub("config", "servo-skull off");
+			expect(readFileSync(join(s.dir, "servo-skull"), "utf8")).toBe("off");
+			expect(s.notes.at(-1)).toContain("servo-skull: off (/strategium-config)");
 			await tick();
-			expect(shownText(ui)).not.toContain("CASTER");
-			await s.sub("config", "caster on");
-			expect(readFileSync(join(s.dir, "caster"), "utf8")).toBe("on");
-			expect(s.notes.at(-1)).toContain("caster: on (/strategium-config)");
-			await s.sub("config", "caster default");
-			expect(existsSync(join(s.dir, "caster"))).toBe(false);
-			expect(s.notes.at(-1)).toContain("caster: on (STRATEGIUM_CASTER)");
+			expect(shownText(ui)).not.toContain("SERVO-SKULL");
+			await s.sub("config", "servo-skull on");
+			expect(readFileSync(join(s.dir, "servo-skull"), "utf8")).toBe("on");
+			expect(s.notes.at(-1)).toContain("servo-skull: on (/strategium-config)");
+			await s.sub("config", "servo-skull default");
+			expect(existsSync(join(s.dir, "servo-skull"))).toBe(false);
+			expect(s.notes.at(-1)).toContain("servo-skull: on (STRATEGIUM_SERVO_SKULL)");
 		});
 
-		test("STRATEGIUM_CASTER=0 is off, any other value is ignored and said so; a bad interval or model is listed", async () => {
-			process.env.STRATEGIUM_CASTER = "0";
+		test("STRATEGIUM_SERVO_SKULL=0 is off, any other value is ignored and said so; a bad interval or model is listed", async () => {
+			process.env.STRATEGIUM_SERVO_SKULL = "0";
 			const s0 = setup();
 			await s0.sub("config");
-			expect(s0.notes.at(-1)).toContain("caster: off (STRATEGIUM_CASTER)");
-			process.env.STRATEGIUM_CASTER = "yes";
-			process.env.STRATEGIUM_CASTER_EVERY_MIN = "0";
-			process.env.STRATEGIUM_CASTER_MODEL = "x/y";
+			expect(s0.notes.at(-1)).toContain("servo-skull: off (STRATEGIUM_SERVO_SKULL)");
+			process.env.STRATEGIUM_SERVO_SKULL = "yes";
+			process.env.STRATEGIUM_SERVO_SKULL_EVERY_MIN = "0";
+			process.env.STRATEGIUM_SERVO_SKULL_MODEL = "x/y";
 			const s1 = setup();
 			await s1.sub("config");
-			const line = s1.notes.at(-1)!.split("\n").find(l => l.startsWith("caster:"))!;
-			expect(line).toBe('caster: off (default) · model not a role alias: x/y · every 1 min · ignored: STRATEGIUM_CASTER "yes", STRATEGIUM_CASTER_EVERY_MIN "0"');
+			const line = s1.notes.at(-1)!.split("\n").find(l => l.startsWith("servo-skull:"))!;
+			expect(line).toBe('servo-skull: off (default) · model not a role alias: x/y · every 1 min · ignored: STRATEGIUM_SERVO_SKULL "yes", STRATEGIUM_SERVO_SKULL_EVERY_MIN "0"');
 		});
 
-		test("a bad caster argument is refused and writes no file", async () => {
+		test("the old caster names stop working: the command is refused naming servo-skull, STRATEGIUM_CASTER* and a saved caster file are listed as ignored", async () => {
 			const s = setup();
-			for (const bad of ["caster maybe", "caster ON", "caster Default"]) {
+			await s.sub("config", "caster on");
+			expect(s.notes.at(-1)).toContain("servo-skull");
+			expect(existsSync(join(s.dir, "caster"))).toBe(false);
+			process.env.STRATEGIUM_CASTER = "1";
+			process.env.STRATEGIUM_CASTER_EVERY_MIN = "5";
+			process.env.STRATEGIUM_CASTER_MODEL = "@fast";
+			writeFileSync(join(s.dir, "caster"), "on");
+			await s.sub("config");
+			const line = s.notes.at(-1)!.split("\n").find(l => l.startsWith("servo-skull:"))!;
+			expect(line).toBe('servo-skull: off (default) · model @smol · every 1 min · ignored: STRATEGIUM_CASTER (now STRATEGIUM_SERVO_SKULL), STRATEGIUM_CASTER_EVERY_MIN (now STRATEGIUM_SERVO_SKULL_EVERY_MIN), STRATEGIUM_CASTER_MODEL (now STRATEGIUM_SERVO_SKULL_MODEL), saved file caster (now servo-skull; can be deleted)');
+			for (const k of ["STRATEGIUM_CASTER", "STRATEGIUM_CASTER_EVERY_MIN", "STRATEGIUM_CASTER_MODEL"]) delete process.env[k];
+		});
+
+		test("a cockpit file saved before the rename, with a caster spend field, loads as the servo-skull's spend", async () => {
+			const { s } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
+			await tick();
+			const { "servo-skull": spend, ...rest } = cockpitJson(s);
+			writeFileSync(join(s.dir, "runs", "sess-0001.cockpit"), JSON.stringify({ ...rest, caster: spend }));
+			const again = setup("sess-0001", s.dir);
+			await again.start();
+			await again.call({ action: "end" });
+			expect(debriefOf(s)).toMatch(/\| servo-skull \| servo-skull \| 1 call \|/);
+		});
+
+		test("a bad servo-skull argument is refused and writes no file", async () => {
+			const s = setup();
+			for (const bad of ["servo-skull maybe", "servo-skull ON", "servo-skull Default"]) {
 				await s.sub("config", bad);
 				expect(s.notes.at(-1)).toContain("config takes");
 			}
-			expect(existsSync(join(s.dir, "caster"))).toBe(false);
+			expect(existsSync(join(s.dir, "servo-skull"))).toBe(false);
 		});
 	});
 

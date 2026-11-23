@@ -30,7 +30,7 @@ import {
 	type Via,
 } from "./timer";
 import { debrief, type AgentCost, type Reported } from "./debrief";
-import { casterFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./caster";
+import { servoSkullFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./servo-skull";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, FINAL_STATUSES, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, renderDebrief, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
@@ -103,7 +103,7 @@ type SessionCtx = {
 		custom?(factory: (tui: Tui, theme: unknown, keybindings: unknown, done: (result?: unknown) => void) => Component, options?: { overlay?: boolean; overlayOptions?: object }): unknown;
 	};
 	setInterval(fn: () => void, ms: number): unknown;
-	// The host's model APIs, used by the cockpit caster; a host without them leaves the caster with a reason row.
+	// The host's model APIs, used by the cockpit servo-skull; a host without them leaves the servo-skull with a reason row.
 	models?: { resolve?(spec: string): HostModel | undefined };
 	modelRegistry?: { hasConfiguredAuth?(model: HostModel): boolean; resolver?(model: HostModel, sessionId: string): NonNullable<Parameters<CompleteSimple>[2]>["apiKey"] };
 	agent?: { kind?: string; id?: string };
@@ -187,24 +187,26 @@ const runFile = (sid: string) => path.join(runsDir(), `${sid}.json`);
 const beatFile = (sid: string) => path.join(runsDir(), `${sid}.beat`);
 // The cockpit's chronicle, agent registry and squad marks, saved beside the run (not in it: see drawCockpit).
 const cockpitFile = (sid: string) => path.join(runsDir(), `${sid}.cockpit`);
-/** What the cockpit caster spent in a run: omp's list price, the calls that came back with a reply (a failed or aborted one included, a throw is not), and tokens as an agent counts them (input only; cache reads and writes apart), and the model the alias last resolved to. */
+/** What the cockpit servo-skull spent in a run: omp's list price, the calls that came back with a reply (a failed or aborted one included, a throw is not), and tokens as an agent counts them (input only; cache reads and writes apart), and the model the alias last resolved to. */
 type Spend = { cost: number; calls: number; tokens_in: number; tokens_out: number; cache_read: number; cache_write: number; model?: string };
-/** The caster's memory for the run key: the summary shown, when the last attempt started, and the call in flight. */
-type CasterState = { text?: string; dim?: boolean; station?: string; at?: number; lastAt?: number; lastHash?: string; ctrl?: AbortController; spend?: Spend };
+/** The servo-skull's memory for the run key: the summary shown, when the last attempt started, and the call in flight. */
+type ServoSkullState = { text?: string; dim?: boolean; station?: string; at?: number; lastAt?: number; lastHash?: string; ctrl?: AbortController; spend?: Spend };
 /** completeSimple of @oh-my-pi/pi-ai: the test seam; the real one is imported on the first call. */
 type CompleteSimple = typeof completeSimpleFn;
 type HostModel = Parameters<CompleteSimple>[0];
 /** A saved spend, or none for anything that is not one (the file may be hand-edited). */
-const casterSpend = (v: unknown): Spend | undefined => {
+const servoSkullSpend = (v: unknown): Spend | undefined => {
 	const o = asObj(v);
 	const n = (x: unknown): x is number => typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
 	return isCost(o.cost) && n(o.calls) && o.calls > 0 && n(o.tokens_in) && n(o.tokens_out) && n(o.cache_read) && n(o.cache_write)
 		? { cost: o.cost, calls: o.calls, tokens_in: o.tokens_in, tokens_out: o.tokens_out, cache_read: o.cache_read, cache_write: o.cache_write, ...(typeof o.model === "string" && o.model ? { model: chars(oneLine(o.model), 40) } : {}) }
 		: undefined;
 };
+// A cockpit file saved before the rename holds the spend as `caster`.
+const savedServoSkull = (o: Record<string, unknown>) => o["servo-skull"] ?? o.caster;
 const savedSpend = (sid: string): Spend | undefined => {
 	try {
-		return casterSpend(asObj(JSON.parse(readFileSync(cockpitFile(sid), "utf8"))).caster);
+		return servoSkullSpend(savedServoSkull(asObj(JSON.parse(readFileSync(cockpitFile(sid), "utf8")))));
 	} catch {
 		return undefined; // no saved cockpit
 	}
@@ -661,7 +663,7 @@ function rolesFor(run: Run, live: { key?: string; deployed?: Map<string, Deploye
 }
 
 /** Build the run's debrief and save it under <state>/debriefs (kept after the run): the result lines for `end`. A failure never stops the end. */
-function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } } | undefined, clamp: boolean, honoursIn?: { rows: Honour[]; unsaved?: string }, out?: { summary?: string[] }): string[] {
+function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; servoSkull?: { spend?: Spend } } | undefined, clamp: boolean, honoursIn?: { rows: Honour[]; unsaved?: string }, out?: { summary?: string[] }): string[] {
 	try {
 		const evs = eventsSince(run.key, run.since);
 		// A run stopped before `end` has no pause tail: its last interval closes at the stop (or at a later station entry). A takeover keeps it: the crash gap is real.
@@ -683,8 +685,8 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 			const { cost, tokens_in, tokens_out, cache_read, cache_write } = rows.get(id) ?? {};
 			return { id, role: r.role, ...(r.squad ? { squad: r.squad } : {}), cost, tokens_in, tokens_out, cache_read, cache_write };
 		});
-		const spend = live?.key === run.key ? live.caster?.spend : savedSpend(run.sid);
-		if (spend?.calls) costs.push({ id: "caster", role: "caster", calls: spend.calls, model: spend.model, cost: spend.cost, tokens_in: spend.tokens_in, tokens_out: spend.tokens_out, cache_read: spend.cache_read, cache_write: spend.cache_write });
+		const spend = live?.key === run.key ? live.servoSkull?.spend : savedSpend(run.sid);
+		if (spend?.calls) costs.push({ id: "servo-skull", role: "servo-skull", calls: spend.calls, model: spend.model, cost: spend.cost, tokens_in: spend.tokens_in, tokens_out: spend.tokens_out, cache_read: spend.cache_read, cache_write: spend.cache_write });
 		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported, agents: costs, ratings: cleanRatings(run.ratings), ...(honoursIn ? { honours: honoursIn } : {}) });
 		const file = path.join(stateDir(), "debriefs", `${safeName(run.key)}-${nowIso(now).slice(0, 19).replace(/:/g, "-")}.md`);
 		try {
@@ -704,7 +706,7 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 }
 
 /** End this session's run, or another session's run of `key` by naming that crashed session's id in `takeover`. */
-function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } }, names = false, out?: { summary?: string[] }): string {
+function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; servoSkull?: { spend?: Spend } }, names = false, out?: { summary?: string[] }): string {
 	// ownRun() may drop the run file, so ask for it once.
 	const mine = ownRun(sid);
 	const run = key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine;
@@ -1698,21 +1700,21 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	};
 	let relic = relicSetting();
 
-	// The caster: /strategium-config caster saves "on" or "off" in the state dir, which wins over STRATEGIUM_CASTER (1/0, anything else ignored); off by default.
-	const casterFile = () => path.join(stateDir(), "caster");
-	const casterSetting = (): { on: boolean; from: string } => {
+	// The servo-skull: /strategium-config servo-skull saves "on" or "off" in the state dir, which wins over STRATEGIUM_SERVO_SKULL (1/0, anything else ignored); off by default.
+	const servoSkullFile = () => path.join(stateDir(), "servo-skull");
+	const servoSkullSetting = (): { on: boolean; from: string } => {
 		let saved = "";
 		try {
-			saved = readFileSync(casterFile(), "utf8").trim().toLowerCase();
+			saved = readFileSync(servoSkullFile(), "utf8").trim().toLowerCase();
 		} catch {
 			// no saved choice: fall through to the env and the default
 		}
-		const fromEnv = process.env.STRATEGIUM_CASTER?.trim() ?? "";
+		const fromEnv = process.env.STRATEGIUM_SERVO_SKULL?.trim() ?? "";
 		if (saved === "on" || saved === "off") return { on: saved === "on", from: "/strategium-config" };
-		if (fromEnv === "1" || fromEnv === "0") return { on: fromEnv === "1", from: "STRATEGIUM_CASTER" };
+		if (fromEnv === "1" || fromEnv === "0") return { on: fromEnv === "1", from: "STRATEGIUM_SERVO_SKULL" };
 		return { on: false, from: "default" };
 	};
-	let caster = casterSetting();
+	let servoSkull = servoSkullSetting();
 
 	// Agent names (#133): /strategium-config names saves "on" or "off" in the state dir, which wins over STRATEGIUM_NAMES (1/0, anything else ignored); off by default.
 	const namesFile = () => path.join(stateDir(), "names");
@@ -1787,13 +1789,16 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		issuedBySession.set(sid, set);
 		return set;
 	};
-	const casterConfigLine = () => {
-		const every = parseEvery(process.env.STRATEGIUM_CASTER_EVERY_MIN);
-		const alias = parseAlias(process.env.STRATEGIUM_CASTER_MODEL);
-		const raw = process.env.STRATEGIUM_CASTER?.trim() ?? "";
-		const ignored = [raw && raw !== "1" && raw !== "0" ? `STRATEGIUM_CASTER "${chars(oneLine(raw), 40)}"` : "", every.ignored === undefined ? "" : `STRATEGIUM_CASTER_EVERY_MIN "${every.ignored}"`].filter(Boolean);
-		const resolved = "alias" in alias && cockpit.caster.spend?.model ? ` → ${cockpit.caster.spend.model}` : "";
-		return `caster: ${caster.on ? "on" : "off"} (${caster.from}) · model ${"alias" in alias ? alias.alias : alias.error}${resolved} · every ${every.min} min${ignored.length ? ` · ignored: ${ignored.join(", ")}` : ""}`;
+	const servoSkullConfigLine = () => {
+		const every = parseEvery(process.env.STRATEGIUM_SERVO_SKULL_EVERY_MIN);
+		const alias = parseAlias(process.env.STRATEGIUM_SERVO_SKULL_MODEL);
+		const raw = process.env.STRATEGIUM_SERVO_SKULL?.trim() ?? "";
+		const ignored = [raw && raw !== "1" && raw !== "0" ? `STRATEGIUM_SERVO_SKULL "${chars(oneLine(raw), 40)}"` : "", every.ignored === undefined ? "" : `STRATEGIUM_SERVO_SKULL_EVERY_MIN "${every.ignored}"`].filter(Boolean);
+		// The old names are not read: they are listed with the new ones.
+		ignored.push(...Object.keys(process.env).filter(k => k.startsWith("STRATEGIUM_CASTER")).map(k => `${k} (now ${k.replace("CASTER", "SERVO_SKULL")})`));
+		if (existsSync(path.join(stateDir(), "caster"))) ignored.push("saved file caster (now servo-skull; can be deleted)");
+		const resolved = "alias" in alias && cockpit.servoSkull.spend?.model ? ` → ${cockpit.servoSkull.spend.model}` : "";
+		return `servo-skull: ${servoSkull.on ? "on" : "off"} (${servoSkull.from}) · model ${"alias" in alias ? alias.alias : alias.error}${resolved} · every ${every.min} min${ignored.length ? ` · ignored: ${ignored.join(", ")}` : ""}`;
 	};
 
 	// The cockpit: an overlay on demand while this session has a run. Everything it shows beyond the run file
@@ -1819,13 +1824,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		status: undefined as "working" | "awaiting" | undefined,
 		close: undefined as (() => void) | undefined,
 		debrief: undefined as { key: string; lines: string[] } | undefined, // the final screen: set at `end` while the overlay is open, so the overlay outlives the run
-		caster: {} as CasterState,
+		servoSkull: {} as ServoSkullState,
 	};
 	const SEAL_LINES = 200;
 	const SEAL_LINE_CHARS = 500;
-	/** Abort the caster's call in flight, if any: it no longer counts as in flight, its reply is not shown, and its attempt is forgotten so a reopened cockpit calls again. */
-	const abortCaster = () => {
-		const c = cockpit.caster;
+	/** Abort the servo-skull's call in flight, if any: it no longer counts as in flight, its reply is not shown, and its attempt is forgotten so a reopened cockpit calls again. */
+	const abortServoSkull = () => {
+		const c = cockpit.servoSkull;
 		if (!c.ctrl) return;
 		c.ctrl.abort();
 		c.ctrl = undefined;
@@ -1833,8 +1838,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		c.lastHash = undefined;
 	};
 	const resetCockpit = (key?: string) => {
-		abortCaster();
-		cockpit.caster = {};
+		abortServoSkull();
+		cockpit.servoSkull = {};
 		cockpit.key = key;
 		cockpit.chronicle = [];
 		cockpit.station = undefined;
@@ -1883,7 +1888,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				cockpit.deployed.set(id, job);
 			}
 			cockpit.seal = saved.seal && { id: saved.seal.id, lines: saved.seal.lines.slice(0, SEAL_LINES).map((l: string) => l.slice(0, SEAL_LINE_CHARS)) };
-			cockpit.caster.spend = casterSpend(saved.caster); // a malformed field is none; it never voids the rest
+			cockpit.servoSkull.spend = servoSkullSpend(savedServoSkull(saved)); // a malformed field is none; it never voids the rest
 			cockpit.dirty = false;
 		} catch {
 			resetCockpit(key);
@@ -1980,7 +1985,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
 			seal: cockpit.seal,
-			caster: caster.on ? { station: cockpit.caster.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.caster.text ?? "listening…", dim: cockpit.caster.text === undefined || cockpit.caster.dim === true, at: cockpit.caster.at } : undefined,
+			servoSkull: servoSkull.on ? { station: cockpit.servoSkull.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.servoSkull.text ?? "listening…", dim: cockpit.servoSkull.text === undefined || cockpit.servoSkull.dim === true, at: cockpit.servoSkull.at } : undefined,
 			transcript: cockpit.transcript,
 			names: naming.on ? { squads: squadBrothers(cleanNames(run.names), "brothers" in roster ? roster.brothers : undefined), ...("error" in roster ? { unreadable: true as const } : {}) } : undefined,
 		};
@@ -1988,7 +1993,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		cockpit.nav = cockpit.view.nav; // normalized: a browsed station is dropped when the active one moved
 		if (cockpit.dirty) {
 			try {
-				writeAtomic(cockpitFile(run.sid), JSON.stringify({ key: cockpit.key, chronicle: cockpit.chronicle, notes: cockpit.notes, deployed: [...cockpit.deployed], ...(cockpit.seal ? { seal: cockpit.seal } : {}), ...(cockpit.caster.spend?.calls ? { caster: cockpit.caster.spend } : {}) }));
+				writeAtomic(cockpitFile(run.sid), JSON.stringify({ key: cockpit.key, chronicle: cockpit.chronicle, notes: cockpit.notes, deployed: [...cockpit.deployed], ...(cockpit.seal ? { seal: cockpit.seal } : {}), ...(cockpit.servoSkull.spend?.calls ? { "servo-skull": cockpit.servoSkull.spend } : {}) }));
 				cockpit.dirty = false;
 			} catch {
 				// Kept dirty: the next draw tries again.
@@ -1996,11 +2001,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		}
 		cockpit.overlay?.requestRender();
 	};
-	/** The call itself: STRATEGIUM_CASTER_FAKE answers with that text (replays); otherwise the role alias is resolved through the host and completeSimple is asked. A reason string means no call is made. */
-	const casterPrepare = (ctx: SessionCtx): { complete: Complete } | { reason: string } => {
-		const fake = process.env.STRATEGIUM_CASTER_FAKE;
+	/** The call itself: STRATEGIUM_SERVO_SKULL_FAKE answers with that text (replays); otherwise the role alias is resolved through the host and completeSimple is asked. A reason string means no call is made. */
+	const servoSkullPrepare = (ctx: SessionCtx): { complete: Complete } | { reason: string } => {
+		const fake = process.env.STRATEGIUM_SERVO_SKULL_FAKE;
 		if (fake) return { complete: async () => ({ text: fake, cost: 0, tokens_in: 0, tokens_out: 0 }) };
-		const a = parseAlias(process.env.STRATEGIUM_CASTER_MODEL);
+		const a = parseAlias(process.env.STRATEGIUM_SERVO_SKULL_MODEL);
 		if ("error" in a) return { reason: a.error };
 		// The host's model API is guarded: a missing or throwing one is a reason row, never an error in the timer.
 		let model: HostModel | undefined;
@@ -2031,14 +2036,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			},
 		};
 	};
-	/** On a caster tick of the open cockpit: start one summary when it is due (see `due`). The attempt is stamped when it starts, so a failure waits for a new state and a new interval and never loops. */
-	const casterTick = (ctx: SessionCtx) => {
-		const c = cockpit.caster;
-		if (!caster.on || !cockpit.input) return;
+	/** On a servo-skull tick of the open cockpit: start one summary when it is due (see `due`). The attempt is stamped when it starts, so a failure waits for a new state and a new interval and never loops. */
+	const servoSkullTick = (ctx: SessionCtx) => {
+		const c = cockpit.servoSkull;
+		if (!servoSkull.on || !cockpit.input) return;
 		const view = cockpitView({ ...cockpit.input });
 		const hash = stateHash(view, cockpit.input.live, cockpit.chronicle);
 		const now = Date.now();
-		if (!due({ on: true, now, everyMs: parseEvery(process.env.STRATEGIUM_CASTER_EVERY_MIN).min * 60_000, lastAt: c.lastAt, inFlight: !!c.ctrl, hash, lastHash: c.lastHash })) return;
+		if (!due({ on: true, now, everyMs: parseEvery(process.env.STRATEGIUM_SERVO_SKULL_EVERY_MIN).min * 60_000, lastAt: c.lastAt, inFlight: !!c.ctrl, hash, lastHash: c.lastHash })) return;
 		c.lastAt = now;
 		c.lastHash = hash;
 		const station = view.station.name;
@@ -2047,19 +2052,19 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const r = readRun(sidOf(ctx));
 			if (r) drawCockpit(r, ctx);
 		};
-		const prep = casterPrepare(ctx);
+		const prep = servoSkullPrepare(ctx);
 		if ("reason" in prep) {
 			Object.assign(c, { text: prep.reason, dim: true, station, at: undefined });
 			return redraw();
 		}
 		const ctrl = new AbortController();
 		const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(30_000)]);
-		const facts = casterFacts(view, cockpit.input.live, cockpit.chronicle);
+		const facts = servoSkullFacts(view, cockpit.input.live, cockpit.chronicle);
 		c.ctrl = ctrl; // set last: a throw above leaves no call in flight
 		summarize(prep.complete, station, facts, signal)
 			.then(r => {
 				if (c.ctrl === ctrl) c.ctrl = undefined;
-				if (cockpit.caster !== c || !readRun(sidOf(ctx))) return; // the run was reset or has ended meanwhile: the reply is not counted or drawn
+				if (cockpit.servoSkull !== c || !readRun(sidOf(ctx))) return; // the run was reset or has ended meanwhile: the reply is not counted or drawn
 				const n = (x: number | undefined) => (typeof x === "number" && Number.isSafeInteger(x) && x > 0 ? x : 0);
 				// A reply that arrives after an abort is not shown, but it was paid.
 				if (r.reply) {
@@ -2091,7 +2096,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		cockpit.transcript = undefined;
 		drawCockpit(run, ctx);
 		const closed = () => {
-			abortCaster();
+			abortServoSkull();
 			cockpit.close = undefined;
 			cockpit.overlay = undefined;
 			cockpit.nav = {}; // a closed cockpit reads no transcript on a later redraw
@@ -2114,7 +2119,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 							const own = frame % 2 === 0 ? readRun(sidOf(ctx)) : undefined;
 							if (own) {
 								drawCockpit(own, ctx);
-								casterTick(ctx);
+								servoSkullTick(ctx);
 							}
 							tui.requestRender();
 						} catch {
@@ -2207,7 +2212,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		if (mine && result.split("\n", 1)[0] === `ENDED ${mine.key}`) {
 			// An open cockpit stays up as the final screen; a closed one is not opened.
 			if (cockpit.close && out.summary) {
-				abortCaster(); // no run left to cast about
+				abortServoSkull(); // no run left to cast about
 				cockpit.nav = {}; // an open detail must not make esc a "back" on the final screen
 				cockpit.transcript = undefined;
 				cockpit.debrief = { key: mine.key, lines: [...out.summary, ...(mine.merged ? ["PR merged"] : [])] };
@@ -2741,7 +2746,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => notify(ctx, fullStatus(sid)));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look; caster on|off|default sets the cockpit's model commentator; names on|off|default sets whether the plugin hands out and checks agent names; vault <absolute folder>|off|default sets the vault whose daily note records run events", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look; servo-skull on|off|default sets the cockpit's model commentator; names on|off|default sets whether the plugin hands out and checks agent names; vault <absolute folder>|off|default sets the vault whose daily note records run events", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
 		let preview = false;
 		if (arg !== undefined) {
@@ -2755,10 +2760,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const k = arg.match(/^cockpit-key\s+(\S+)$/);
 			const th = arg.match(/^cockpit-theme\s+(\S+)$/);
 			const re = arg.match(/^relic\s+(on|off|default)$/);
-			const ca = arg.match(/^caster\s+(on|off|default)$/);
+			const ca = arg.match(/^servo-skull\s+(on|off|default)$/);
 			const na = arg.match(/^names\s+(on|off|default)$/);
 			const va = arg.match(/^vault\s+(.+)$/);
-			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re && !ca && !na && !va) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default, or names on|off|default, or vault <absolute folder>|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re && !ca && !na && !va) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or servo-skull on|off|default, or names on|off|default, or vault <absolute folder>|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
 			else if (to) toastBySession.set(sid, to[1] === "on");
@@ -2791,12 +2796,12 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				relic = relicSetting();
 			} else if (ca) {
 				const v = ca[1];
-				if (v === "default") rmSync(casterFile(), { force: true });
+				if (v === "default") rmSync(servoSkullFile(), { force: true });
 				else {
 					mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
-					writeFileSync(casterFile(), v);
+					writeFileSync(servoSkullFile(), v);
 				}
-				caster = casterSetting();
+				servoSkull = servoSkullSetting();
 			} else if (na) {
 				const v = na[1];
 				if (v === "default") rmSync(namesFile(), { force: true });
@@ -2846,7 +2851,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				`relic: ${relic.on ? "on" : "off"} (${relic.from})`,
 				`names: ${namesState()}`,
 				vaultLine(),
-				casterConfigLine(),
+				servoSkullConfigLine(),
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
 				`state: ${stateDir()}`,
