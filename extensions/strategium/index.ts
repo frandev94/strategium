@@ -2297,25 +2297,26 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const old = ownRun(sid);
 						if (!old) return text("ERROR no run to switch from in this session");
 						if (key === old.key) return text(`ERROR ${key} is already this session's run`);
-						if (Object.keys(old.agents ?? {}).length) return text(`ERROR ${old.key} still has running agents: wait for them or end the run first`);
+						if (Object.keys(old.agents ?? {}).length) return text(`ERROR ${old.key} still has builders (battle-brothers, veterans) running: wait for them or end the run first`);
 						// Claim first: a refused key leaves the old run running, and no session can take it between the two halves.
 						claim(stateDir(), key, sid, params.takeover);
+						const retry = `call strategium begin key ${key} theatre ${old.theatre}${params.booked !== undefined ? ` booked ${params.booked}` : ""}${old.repo ? `, then repo ${old.repo}` : ""}`;
 						let ended: string;
 						try {
 							ended = await finish(sid, ctx);
 						} catch (err) {
 							release(stateDir(), key, sid);
 							// The end ran and a later step threw: the run is gone and the claim on key is released, so say what to call.
-							if (!ownRun(sid)) return text(`ERROR ${old.key} ended but ${key} did not begin: ${err instanceof Error ? err.message : String(err)}; call strategium begin key ${key} theatre ${old.theatre}${params.booked !== undefined ? ` booked ${params.booked}` : ""}${old.repo ? `, then repo ${old.repo}` : ""}`);
+							if (!ownRun(sid)) return text(`ERROR ${old.key} ended but ${key} did not begin: ${err instanceof Error ? err.message : String(err)}; ${retry}`);
 							throw err;
 						}
 						try {
-							// The claim is already ours, so no takeover here; this session's repo (or none) goes onto the run in the same write.
+							// ownRepo is passed even when undefined: that means "this session has no repo", unlike not passing it (keep or take the holder's).
 							const begun = await beginRun(sid, key, old.theatre, params.booked, undefined, undefined, undefined, ctx, { repo: old.repo });
 							return text(`${ended}\n${begun}`);
 						} catch (err) {
 							// The end cannot be undone and the claim on key stays ours, so the retry begin succeeds.
-							return text(`${ended}\nERROR begin ${key} failed after ${old.key} ended: ${err instanceof Error ? err.message : String(err)}; call strategium begin key ${key} theatre ${old.theatre}${params.booked !== undefined ? ` booked ${params.booked}` : ""}${old.repo ? `, then repo ${old.repo}` : ""}`);
+							return text(`${ended}\nERROR begin ${key} failed after ${old.key} ended: ${err instanceof Error ? err.message : String(err)}; ${retry}`);
 						}
 					}
 					case "attention": {

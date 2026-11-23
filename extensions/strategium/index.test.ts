@@ -10300,7 +10300,7 @@ describe("switch (#155)", () => {
 		run.agents = { A: { id: "S1", parallel: true, files: ["a.ts"] } };
 		writeFileSync(runFile(s.dir), JSON.stringify(run));
 		const before = readFileSync(runFile(s.dir), "utf8");
-		expect(await s.call({ action: "switch", key: "K-2" })).toBe("ERROR K-1 still has running agents: wait for them or end the run first");
+		expect(await s.call({ action: "switch", key: "K-2" })).toBe("ERROR K-1 still has builders (battle-brothers, veterans) running: wait for them or end the run first");
 		expect(readFileSync(runFile(s.dir), "utf8")).toBe(before);
 		expect(existsSync(lockPath(s.dir, "K-2"))).toBe(false);
 		expect(debriefs(s.dir)).toEqual([]);
@@ -10313,8 +10313,23 @@ describe("switch (#155)", () => {
 		const day = readdirSync(s.dir).find(f => f.endsWith(".jsonl"))!;
 		rmSync(join(s.dir, day));
 		mkdirSync(join(s.dir, day));
-		expect(await s.call({ action: "switch", key: "K-2" })).toStartWith("ERROR");
+		const out = await s.call({ action: "switch", key: "K-2" });
+		expect(out).toStartWith("ERROR");
+		expect(out).not.toContain("ended but");
 		expect(existsSync(lockPath(s.dir, "K-2"))).toBe(false);
+	});
+
+	test("an end that throws after the run ended says K-2 did not begin and releases its claim", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1", theatre: "github" });
+		failAlarm();
+		s.ctx.ui.notify = () => {
+			throw new Error("notify broke");
+		};
+		const out = await s.call({ action: "switch", key: "K-2", booked: 30 });
+		expect(out).toBe("ERROR K-1 ended but K-2 did not begin: notify broke; call strategium begin key K-2 theatre github booked 30");
+		expect(existsSync(lockPath(s.dir, "K-2"))).toBe(false);
+		expect(existsSync(runFile(s.dir))).toBe(false);
 	});
 
 	test("a begin that fails after the end says so and the retry begin succeeds", async () => {
