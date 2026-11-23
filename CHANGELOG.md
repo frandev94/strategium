@@ -1,3 +1,10 @@
+## [0.2.55] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(guard)* Shell forms that hid a command from the bash guard
+- *(guard)* Keep subshell runners refused and the scan linear on newlines and options
+- *(guard)* Git with many global options stays refused; faster assignments
 ## [0.2.54] - 2026-11-23
 
 ### 🐛 Bug Fixes
