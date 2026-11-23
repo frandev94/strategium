@@ -2,7 +2,8 @@
 // Pools follow issue #62 (Warhammer 40,000 lore names, one CamelCase word each).
 
 export type NameEntry = { name: string; agent: string; surname: string; squad?: string; spawned?: true; old?: true };
-export type NameRequest = { agent: string; squad?: string; again?: boolean };
+/** `surname`: a builder reusing another squad's proven brother keeps that brother's surname (#143). */
+export type NameRequest = { agent: string; squad?: string; again?: boolean; surname?: string };
 
 /** omp suffixes a repeated id up to `-999`, so 28 + 4 stays within omp's 32. */
 export const MAX_NAME = 28;
@@ -77,11 +78,12 @@ export function allocateName(
 	rand: () => number = Math.random,
 	opts: { prefer?: readonly string[]; skip?: ReadonlySet<string> } = {},
 ): { entry: NameEntry; fresh: boolean } | { error: string } {
-	const { agent, squad, again } = req;
+	const { agent, squad, again, surname: asked } = req;
 	if (!NAMED_AGENTS.includes(agent)) return { error: `unknown agent ${agent}: names are for ${NAMED_AGENTS.join(", ")}` };
 	const builder = BUILDERS.includes(agent);
 	if (builder && !squad) return { error: `${agent} needs a squad: strategium action name with agent and squad` };
 	if (!builder && squad) return { error: `${agent} is not named per squad: drop squad` };
+	if (!builder && asked) return { error: `surname is only for battle-brother and veteran, not ${agent}` };
 	if (builder && again) return { error: `again is not for ${agent}: a builder's next name follows its squad` };
 
 	const taken = new Set([...entries.map((e) => e.name), ...avoid]);
@@ -109,8 +111,9 @@ export function allocateName(
 	if (builder) {
 		const live = entries.filter((e) => e.squad === squad && !e.old);
 		const latest = live.at(-1);
-		if (latest && latest.agent === agent && !latest.spawned) return { entry: latest, fresh: false };
-		surname = latest?.surname;
+		// The squad's own surname is its first builder's: a reused brother in between carries another one.
+		surname = asked ?? live[0]?.surname;
+		if (latest && latest.agent === agent && !latest.spawned && latest.surname === surname) return { entry: latest, fresh: false };
 		title = agent === "veteran" ? "Veteran" : live.some((e) => e.agent === "battle-brother" && e.spawned) ? "Penitent" : "Brother";
 	} else {
 		title = ROLES[agent].title;
