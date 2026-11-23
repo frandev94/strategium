@@ -1658,6 +1658,15 @@ describe("the run follows an approved plan", () => {
 		expect(movedRun(s.dir).recorded).toEqual(["begin", "seal:Plan"]);
 	});
 
+	test("a mid-run rebuild init does not make the next done log the station again (#97)", async () => {
+		const { s, ctx } = await owner();
+		const stations = (muster: string, skirmish: string) => [phase("Muster", ["[captain] Objective", muster]), phase("Skirmish", ["[battle-brother] Squads", skirmish])];
+		await todoResult(s, ctx, "start", stations("completed", "in_progress"));
+		await todoResult(s, ctx, "init", stations("in_progress", "pending"));
+		await todoResult(s, ctx, "done", stations("completed", "in_progress"));
+		expect((JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.cockpit"), "utf8")).chronicle as { text: string }[]).filter(e => e.text === "station Skirmish")).toHaveLength(1);
+	});
+
 	test("a rebuild init while the Plan seal waits (plan-mode compaction) logs no grant", async () => {
 		const { s, sm, ctx } = await owner();
 		await todoResult(s, ctx, "start", planStations());
