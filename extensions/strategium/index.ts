@@ -947,6 +947,9 @@ function setEnded(run: Run, squad: string, end?: "ok" | "failed"): Run {
 /** Outcome of an agent's final status: only a real failure is a fall; aborted and cancelled leave the squad without one. */
 const outcomeOf = (status: unknown): "ok" | "failed" | undefined => (status === "completed" ? "ok" : status === "failed" ? "failed" : undefined);
 
+/** The statuses after which a task item's agent is gone; the run state and the cockpit both read this one list. */
+const FINAL_STATUSES = ["completed", "failed", "aborted", "cancelled"];
+
 /**
  * The Captain's own gh pr <verb> / glab mr <verb>: after any `cd …` steps joined by `&&`, the command starts with it,
  * is not --help/-h, and has no pipe, `;` or newline whose exit code could stand for its own.
@@ -3064,7 +3067,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			launched.push(slice);
 			// A blocking call returns once its agents are done: those never count as running.
 			if (p.status === "pending" || p.status === "running") agents[p.id] = slice;
-			else if (["completed", "failed", "aborted", "cancelled"].includes(String(p.status))) done.push([slice.id, outcomeOf(p.status)]);
+			else if (FINAL_STATUSES.includes(String(p.status))) done.push([slice.id, outcomeOf(p.status)]);
 		}
 		let next: Run = run;
 		if (launched.length) next = settle(next, agents, launched);
@@ -3276,7 +3279,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} ${name ? `${name} ` : ""}escalated to VETERAN` : `${ic.brother} ${name ?? "battle-brother"} deployed`, veteran ? "fail" : undefined);
 				if (veteran) cockpit.notes[squad] = { ...cockpit.notes[squad], veteran: true };
 				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active", at: Date.now(), ...(name ? { name } : {}) });
-			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
+			} else if (FINAL_STATUSES.includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
 		}
 		drawCockpit(run, ctx);
 	});
