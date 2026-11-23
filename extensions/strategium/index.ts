@@ -805,7 +805,7 @@ function signal(spawn: Spawn, level: string, msg: string | undefined, sound: boo
 		void child.exited.then(code => code && onFail?.(code)).catch(() => {});
 		return undefined;
 	} catch (err) {
-		return `the alarm failed: ${err instanceof Error ? err.message : String(err)}`;
+		return `alarm failed: ${err instanceof Error ? err.message : String(err)}`;
 	}
 }
 
@@ -1479,6 +1479,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	// Every message to the user goes through here: plain sentences (omp adds its own Warning:/Error: prefix), and the same warning or error again within 2 s in one session is dropped (a command's own answer always shows).
 	const NO_RUN = "No Strategium run in this session. Start one with /strategium <ticket>.";
 	const up = (t: string) => t[0].toUpperCase() + t.slice(1);
+	/** `t` as one sentence: a final period is added only when it has no terminal punctuation. */
+	const end = (t: string) => (/[.!?]$/.test(t) ? t : `${t}.`);
 	const lastNote = new Map<string, { text: string; at: number }>();
 	const notify = (ctx: SessionCtx, text: string, level: "info" | "warning" | "error" = "info") => {
 		const sid = sidOf(ctx);
@@ -1488,8 +1490,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		lastNote.set(sid, { text, at: now });
 		ctx.ui.notify(text, level);
 	};
-	/** The alarm could not start: `err` is signal()'s reason ("the alarm failed: …"). */
-	const alarmWarn = (ctx: SessionCtx, err: string) => notify(ctx, `The Strategium ${err.replace(/^the /, "")}. Turn the sound off with /strategium-config sound off.`, "warning");
+	/** The alarm could not start: `err` is signal()'s reason ("alarm failed: …"). */
+	const alarmWarn = (ctx: SessionCtx, err: string) => notify(ctx, `The Strategium ${end(err)} Silence it with /strategium-config notify off.`, "warning");
 	// /strategium-config notify on|off per session id; it wins over STRATEGIUM_NOTIFY (1, true, on, yes), which is off when unset.
 	const notifyBySession = new Map<string, boolean>();
 	const notifyOn = (sid: string) =>
@@ -1552,7 +1554,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		} catch (err) {
 			notify(
 				ctx,
-				err instanceof NewShift ? `Strategium run ${run.key} needs today's booking. Book it with /strategium-resume <min>.` : `Strategium could not resume the run: ${err instanceof Error ? err.message : String(err)}`,
+				err instanceof NewShift ? `Strategium run ${run.key} needs today's booking. Book it with /strategium-resume <min>.` : `Strategium could not resume the run: ${end(err instanceof Error ? err.message : String(err))} Try /strategium-resume again.`,
 				"warning",
 			);
 		}
@@ -1562,7 +1564,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	const alarmExit = (sid: string, ctx: SessionCtx) => (code: number) => {
 		if (alarmWarned.has(sid)) return;
 		alarmWarned.add(sid);
-		notify(ctx, `The Strategium alarm exited with code ${code}, so vox could not play. Check the audio player or turn the sound off with /strategium-config sound off.`, "warning");
+		notify(ctx, `The Strategium alarm exited with code ${code}, so vox could not play. Check the audio player or silence it with /strategium-config notify off.`, "warning");
 	};
 	/** The alarm, only when notifications are on and sound or toast is: the message goes only with toasts, the sound flag always. */
 	const alert = (sid: string, level: string, msg: string, ctx: SessionCtx) => {
@@ -2570,7 +2572,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					await beginRun(sid, key, theatre, undefined, undefined, undefined, undefined, ctx);
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
-					notify(ctx, `Strategium could not begin run ${key}: ${message}. Check the ticket key and try /strategium <ticket> again.`, "warning");
+					notify(ctx, `Strategium could not begin run ${key}: ${end(message)} Fix that, then run /strategium <ticket> again.`, "warning");
 					note = `Strategium could not begin run ${key}: ${message}`;
 				}
 			}
@@ -2593,7 +2595,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				try {
 					await run((args ?? "").trim() || undefined, ctx, sidOf(ctx));
 				} catch (err) {
-					notify(ctx, err instanceof Error ? err.message : String(err), "warning");
+					notify(ctx, `Strategium could not run /strategium-${name}: ${end(err instanceof Error ? err.message : String(err))}`, "warning");
 				} finally {
 					refreshFooter?.();
 				}
@@ -2614,7 +2616,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		if (bk !== undefined && !(Number.isInteger(bk) && bk > 0))
 			throw new Error("resume takes the booked minutes as a whole number, e.g. /strategium-resume 240");
 		try {
-			notify(ctx, up(shift(run, bk)));
+			notify(ctx, end(up(shift(run, bk))));
 		} catch (err) {
 			if (!(err instanceof NewShift)) throw err;
 			const skill = run.theatre.startsWith("strategium-") ? run.theatre : `strategium-${run.theatre}`;
@@ -2750,7 +2752,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		// The preview plays the alarm at this volume even with notify or sound off: the user asked to hear it.
 		if (preview) {
 			const err = signal(spawn, "done", undefined, true, volumeOf(sid), alarmExit(sid, ctx));
-			if (err) notify(ctx, `No alarm preview: ${err}. Check the audio player.`, "warning");
+			if (err) notify(ctx, `Strategium could not play the alarm preview: ${end(err)} Check the audio player.`, "warning");
 		}
 	});
 
@@ -2904,7 +2906,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			writeRun({ ...run, idle: undefined });
 			if (!isOpen(run.key)) {
 				const resumed = resumeOrWarn(run, sidOf(ctx), ctx);
-				if (resumed) notify(ctx, up(resumed));
+				if (resumed) notify(ctx, end(up(resumed)));
 			}
 		}
 		refreshFooter?.();

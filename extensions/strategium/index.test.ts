@@ -69,13 +69,15 @@ function fakePi() {
 
 // Every notify text that starts with the "Strategium:" label; there must be none (omp adds its own Warning:/Error: prefix).
 const labelled: string[] = [];
+// Every notify call with its level, cleared after each test.
+const levels: { text: string; level?: string }[] = [];
 
 // The host's view of the session, mutable per test. It starts busy (streaming), so no test but the idle ones can pause by idleness.
 const fakeCtx = (sid: string, cwd: string, notes: string[] = [], footer: string[] = []) => {
 	const host = { idle: false, pending: false, jobs: undefined as { running: unknown[] } | undefined, review: undefined as unknown };
 	return {
 		sessionManager: { getSessionId: () => sid },
-		ui: { notify: (m: string) => void (m.startsWith("Strategium:") && labelled.push(m), notes.push(m)), setStatus: (_k: string, v?: string) => footer.push(v ?? "") },
+		ui: { notify: (m: string, level?: string) => void (m.startsWith("Strategium:") && labelled.push(m), levels.push({ text: m, level }), notes.push(m)), setStatus: (_k: string, v?: string) => footer.push(v ?? "") },
 		cwd,
 		setInterval: (_fn: () => void, _ms: number) => 0,
 		agent: { kind: "main" },
@@ -100,6 +102,7 @@ delete process.env.STRATEGIUM_VAULT;
 
 const dirs: string[] = [];
 afterEach(() => {
+	levels.length = 0;
 	expect(labelled.splice(0)).toEqual([]);
 	vi.useRealTimers();
 	setSystemTime();
@@ -174,9 +177,9 @@ function setup(sid = "sess-0001", shared?: string, deps: Record<string, unknown>
 	const footer: string[] = [];
 	const ctx = fakeCtx(sid, dir, notes, footer);
 	const notify = ctx.ui.notify;
-	ctx.ui.notify = (m: string) => {
+	ctx.ui.notify = (m: string, level?: string) => {
 		seen.push({ via: "notify", footer: footer.at(-1) ?? "", events: alertEvents(dir).length });
-		notify(m);
+		notify(m, level);
 	};
 	const call = async (params: Record<string, unknown>) => (await tool.execute("id", params, undefined, undefined, ctx)).content[0].text;
 	const command = (args: string) => commands.strategium.handler(args, ctx);
@@ -513,6 +516,8 @@ describe("the /strategium command", () => {
 		const b = setup("sess-0002", a.dir);
 		await b.command("K-1");
 		expect(b.notes.join("\n")).toContain("is held by omp session");
+		expect(b.notes.join("\n")).toMatch(/Strategium could not begin run K-1: .*\. Fix that, then run \/strategium <ticket> again\.$/);
+		expect(b.notes.join("\n")).not.toContain("..");
 		expect(b.sent[0]).toContain("could not begin run K-1");
 		expect(await b.call({ action: "status" })).not.toContain("(this session)");
 		expect(await a.call({ action: "status" })).toContain("RUN K-1");
@@ -2135,7 +2140,7 @@ describe("the midnight rollover", () => {
 		expect(s.shown().startsWith("●")).toBe(true);
 		expect(dayEvents(s.dir, 17).some(e => e.event === "alert")).toBe(false);
 		await s.sub("resume", "90");
-		expect(s.notes.at(-1)).toBe("New shift for K-1 today, booked 90 min");
+		expect(s.notes.at(-1)).toBe("New shift for K-1 today, booked 90 min.");
 		expect(await s.call({ action: "status" })).toContain("K-1 3/90 min (3%) running");
 		await reports(s, "K-1 00:00-now (3 min)");
 	});
@@ -2369,7 +2374,7 @@ describe("tools, begin and end", () => {
 		await s.call({ action: "begin", key: "K-1" });
 		failAlarm();
 		expect((await s.call({ action: "end" })).split("\n").slice(0, 2)).toEqual(["ENDED K-1", expect.stringMatching(/^DEBRIEF /)]);
-		expect(s.notes).toEqual([expect.stringMatching(/^The Strategium alarm failed: /)]);
+		expect(s.notes).toEqual([expect.stringMatching(/^The Strategium alarm failed: .*\. Silence it with \/strategium-config notify off\.$/)]);
 	});
 
 	describe("a second begin on the same key", () => {
@@ -3199,7 +3204,7 @@ describe("the idle pause", () => {
 		s.ctx.host.idle = false;
 		await s.handlers.agent_start[0]({}, s.ctx);
 		expect(starts(s.dir)).toBe(2);
-		expect(s.notes.at(-1)).toContain("Resumed K-1");
+		expect(s.notes.at(-1)).toContain("Resumed K-1.");
 		expect(runMark(s.dir)).toBeUndefined();
 		await s.handlers.agent_start[0]({}, s.ctx);
 		expect(starts(s.dir)).toBe(2);
@@ -4478,6 +4483,55 @@ describe("cockpit", () => {
 			setSystemTime(new Date(2026, 10, 16, 12, 0, 3));
 			await s.sub("cockpit");
 			expect(s.notes).toHaveLength(2);
+		});
+
+		test("a warning repeated 1999 ms later is dropped and 2001 ms later is shown", async () => {
+			const s = setup();
+			uiCtx(s);
+			const t0 = new Date(2026, 10, 16, 12, 0, 0).getTime();
+			setSystemTime(t0);
+			await s.sub("cockpit");
+			setSystemTime(t0 + 1999);
+			await s.sub("cockpit");
+			expect(s.notes).toHaveLength(1);
+			setSystemTime(t0 + 2001);
+			await s.sub("cockpit");
+			expect(s.notes).toHaveLength(2);
+		});
+
+		test("the level is passed on, and an info answer repeated at once is not dropped", async () => {
+			const s = setup();
+			uiCtx(s);
+			await s.sub("cockpit");
+			await s.sub("config");
+			await s.sub("config");
+			expect(levels.map(n => n.level)).toEqual(["warning", "info", "info"]);
+		});
+
+		test("a failing subcommand says which command failed, in one sentence", async () => {
+			const s = setup();
+			await s.sub("config", "volume 101");
+			expect(s.notes.at(-1)).toStartWith("Strategium could not run /strategium-config: ");
+			expect(s.notes.at(-1)).toEndWith("volume takes 0 to 100.");
+			s.conflicts["ctrl+c"] = { kind: "reserved" };
+			await s.sub("config", "cockpit-key ctrl+c");
+			expect(s.notes.at(-1)).toBe("Strategium could not run /strategium-config: ctrl+c is reserved by omp and never opens the cockpit; pick another key.");
+		});
+
+		test("a message that already ends in a period gets no second one", async () => {
+			const s = setup();
+			await s.sub("resume", "0");
+			expect(s.notes.at(-1)).not.toMatch(/\.\.$/);
+			expect(s.notes.at(-1)).toMatch(/\.$/);
+		});
+
+		test("command answers are full sentences with a capital and a final period", async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1", booked: 60 });
+			await s.sub("pause");
+			expect(s.notes.at(-1)).toBe("Strategium paused (K-1).");
+			await s.sub("resume");
+			expect(s.notes.at(-1)).toMatch(/^[A-Z].*\.$/);
 		});
 
 		test("a changed text between two warnings shows both", async () => {
