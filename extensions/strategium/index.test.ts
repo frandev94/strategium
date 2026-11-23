@@ -6977,6 +6977,17 @@ describe("cockpit", () => {
 			expect(await r.call({ ...good, rating: "corrupted" })).toContain("(was proven)");
 		});
 
+		test("an open cockpit redraws with the badge right after rate, without reopening", async () => {
+			const { s, ui } = await rigged();
+			await s.sub("cockpit");
+			const comp = ui.opened.at(-1)!.component;
+			expect(plain(comp.render(100).join("\n"))).not.toContain("✦");
+			await s.call(good);
+			const shown = plain(comp.render(100).join("\n"));
+			comp.handleInput!("q");
+			expect(shown).toContain("✦");
+		});
+
 		test("a hand-edited run file keeps only the entries that pass the same checks", async () => {
 			const { s } = await rigged();
 			await s.call(good);
@@ -8663,9 +8674,35 @@ console.log("FAILED " + failed);`;
 			const name = await nameFor(s, "battle-brother", "S1");
 			spawn(s, "battle-brother", name);
 			expect(await rate(s, name, "corrupted")).toContain(`FALL ${surname(name)} squad S1`);
-			expect(await rate(s, `${name}-2`, "corrupted")).toStartWith(`RATED ${name}-2 corrupted model=`);
+			expect(await rate(s, `${name}-2`, "corrupted")).toBe(`ERROR ${name}-2 is not an agent of this run: pass the agent id the task result shows`);
 			const unspawned = await nameFor(s, "battle-brother", "S2");
 			expect(await rate(s, unspawned, "proven")).toBe(`ERROR ${unspawned} is not an agent of this run: pass the agent id the task result shows`);
+		});
+
+		test("an invented Name-N for a spawned name is refused", async () => {
+			const s = await open();
+			const name = await nameFor(s, "battle-brother", "S1");
+			spawn(s, "battle-brother", name);
+			expect(await rate(s, `${name}-2`, "corrupted")).toBe(`ERROR ${name}-2 is not an agent of this run: pass the agent id the task result shows`);
+		});
+
+		test("a corrupted Name-2 cannot be re-rated proven as Name", async () => {
+			const s = await open();
+			const name = await running(s, "S1");
+			returned(s, "battle-brother", `${name}-2`, "S1", "running");
+			expect(await rate(s, `${name}-2`, "corrupted")).toStartWith("RATED");
+			expect(await rate(s, name, "proven")).toBe(`ERROR ${name} is corrupted for the rest of the run`);
+		});
+
+		test("end by takeover over a hand-edited invalid corrupted entry records no fall", async () => {
+			const a = await open();
+			const name = await running(a, "S1");
+			returned(a, "battle-brother", name, "S1", "completed");
+			const file = join(a.dir, "runs", "sess-0001.json");
+			writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), ratings: { [name]: { rating: "corrupted" } } }));
+			const c = setup("sess-0003", a.dir);
+			expect(await c.call({ action: "end", key: "K-1", takeover: "sess-0001" })).toContain("ROSTER 1 squad(s) recorded");
+			expect(roster(a.dir)[surname(name)]).toEqual(svc({ passed: 1, squads: 1, purity: 1 }));
 		});
 
 		test("rate corrupted, redraft, end: no fall reaches roster.json", async () => {

@@ -894,7 +894,7 @@ function isMerge(command: string): boolean {
 /** Fold the run's outcomes into the shared roster at `end`: the line to print, undefined with nothing to record. A roster failure never stops the end. */
 function recordRun(run: Run): { line: string; honours: Honour[]; error?: string } | undefined {
 	const names = cleanNames(run.names);
-	const outcomes = runOutcomes({ ...run, names });
+	const outcomes = runOutcomes({ ...run, names, ratings: cleanRatings(run.ratings) });
 	if (!outcomes.length) return undefined;
 	const merged = run.merged === true && !unfinished({ names, ended: run.ended });
 	// The end has no second chance: wait past STALE_MS so a lock left by a crash is taken instead of losing the record.
@@ -1978,13 +1978,15 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						if (!run) return text("ERROR no active run in this session");
 						const id = params.agent;
 						// A synchronous task never reaches the cockpit registry: its spawned name in the run's names is enough.
-						const named = run.names?.find(n => n.name === baseId(id) && n.spawned);
+						const named = run.names?.find(n => n.name === id && n.spawned);
 						if (!(named || (cockpit.key === run.key && cockpit.deployed.has(id))) || !ratingKey(id)) return text(`ERROR ${id} is not an agent of this run: pass the agent id the task result shows`);
 						const rating = parseRating(params);
 						if (typeof rating === "string") return text(`ERROR ${rating}`);
-						const was = run.ratings && Object.hasOwn(run.ratings, id) ? run.ratings[id] : undefined;
+						// One agent, one rating: Name and Name-2 share it, so the earlier key is the one that is replaced.
+						const key = Object.keys(run.ratings ?? {}).find(k => baseId(k) === baseId(id)) ?? id;
+						const was = run.ratings?.[key];
 						if (was?.rating === "corrupted" && rating.rating !== "corrupted") return text(`ERROR ${id} is corrupted for the rest of the run`);
-						const next = { ...run, ratings: { ...run.ratings, [id]: rating } };
+						const next = { ...run, ratings: { ...run.ratings, [key]: rating } };
 						writeRun(next);
 						drawCockpit(next, ctx);
 						// D6: with names on, a corrupted latest builder makes its squad a fall at end.
