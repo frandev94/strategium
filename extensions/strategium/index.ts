@@ -30,7 +30,7 @@ import {
 	type Via,
 } from "./timer";
 import { debrief, type AgentCost, type Reported } from "./debrief";
-import { servoSkullFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./servo-skull";
+import { answer, missionFacts, servoSkullFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete, type ServoSkullReply } from "./servo-skull";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, FINAL_STATUSES, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, renderDebrief, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
@@ -190,7 +190,7 @@ const cockpitFile = (sid: string) => path.join(runsDir(), `${sid}.cockpit`);
 /** What the cockpit servo-skull spent in a run: omp's list price, the calls that came back with a reply (a failed or aborted one included, a throw is not), and tokens as an agent counts them (input only; cache reads and writes apart), and the model the alias last resolved to. */
 type Spend = { cost: number; calls: number; tokens_in: number; tokens_out: number; cache_read: number; cache_write: number; model?: string };
 /** The servo-skull's memory for the run key: the summary shown, when the last attempt started, and the call in flight. */
-type ServoSkullState = { text?: string; dim?: boolean; station?: string; at?: number; lastAt?: number; lastHash?: string; ctrl?: AbortController; spend?: Spend };
+type ServoSkullState = { text?: string; dim?: boolean; station?: string; at?: number; lastAt?: number; lastHash?: string; ctrl?: AbortController; spend?: Spend; ask?: AbortController; answer?: { question: string; text: string; at: number } }; // ask: the user's question in flight; answer: the last one, shown in the box until a summary replaces it
 /** completeSimple of @oh-my-pi/pi-ai: the test seam; the real one is imported on the first call. */
 type CompleteSimple = typeof completeSimpleFn;
 type HostModel = Parameters<CompleteSimple>[0];
@@ -1857,6 +1857,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	};
 	const resetCockpit = (key?: string) => {
 		abortServoSkull();
+		cockpit.servoSkull.ask?.abort();
 		cockpit.servoSkull = {};
 		cockpit.key = key;
 		cockpit.chronicle = [];
@@ -2003,7 +2004,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
 			seal: cockpit.seal,
-			servoSkull: servoSkull.on ? { station: cockpit.servoSkull.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.servoSkull.text ?? "listening…", dim: cockpit.servoSkull.text === undefined || cockpit.servoSkull.dim === true, at: cockpit.servoSkull.at } : undefined,
+			servoSkull: servoSkull.on ? (cockpit.servoSkull.answer ? { station: `answer to "${chars(cockpit.servoSkull.answer.question, 40)}"`, text: cockpit.servoSkull.answer.text, dim: false, at: cockpit.servoSkull.answer.at } : { station: cockpit.servoSkull.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.servoSkull.text ?? "listening…", dim: cockpit.servoSkull.text === undefined || cockpit.servoSkull.dim === true, at: cockpit.servoSkull.at }) : undefined,
 			transcript: cockpit.transcript,
 			names: naming.on ? { squads: squadBrothers(cleanNames(run.names), "brothers" in roster ? roster.brothers : undefined), ...("error" in roster ? { unreadable: true as const } : {}) } : undefined,
 		};
@@ -2054,6 +2055,20 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			},
 		};
 	};
+	/** A reply that came back was paid, shown or not: count it in the servo-skull's spend (the debrief row). */
+	const countSpend = (c: ServoSkullState, reply: ServoSkullReply | undefined) => {
+		if (!reply) return;
+		const n = (x: number | undefined) => (typeof x === "number" && Number.isSafeInteger(x) && x > 0 ? x : 0);
+		const spend = (c.spend ??= { cost: 0, calls: 0, tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 });
+		if (reply.model) spend.model = reply.model;
+		spend.cost += isCost(reply.cost) ? reply.cost : 0;
+		spend.calls++;
+		spend.tokens_in += n(reply.tokens_in);
+		spend.tokens_out += n(reply.tokens_out);
+		spend.cache_read += n(reply.cache_read);
+		spend.cache_write += n(reply.cache_write);
+		cockpit.dirty = true;
+	};
 	/** On a servo-skull tick of the open cockpit: start one summary when it is due (see `due`). The attempt is stamped when it starts, so a failure waits for a new state and a new interval and never loops. */
 	const servoSkullTick = (ctx: SessionCtx) => {
 		const c = cockpit.servoSkull;
@@ -2083,20 +2098,12 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			.then(r => {
 				if (c.ctrl === ctrl) c.ctrl = undefined;
 				if (cockpit.servoSkull !== c || !readRun(sidOf(ctx))) return; // the run was reset or has ended meanwhile: the reply is not counted or drawn
-				const n = (x: number | undefined) => (typeof x === "number" && Number.isSafeInteger(x) && x > 0 ? x : 0);
 				// A reply that arrives after an abort is not shown, but it was paid.
-				if (r.reply) {
-					const spend = (c.spend ??= { cost: 0, calls: 0, tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 });
-					if (r.reply.model) spend.model = r.reply.model;
-					spend.cost += isCost(r.reply.cost) ? r.reply.cost : 0;
-					spend.calls++;
-					spend.tokens_in += n(r.reply.tokens_in);
-					spend.tokens_out += n(r.reply.tokens_out);
-					spend.cache_read += n(r.reply.cache_read);
-					spend.cache_write += n(r.reply.cache_write);
-					cockpit.dirty = true;
+				countSpend(c, r.reply);
+				if (!ctrl.signal.aborted) {
+					Object.assign(c, { text: r.text, dim: r.dim, station, at: r.dim ? undefined : Date.now() });
+					delete c.answer;
 				}
-				if (!ctrl.signal.aborted) Object.assign(c, { text: r.text, dim: r.dim, station, at: r.dim ? undefined : Date.now() });
 				redraw();
 			})
 			.catch(() => {
@@ -2760,6 +2767,34 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const run = ownRun(sid);
 		if (!run) return notify(ctx, NO_RUN, "warning");
 		notify(ctx, addMin(run, Number(arg)));
+	});
+
+	subcommand("skull", "Ask the servo-skull a question about the whole run; it answers in the cockpit's servo-skull box when the cockpit is open, here otherwise", async (arg, ctx, sid) => {
+		if (ctx.agent?.kind === "sub") return;
+		const run = ownRun(sid);
+		if (!run) return notify(ctx, NO_RUN, "warning");
+		if (!servoSkull.on) return notify(ctx, "The servo-skull is off. Turn it on with /strategium-config servo-skull on, then ask again.", "warning");
+		if (!arg) return notify(ctx, "Usage: /strategium-skull <question>", "warning");
+		if (cockpit.key !== run.key) loadCockpit(sid, run.key);
+		const c = cockpit.servoSkull;
+		if (c.ask) return notify(ctx, "The servo-skull is still answering the last question.", "warning");
+		const prep = servoSkullPrepare(ctx);
+		if ("reason" in prep) return notify(ctx, `The servo-skull cannot answer: ${prep.reason}.`, "warning");
+		const ctrl = new AbortController();
+		c.ask = ctrl;
+		try {
+			const facts = missionFacts({ key: run.key, phases: run.phases, deployed: cockpit.deployed, live: liveRows(run), chronicle: cockpit.chronicle, seal: cockpit.seal, returns: { redraft: run.redraft === true, builds: run.builds }, clock: cockpit.clock });
+			const r = await answer(prep.complete, arg, facts, AbortSignal.any([ctrl.signal, AbortSignal.timeout(30_000)]));
+			if (cockpit.servoSkull !== c || !readRun(sid)) return; // the run was reset or has ended meanwhile: the reply is not counted or shown
+			countSpend(c, r.reply); // paid, shown or not
+			const question = chars(oneLine(arg), 300);
+			if (r.dim) return notify(ctx, `The servo-skull could not answer: ${r.text}.`, "warning");
+			c.answer = { question, text: r.text, at: Date.now() }; // a cockpit opened later still shows it, until a summary replaces it
+			if (cockpit.close) drawCockpit(run, ctx);
+			else notify(ctx, `Servo-skull on "${chars(question, 60)}": ${r.text}`);
+		} finally {
+			if (c.ask === ctrl) c.ask = undefined;
+		}
 	});
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => notify(ctx, fullStatus(sid)));
