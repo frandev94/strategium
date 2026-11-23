@@ -33,7 +33,7 @@ import { debrief, type AgentCost, type Reported } from "./debrief";
 import { casterFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./caster";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
+import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, FINAL_STATUSES, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
 import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./names";
 import { applyRun, corrupted, type Brothers, type Honour, honours, loadRoster, rankBrothers, runOutcomes, squadBrothers, STALE_MS, unfinished, updateRoster, withRosterLock } from "./roster";
 import { loadContract, noteTarget, recordLine, recordNote, secretKind } from "./vault";
@@ -3064,7 +3064,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			launched.push(slice);
 			// A blocking call returns once its agents are done: those never count as running.
 			if (p.status === "pending" || p.status === "running") agents[p.id] = slice;
-			else if (["completed", "failed", "aborted", "cancelled"].includes(String(p.status))) done.push([slice.id, outcomeOf(p.status)]);
+			else if (FINAL_STATUSES.includes(String(p.status))) done.push([slice.id, outcomeOf(p.status)]);
 		}
 		let next: Run = run;
 		if (launched.length) next = settle(next, agents, launched);
@@ -3276,7 +3276,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} ${name ? `${name} ` : ""}escalated to VETERAN` : `${ic.brother} ${name ?? "battle-brother"} deployed`, veteran ? "fail" : undefined);
 				if (veteran) cockpit.notes[squad] = { ...cockpit.notes[squad], veteran: true };
 				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active", at: Date.now(), ...(name ? { name } : {}) });
-			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
+			} else if (FINAL_STATUSES.includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
 		}
 		drawCockpit(run, ctx);
 	});

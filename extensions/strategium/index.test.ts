@@ -4890,7 +4890,7 @@ describe("cockpit", () => {
 			expect(await peek(s, ui)).not.toMatch(/✗ † squad a failed/);
 		});
 
-		test.each(["failed", "aborted"])("a %s task result logs the failure and, once the agent is gone, marks the squad in the overlay", async status => {
+		test.each(["failed", "aborted", "cancelled"])("a %s task result logs the failure and, once the agent is gone, marks the squad in the overlay", async status => {
 			const { s, ui } = await squad();
 			result(s, "battle-brother", "running");
 			result(s, "battle-brother", status);
