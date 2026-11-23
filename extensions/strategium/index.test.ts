@@ -6443,6 +6443,98 @@ describe("cockpit", () => {
 					c.handleInput!("q");
 				});
 
+				// Chronicle entries about agents. Tab twice from the top lands on the newest chronicle entry (the box above has one group).
+				const entry = (c: { render(w: number): string[]; handleInput?(d: string): void }) => {
+					for (const k of ["\t", "\t", "\r"]) c.handleInput!(k);
+				};
+				const scouts = (s: S, ...ids: string[]) =>
+					s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: ids.map(id => ({ agent: "scout", name: id, task: "map." })) }, details: { progress: ids.map((id, index) => ({ index, id, status: "running" })) }, isError: false }, s.ctx));
+				const reopen = async (s: S, file: object) => {
+					writeFileSync(join(s.dir, "runs", "sess-0001.cockpit"), JSON.stringify(file));
+					shutdown(s);
+					const again = setup("sess-0001", s.dir);
+					const ui = uiCtx(again);
+					await again.start();
+					await again.sub("cockpit");
+					return ui.opened.at(-1)!.component;
+				};
+
+				test("a chronicle entry written for a squad's agent opens the squad's detail, and Enter its transcript", async () => {
+					const { s, ui } = await squad();
+					writeFileSync(join(session(s), "A.jsonl"), say("FROM-CHRONICLE"));
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					entry(c);
+					const t = show(c);
+					expect(t).toContain("CHRONICLE");
+					expect(t).toContain("deployed");
+					expect(t).toContain("files:");
+					expect(t).toContain("a.ts");
+					expect(t).toContain("enter transcript");
+					c.handleInput!("\r");
+					expect(show(c)).toContain("FROM-CHRONICLE");
+					c.handleInput!("q");
+				});
+
+				test("two agents of one role without a squad: each chronicle entry opens its own agent", async () => {
+					const { s, ui } = await running();
+					s.todo([{ name: "Auspex", tasks: [{ content: "[scout] Map", status: "in_progress" }] }]);
+					const dir = session(s);
+					writeFileSync(join(dir, "A.jsonl"), say("I-AM-A"));
+					writeFileSync(join(dir, "B.jsonl"), say("I-AM-B"));
+					scouts(s, "A");
+					scouts(s, "B");
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					for (const k of ["\t", "\t", "\r", "\r"]) c.handleInput!(k); // the second Tab reaches the newest entry, B's
+					expect(show(c)).toContain("I-AM-B");
+					c.handleInput!("\x7f");
+					c.handleInput!("\x7f");
+					c.handleInput!("\x1b[B");
+					c.handleInput!("\r");
+					c.handleInput!("\r");
+					expect(show(c)).toContain("I-AM-A");
+					c.handleInput!("q");
+				});
+
+				test("an entry with no agent keeps today's detail, and Enter does nothing", async () => {
+					const { s, ui } = await squad();
+					await s.sub("cockpit");
+					const c = ui.opened.at(-1)!.component;
+					for (const k of ["\t", "\t", "\x1b[B", "\r"]) c.handleInput!(k); // the second entry is the station line
+					const before = show(c);
+					expect(before).toContain("CHRONICLE");
+					expect(before).not.toContain("enter transcript");
+					c.handleInput!("\r");
+					expect(show(c)).toBe(before);
+					c.handleInput!("q");
+				});
+
+				test("a chronicle saved before the field existed loads and shows today's detail", async () => {
+					const { s } = await squad();
+					const old = JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8"));
+					old.chronicle = old.chronicle.map(({ agent: _, ...e }: { agent?: string }) => e);
+					const c = await reopen(s, old);
+					entry(c);
+					expect(show(c)).toContain("CHRONICLE");
+					expect(show(c)).not.toContain("enter transcript");
+				});
+
+				test("an agent id from disk that the registry does not know, or that is no string, shows today's detail", async () => {
+					const { s } = await squad();
+					const file = JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8"));
+					file.chronicle = file.chronicle.map((e: object) => ({ ...e, agent: "ghost" }));
+					file.chronicle[0].agent = 42;
+					for (const kind of [42, "ghost"]) {
+						file.chronicle[file.chronicle.length - 1].agent = kind;
+						const c = await reopen(s, file);
+						entry(c);
+						expect(show(c)).toContain("CHRONICLE");
+						expect(show(c)).not.toContain("enter transcript");
+						c.handleInput!("q");
+					}
+				});
+
 				test("a missing file, a directory in its place and an unsafe agent id each give one reason row and read nothing outside the session dir", async () => {
 					const { s, ui } = await squad();
 					const dir = session(s);

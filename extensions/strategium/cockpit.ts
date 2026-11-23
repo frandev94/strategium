@@ -5,7 +5,7 @@ import type { Brother } from "./roster";
 
 export type Phase = { name: string; tasks: { content: string; status: string }[] };
 export type Seal = { id: string; state: "granted" | "waiting" | "pending" };
-export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" | "warn" };
+export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" | "warn"; agent?: string }; // agent: the id of the agent the entry is about, when it is one; its detail opens that agent or its squad
 export type Note = { veteran?: true; failed?: true };
 export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; ended?: number; stalled?: number; blocked?: true; name?: string }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. ended: when the host saw it end, in ms. stalled: the live entry's `at` (the idle start) the reader marked stalled. blocked: its row said so and the alarm rang for it; cleared when the row stops saying it. name: its agent name, names on only
 /** What a child writes about itself, already validated by the reader (contract v3): ms timestamps, its todo counts, its last tool call and what it signalled (pct, eta_min, line, blocked), and its usage. Usage is optional and absent means unknown, never 0: cost is USD (finite, >= 0) as omp prices it, its own spend without nested subagents; the tokens are safe integers >= 0. */
@@ -520,11 +520,18 @@ export function cockpitView(input: ViewInput) {
 	const found = was ? items.findIndex(i => i.id === was.id) : -1;
 	const to = was && items.length ? (found >= 0 ? found : Math.min(Math.max(0, Math.trunc(was.at) || 0), items.length - 1)) : -1;
 	const want = input.nav?.detail?.id;
+	// A chronicle entry about a deployed agent stands for that agent's line (or its squad's); an id the registry does not know is none (the id comes from disk).
+	const refOf = (id: string): string => {
+		if (!id.startsWith("log:")) return id;
+		const a = chronicle.find(c => c.id === id)?.agent;
+		const d = typeof a === "string" ? input.deployed?.get(a) : undefined;
+		return d ? (d.squad ? `squad:${d.squad}` : `agent:${a}`) : id;
+	};
 	const detailId = want !== undefined && items.some(i => i.id === want) ? want : undefined;
 	// The transcript stays while its agent is still deployed and belongs to the open detail: that agent, or any agent of that squad (a newer one deploying does not close it).
-	const target = detailId === undefined ? undefined : targetOf(detailId, input.deployed);
+	const target = detailId === undefined ? undefined : targetOf(refOf(detailId), input.deployed);
 	const open = input.nav?.detail?.transcript;
-	const transcript = target !== undefined && open !== undefined && (open === target || (detailId!.startsWith("squad:") && input.deployed?.get(open)?.squad === detailId!.slice(6))) ? open : undefined;
+	const transcript = target !== undefined && open !== undefined && (open === target || (refOf(detailId!).startsWith("squad:") && input.deployed?.get(open)?.squad === refOf(detailId!).slice(6))) ? open : undefined;
 	const tops = Object.fromEntries(Object.entries(input.nav?.tops ?? {}).filter(([k, n]) => (k === "seal" ? !!panel : k === "detail" ? detailId !== undefined : k === "transcript" ? transcript !== undefined : boxes.some(b => b.title === k)) && Number.isInteger(n) && n > 0));
 	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }), ...(Object.keys(tops).length ? { tops } : {}), ...(detailId === undefined ? {} : { detail: { id: detailId, ...(transcript === undefined ? {} : { transcript }) } }) };
 
@@ -556,7 +563,10 @@ export function cockpitView(input: ViewInput) {
 		if (id.startsWith("seal:")) return panel && { title: panel.title, lines: panel.lines };
 		if (id.startsWith("log:")) {
 			const e = chronicle.find(c => c.id === id);
-			return e && { title: `CHRONICLE · ${clean(e.at)} · ${clean(e.who)}`, lines: [clean(e.text)] };
+			if (!e) return undefined;
+			const ref = refOf(id);
+			const more = ref === id ? undefined : detailOf(ref);
+			return { title: `CHRONICLE · ${clean(e.at)} · ${clean(e.who)}`, lines: [clean(e.text), ...(more ? ["", ...more.lines] : [])] };
 		}
 		const t = tasks.find(x => x.id === id);
 		return t && phase && { title: `${clean(t.role).toUpperCase()} TASK`, lines: [t.text, `status: ${clean(t.status)}`, `station: ${clean(phase.name)}`] };
