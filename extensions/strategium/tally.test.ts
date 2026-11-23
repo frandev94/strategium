@@ -187,8 +187,12 @@ describe("proposals (D7)", () => {
 	test("2 of 4 is not a majority", () => expect(proposals([row({ model: "@smol", proven: 2, corrupted: 2 })], LADDER)).toEqual([]));
 	test("fewer than 3 results is not enough", () => expect(proposals([row({ model: "@smol", corrupted: 2 })], LADDER)).toEqual([]));
 	test("heavy failing proposes nothing", () => expect(proposals([row({ model: "@slow", effort: "high", corrupted: 5 })], LADDER)).toEqual([]));
-	test("CB1: light failing but standard already has results (adopted): no proposal", () =>
-		expect(proposals([row({ model: "@smol", corrupted: 3 }), row({ proven: 1 })], LADDER)).toEqual([]));
+	test("CB1: a lone result at standard does not mute the proposal", () =>
+		expect(proposals([row({ model: "@smol", corrupted: 3 }), row({ proven: 1 })], LADDER)).toEqual([
+			"PROPOSE code squads: default tier standard (now light: @smol medium corrupted 3 of 3)",
+		]));
+	test("CB1: standard with 3 results (adopted): no proposal", () =>
+		expect(proposals([row({ model: "@smol", corrupted: 3 }), row({ proven: 3 })], LADDER)).toEqual([]));
 	test("CB1: a standard row with results of another kind does not silence the kind", () =>
 		expect(proposals([row({ model: "@smol", corrupted: 3 }), row({ kind: "docs", proven: 1 })], LADDER)).toHaveLength(1));
 	test("CB1: then standard failing proposes heavy", () =>

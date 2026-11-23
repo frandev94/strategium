@@ -934,14 +934,15 @@ function recordRun(run: Run): { line: string; honours: Honour[]; error?: string 
 function recordTally(run: Run, roles: Map<string, { role: string; squad?: string }>, waitMs = STALE_MS + 2000): string | undefined {
 	try {
 		const names = cleanNames(run.names);
-		// An agent's own copy first: a redraft may reuse a squad id for other files.
 		const known = [...Object.values(run.agents ?? {}), ...(run.stopped ?? []), ...(run.slices ?? [])];
 		let skipped = 0;
 		const results = Object.entries(cleanRatings(run.ratings) ?? {}).flatMap(([id, r]) => {
 			const hit = names?.find(n => n.name === baseId(id));
 			const who = hit ? { role: hit.agent, squad: hit.squad } : roles.get(id);
 			if (!who || !isBuilderRole(who.role)) return [];
-			const slice = who.squad ? known.find(s => s.id === who.squad) : undefined;
+			// The agent's own copy under its id first (a redraft may reuse a squad id for other files), then any slice of that squad.
+			const own = run.agents?.[id];
+			const slice = own?.id === who.squad ? own : who.squad ? known.find(s => s.id === who.squad) : undefined;
 			if (!slice) skipped++;
 			return slice ? [{ model: r.model, effort: r.effort, kind: squadKind(slice.files), rating: r.rating }] : [];
 		});

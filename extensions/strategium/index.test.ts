@@ -9534,6 +9534,53 @@ describe("tally wiring (#144)", () => {
 		expect(tallyOf(s.dir).map(r => r.kind)).toEqual(["docs"]);
 	});
 
+	test("N3/CN5: the agent's own copy under its id wins over another agent that shares the squad id", async () => {
+		const s = await begin(false);
+		asyncBuilder(s, "S1");
+		await rate(s, "S1", "proven");
+		rewrite(s, run => {
+			run.agents = { X: { id: "S1", parallel: true, files: ["src/other.ts"] }, S1: { id: "S1", parallel: true, files: ["docs/a.md"] } };
+		});
+		await s.call({ action: "end" });
+		expect(tallyOf(s.dir).map(r => r.kind)).toEqual(["docs"]);
+	});
+
+	test("N1/CN2: only unresolved builders rated: the skipped line, and no tally.json", async () => {
+		const s = await begin(false);
+		asyncBuilder(s, "S1");
+		await rate(s, "S1", "proven");
+		rewrite(s, run => {
+			run.slices = [];
+			run.agents = {};
+		});
+		expect(await s.call({ action: "end" })).toEndWith("TALLY recorded 0 rating(s) (1 skipped)");
+		expect(existsSync(join(s.dir, "tally.json"))).toBe(false);
+	});
+
+	test("N2/CN3 (slow): names on, the lock held by a live pid: end waits 12 s + 2 s, then warns for the roster and the tally", async () => {
+		const s = await begin(true);
+		const name = (await s.call({ action: "name", agent: "battle-brother", squad: "S1" })).split("\n").at(-1)!.slice(5);
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		const done = { toolName: "task", input: { tasks: [{ agent: "battle-brother", name, task: "build squad S1" }] }, details: { progress: [{ index: 0, id: name, status: "completed" }] }, isError: false };
+		for (const h of s.handlers.tool_result) h(done, s.ctx);
+		await rate(s, name, "proven");
+		// A live holder: a child keeps touching the lock, because end blocks this process and a lock older than 10 s is taken as stale.
+		const lock = join(s.dir, "roster.lock");
+		writeFileSync(lock, `${process.pid}-held`);
+		const holder = Bun.spawn([process.execPath, "-e", `const fs=require("fs");const t=setInterval(()=>{try{fs.utimesSync(${JSON.stringify(lock)},new Date(),new Date())}catch{}},200);setTimeout(()=>clearInterval(t),30000)`], { stdio: ["ignore", "ignore", "ignore"] });
+		try {
+			const t0 = Date.now();
+			var out = await s.call({ action: "end" });
+			expect(Date.now() - t0).toBeLessThan(20_000);
+		} finally {
+			holder.kill();
+		}
+		expect(out).toStartWith("ENDED K-1");
+		expect(out).toContain("WARN ROSTER not written: roster busy");
+		expect(out).toEndWith("WARN TALLY not written: tally busy");
+		expect(existsSync(lockPath(s.dir, "K-1"))).toBe(false);
+	}, 40_000);
+
 	test("CN2: a builder whose squad is gone is reported as skipped, the others are counted", async () => {
 		const s = await begin(false);
 		asyncBuilder(s, "S1");
@@ -9608,6 +9655,17 @@ describe("tally wiring (#144)", () => {
 				"TALLY @smol medium code: proven 1, proven-regression 0, corrupted 2",
 				"PROPOSE code squads: default tier standard (now light: @smol medium corrupted 2 of 3)",
 			]);
+		});
+
+		test("CN4: a custom STRATEGIUM_TIERS selector maps the row to its tier", async () => {
+			const s = seeded([{ model: "@mine", effort: "low", kind: "code", proven: 0, regression: 0, corrupted: 3 }]);
+			process.env.STRATEGIUM_TIERS = "light=@mine:low";
+			try {
+				await day(s);
+				expect((await s.call({ action: "report" })).split("\n").at(-1)).toBe("PROPOSE code squads: default tier standard (now light: @mine low corrupted 3 of 3)");
+			} finally {
+				delete process.env.STRATEGIUM_TIERS;
+			}
 		});
 
 		test("a fresh state dir still answers exactly IDLE", async () => {
