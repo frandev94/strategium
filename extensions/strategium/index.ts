@@ -1400,13 +1400,14 @@ const asCommands = (s: string) =>
 	s.replace(/\$\{IFS\}|\$IFS\b/g, " ").replace(CASE_ARM, m => `${m.slice(0, -1)};`).replace(/\{(?=\s)/g, ";").replace(REDIRECTION, "");
 
 /**
- * Linear heredoc stripper, same reading as /<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2(?=\n|$)/: the opener line stays
- * (its redirect writes the file), the body goes, the terminator is the first line from two lines below the opener that
- * equals the word after optional leading blanks. Like the regex's backtracking, an unquoted word shrinks to a shorter prefix
- * when only that prefix ends a line (`<<EOFX` closes at `EO`, the rest `FX` stays on the opener line). Terminator lookups use
- * a word -> line numbers map and try only prefix lengths that some line has, so no opener rescans the text.
+ * Linear heredoc stripper: the opener line stays (its redirect writes the file), the body goes, the terminator is the first
+ * line after the opener that equals the word after optional leading blanks (as bash: an empty body is fine). An opener inside
+ * quotes on its own line (`echo "<<Z"`) is no opener (unless `quoted` is false: main's quote-blind reading, terminator from
+ * two lines below). Like the regex it replaced, an unquoted word shrinks to a shorter
+ * prefix when only that prefix ends a line (`<<EOFX` closes at `EO`, the rest `FX` stays on the opener line). Terminator
+ * lookups use a word -> line numbers map and try only prefix lengths that some line has, so no opener rescans the text.
  */
-function stripHeredocs(s: string): string {
+function stripHeredocs(s: string, quoted = true): string {
 	let starts: number[] | undefined;
 	let byWord: Map<string, number[]> | undefined;
 	let lens: number[] = [];
@@ -1432,8 +1433,17 @@ function stripHeredocs(s: string): string {
 		return lo;
 	};
 	let out = "", copied = 0, nl = -2;
+	// quote state of the current line, advanced once over the text up to each opener (never rescanned)
+	let quote = "", qpos = 0;
 	for (let i = s.indexOf("<<"); i >= 0; i = s.indexOf("<<", i + 1)) {
-		if (s[i - 1] === "<") continue;
+		for (; qpos < i; qpos++) {
+			const c = s[qpos];
+			if (c === "\n") quote = "";
+			else if (c === "\\" && quote !== "'") qpos++;
+			else if (quote) { if (c === quote) quote = ""; }
+			else if (c === "'" || c === '"') quote = c;
+		}
+		if ((quoted && quote) || s[i - 1] === "<") continue;
 		let p = i + 2;
 		if (s[p] === "-") p++;
 		while (/\s/.test(s[p] ?? "x")) p++;
@@ -1446,7 +1456,7 @@ function stripHeredocs(s: string): string {
 		if (nl !== -1 && nl < rest) nl = s.indexOf("\n", rest);
 		if (nl < 0) continue;
 		if (!starts) index();
-		const from = lineOf(rest) + 2;
+		const from = lineOf(rest) + (quoted ? 1 : 2);
 		let t = -1, k = w1 - w0;
 		for (const len of q ? [k] : lens) {
 			if (len > k) continue;
@@ -1461,6 +1471,8 @@ function stripHeredocs(s: string): string {
 		out += s.slice(copied, i) + "<<HEREDOC" + s.slice(q ? rest : w0 + k, nl);
 		copied = end;
 		i = end - 1;
+		qpos = end;
+		quote = "";
 	}
 	return out + s.slice(copied);
 }
@@ -1471,8 +1483,14 @@ function stripHeredocs(s: string): string {
  */
 // ponytail: a pattern list, not a shell parser; it stops slips, not a determined workaround.
 export function bashBlock(command: string): string | undefined {
+	// The quote-blind reading main used is checked too: the quote blanking misreads $'\'', \" and "$(…"…")", so a body only
+	// that reading drops can pair a quote over a real command.
+	return blockStripped(stripHeredocs(command)) ?? blockStripped(stripHeredocs(command, false));
+}
+
+function blockStripped(stripped: string): string | undefined {
 	// Heredoc bodies are data; quoted strings are blanked, except a quoted redirect target.
-	const cmd = stripHeredocs(command)
+	const cmd = stripped
 		.replace(/(>>?\s*)?('[^']*'|"[^"]*")/g, (m, redir) => (redir ? m : '""'));
 	// A backslash before a word character is an escape (r\m); a Windows path keeps its own, so both readings are checked.
 	// A runner is also looked for in the command as written: `$IFS` inside an assignment value is no space there.

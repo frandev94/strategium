@@ -155,6 +155,19 @@ describe("heredoc scan reads like the regex it replaced", () => {
 	test("allows a spaced opener word", () => expect(bashBlock("cat << EOF\nbun test\nEOF")).toBeUndefined());
 });
 
+describe("heredoc gaps (#191)", () => {
+	test.each(['echo "<<Z"\nbun test\nZ', "echo '<<Z'\nbun test\nZ", "cat <<EOF\nEOF\nbun test\nEOF", 'echo "a\\"<<Z"\nbun test\nZ'])(
+		"refuses runner in %j", cmd => expect(bashBlock(cmd)).toContain(RUNNER_MSG));
+	test.each(['echo "<<Z"\nrm f\nZ', "echo '<<Z'\nrm f\nZ", "cat <<EOF\nEOF\nrm f\nEOF"])(
+		"refuses write in %j", cmd => expect(bashBlock(cmd)).toContain(WRITE_MSG));
+	test.each(['echo "<<Z"', "echo '<<Z'", "cat <<EOF\nEOF", 'echo "a\\"" <<Z\nbun test > a\nZ'])(
+		"allows %j", cmd => expect(bashBlock(cmd)).toBeUndefined());
+	// the quote tracker cannot read $'\'' or "$(echo "'")": the quote-blind reading of main is checked too
+	test.each(["echo $'\\'' <<Z\n\"\nZ\nbun test\n\"x\"", 'echo "$(echo "\'")" <<Z\n"\nZ\nbun test\n"x"'])(
+		"still refuses runner in %j", cmd => expect(bashBlock(cmd)).toContain(RUNNER_MSG));
+	test("still refuses write in an ANSI-C quote case", () => expect(bashBlock("echo $'\\'' <<Z\n\"\nZ\nrm f\n\"x\"")).toContain(WRITE_MSG));
+});
+
 describe("checkSlices", () => {
 	const s = (id: string, files: string[], parallel = true) => ({ id, parallel, files });
 	test("a folder overlaps its files, a name prefix does not", () => {
@@ -307,6 +320,7 @@ describe("bash forms that hide a command", () => {
 		["assign lines", "A=x\n".repeat(5000)], ["long digits", "1".repeat(50000)], ["git options", "git -c ".repeat(5000)],
 		["assign equals", "a=b=".repeat(12500)], ["assign repeats", "A=x".repeat(16666)], ["git many options", "git -c a=b ".repeat(4500)],
 		["heredoc openers", "<<x\n".repeat(12500)], ["closed-looking heredocs", "<<EOF\n".repeat(20000)],
+		["quoted heredoc openers", '"<<Z" '.repeat(8333)], ["quoted openers per line", '"<<Z"\n'.repeat(8333)],
 		["keys then long openers", (() => { let s = ""; for (let l = 1; l <= 200; l++) s += "a".repeat(l - 1) + "b\n"; while (s.length < 50000) s += "<<" + "a".repeat(200) + "\n"; return s; })()],
 	])("scans hostile %s in under 100 ms", (_name, cmd) => {
 		const t0 = performance.now();
