@@ -787,13 +787,17 @@ async function stepsSealRow(R: Run) {
 	await R.snap("screen");
 	await openSnap(R);
 }
+/** Cell column of the waiting glyph in the SEALS chain on row y (-1: no chain there). */
+export function sealGlyphCol(o: Snap, y: number) {
+	const m = /\u{F051F}( +)Plan → ○ Demo/u.exec(o.row(y));
+	return m ? o.colOf(y, m[0]) : -1;
+}
 function checksSealRow(C: Ctx) {
 	const sc = snapOf(C, "screen"), o = snapOf(C, "open"), y = o.where("SEALS");
 	C.ck("footer has seal Plan", sc.has("seal Plan"), null, "seal Plan", sc);
 	// chain: waiting glyph (1 cell, then padding spaces) Plan, then ' → ', then '○ Demo'
-	const m = y >= 0 ? /\u{F051F}( +)Plan → ○ Demo/u.exec(o.row(y)) : null;
-	const start = m ? [...o.row(y).slice(0, m.index)].length : -1; // a code-point index, compared with a cell x like Python's m.start()
-	C.ck("SEALS row is '<U+F051F> Plan → ○ Demo', glyph 1 cell", m !== null && !o.wide.has(`${y},${start}`), o.row(y), null, o);
+	const start = y >= 0 ? sealGlyphCol(o, y) : -1;
+	C.ck("SEALS row is '<U+F051F> Plan → ○ Demo', glyph 1 cell", start >= 0 && !o.wide.has(`${y},${start}`), o.row(y), null, o);
 	C.ck("no SEAL ─ box title", !o.rowsText.some(r => r.includes("SEAL ─")), null, null, o);
 	C.ck("panel title SEAL PLAN · awaits you", o.has("SEAL PLAN · awaits you"), null, null, o);
 	C.ck("panel default line", o.has("the details are in the Captain's message"), null, null, o);
