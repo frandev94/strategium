@@ -1,3 +1,21 @@
+## [0.2.43] - 2026-11-23
+
+### 🚀 Features
+
+- *(extension)* Per-tier tally of ratings across runs
+
+### 🐛 Bug Fixes
+
+- *(extension)* A tier proposal stops once a heavier tier is tried; end never fails on the tally
+- *(extension)* A lone heavier-tier result does not mute a tier proposal
+
+### 📚 Documentation
+
+- Tier proposals at Muster and lessons promoted after two runs
+
+### ⚙️ Miscellaneous Tasks
+
+- Line endings: no stray CR in the READMEs, tally.test.ts in LF
 ## [0.2.42] - 2026-11-23
 
 ### 🚀 Features
