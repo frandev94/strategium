@@ -1678,6 +1678,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		key: undefined as string | undefined,
 		chronicle: [] as Entry[],
 		station: undefined as string | undefined, // the station the chronicle last saw, kept across a rebuild init so the next done does not log it again
+		asked: undefined as string | null | undefined, // the seal the chronicle last saw waiting (null: none); undefined: not known yet
 		notes: {} as Record<string, Note>,
 		dirty: false,
 		seal: undefined as { id: string; lines: string[] } | undefined, // what the Captain prepared for the seal that waits (the `seal` action)
@@ -1711,6 +1712,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		cockpit.key = key;
 		cockpit.chronicle = [];
 		cockpit.station = undefined;
+		cockpit.asked = undefined;
 		cockpit.notes = {};
 		cockpit.deployed.clear();
 		cockpit.roster = undefined;
@@ -1745,6 +1747,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			if (!shaped) throw new Error("another run's or a malformed state");
 			resetCockpit(key);
 			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP);
+			for (const { text } of [...cockpit.chronicle].reverse()) {
+				if (cockpit.station === undefined) cockpit.station = /^station (.+)$/.exec(text)?.[1];
+				if (cockpit.asked === undefined) cockpit.asked = /seal (.+) awaits the Chapter Master$/.exec(text)?.[1] ?? (/ granted$/.test(text) ? null : undefined);
+			}
 			cockpit.notes = saved.notes;
 			for (const [id, job] of saved.deployed as [string, Deployed][]) {
 				// Hand-edited or damaged numbers are read as absent.
@@ -3220,10 +3226,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			record({ event: "station", key: run.key, station: now.station.slice(0, 200) });
 		}
 		if (now) cockpit.station = now.station;
-		if (now?.seal && now.seal !== was?.seal) {
+		if (now?.seal && now.seal !== (cockpit.asked !== undefined ? cockpit.asked : was?.seal)) {
 			log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
 			record({ event: "seal", key: run.key, seal: (waitingSeal(phases)?.id ?? now.seal).slice(0, 200), state: "asked" });
 		}
+		if (now) cockpit.asked = now.seal ?? null;
 		// A hand-off (plan stations replaced by the remaining ones) is the approval: the seal that waited is granted.
 		const handedOff = isHandOff(details?.op, before, phases) ? waitingSeal(before) : undefined;
 		let sealed: Run = { ...run, phases };
