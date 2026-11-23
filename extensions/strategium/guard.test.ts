@@ -147,6 +147,14 @@ describe("bash writes, every pattern", () => {
 	test.each(allowed)("allows %s", cmd => expect(bashBlock(cmd)).toBeUndefined());
 });
 
+describe("heredoc scan reads like the regex it replaced", () => {
+	test.each([
+		// the word shrinks to a terminator that exists: <<EOFX ends at the line EO, so the later bun test is a command
+		'cat <<EOFX\nEOFX\necho "<<Z"\nEO\nbun test\nZ', "cat <<'EOF\nbun test\nEOF", "cat <<EOF\n\nEOF\nbun test\n",
+	])("refuses %j", cmd => expect(bashBlock(cmd)).toContain(RUNNER_MSG));
+	test("allows a spaced opener word", () => expect(bashBlock("cat << EOF\nbun test\nEOF")).toBeUndefined());
+});
+
 describe("checkSlices", () => {
 	const s = (id: string, files: string[], parallel = true) => ({ id, parallel, files });
 	test("a folder overlaps its files, a name prefix does not", () => {
@@ -299,6 +307,7 @@ describe("bash forms that hide a command", () => {
 		["assign lines", "A=x\n".repeat(5000)], ["long digits", "1".repeat(50000)], ["git options", "git -c ".repeat(5000)],
 		["assign equals", "a=b=".repeat(12500)], ["assign repeats", "A=x".repeat(16666)], ["git many options", "git -c a=b ".repeat(4500)],
 		["heredoc openers", "<<x\n".repeat(12500)], ["closed-looking heredocs", "<<EOF\n".repeat(20000)],
+		["keys then long openers", (() => { let s = ""; for (let l = 1; l <= 200; l++) s += "a".repeat(l - 1) + "b\n"; while (s.length < 50000) s += "<<" + "a".repeat(200) + "\n"; return s; })()],
 	])("scans hostile %s in under 100 ms", (_name, cmd) => {
 		const t0 = performance.now();
 		bashBlock(cmd);

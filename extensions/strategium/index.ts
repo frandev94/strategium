@@ -1398,24 +1398,31 @@ const asCommands = (s: string) =>
 	s.replace(/\$\{IFS\}|\$IFS\b/g, " ").replace(CASE_ARM, m => `${m.slice(0, -1)};`).replace(/\{(?=\s)/g, ";").replace(REDIRECTION, "");
 
 /**
- * Linear heredoc stripper. Same reading as /<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2(?=\n|$)/: the opener line stays
+ * Linear heredoc stripper, same reading as /<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2(?=\n|$)/: the opener line stays
  * (its redirect writes the file), the body goes, the terminator is the first line from two lines below the opener that
- * equals the word after optional leading blanks. Terminator lookups use a word -> line numbers map, so no opener rescans the text.
- * shortcut: a word is never shortened to match a terminator (the regex would backtrack `<<EOF` to `EO`); nobody writes that.
+ * equals the word after optional leading blanks. Like the regex's backtracking, an unquoted word shrinks to a shorter prefix
+ * when only that prefix ends a line (`<<EOFX` closes at `EO`, the rest `FX` stays on the opener line). Terminator lookups use
+ * a word -> line numbers map and try only prefix lengths that some line has, so no opener rescans the text.
  */
 function stripHeredocs(s: string): string {
 	let starts: number[] | undefined;
 	let byWord: Map<string, number[]> | undefined;
+	let lens: number[] = [];
 	const index = () => {
 		starts = [0];
 		byWord = new Map();
+		const seen = new Set<number>();
 		for (let i = s.indexOf("\n"); i >= 0; i = s.indexOf("\n", i + 1)) starts.push(i + 1);
 		starts.forEach((st, n) => {
 			let a = st;
 			while (s[a] === " " || s[a] === "\t") a++;
 			const e = n + 1 < starts!.length ? starts![n + 1] - 1 : s.length;
-			if (a < e) (byWord!.get(s.slice(a, e)) ?? byWord!.set(s.slice(a, e), []).get(s.slice(a, e))!).push(n);
+			if (a >= e) return;
+			const k = s.slice(a, e);
+			(byWord!.get(k) ?? byWord!.set(k, []).get(k)!).push(n);
+			seen.add(e - a);
 		});
+		lens = [...seen].sort((x, y) => y - x);
 	};
 	const lineOf = (pos: number) => {
 		let lo = 0, hi = starts!.length - 1;
@@ -1437,15 +1444,19 @@ function stripHeredocs(s: string): string {
 		if (nl !== -1 && nl < rest) nl = s.indexOf("\n", rest);
 		if (nl < 0) continue;
 		if (!starts) index();
-		const lines = byWord!.get(s.slice(w0, w1));
-		if (!lines) continue;
 		const from = lineOf(rest) + 2;
-		let lo = 0, hi = lines.length;
-		while (lo < hi) { const m = (lo + hi) >> 1; if (lines[m] < from) lo = m + 1; else hi = m; }
-		if (lo === lines.length) continue;
-		const t = lines[lo];
+		let t = -1, k = w1 - w0;
+		for (const len of q ? [k] : lens) {
+			if (len > k) continue;
+			const lines = byWord!.get(s.slice(w0, w0 + len));
+			if (!lines) continue;
+			let lo = 0, hi = lines.length;
+			while (lo < hi) { const m = (lo + hi) >> 1; if (lines[m] < from) lo = m + 1; else hi = m; }
+			if (lo < lines.length) { t = lines[lo]; k = len; break; }
+		}
+		if (t < 0) continue;
 		const end = t + 1 < starts!.length ? starts![t + 1] - 1 : s.length;
-		out += s.slice(copied, i) + "<<HEREDOC" + s.slice(rest, nl);
+		out += s.slice(copied, i) + "<<HEREDOC" + s.slice(q ? rest : w0 + k, nl);
 		copied = end;
 		i = end - 1;
 	}
