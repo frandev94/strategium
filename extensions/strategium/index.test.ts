@@ -5058,6 +5058,7 @@ describe("cockpit", () => {
 				expect(saved(s.dir).key).toBe("K-2");
 			});
 
+			// 205 todo redraws each write the cockpit file to disk: slow on a loaded Windows box.
 			test("the chronicle keeps 200 entries on disk, the newest, and the overlay shows the newest first", async () => {
 				const { s, ui } = await running();
 				for (let i = 0; i < 205; i++) s.todo([{ name: `St${i}`, tasks: [{ content: "[captain] Go", status: "in_progress" }] }]);
@@ -5069,7 +5070,7 @@ describe("cockpit", () => {
 				const text = await chron(again.s, again.ui);
 				expect(text.indexOf("station St204")).toBeLessThan(text.indexOf("station St203"));
 				expect(text).not.toContain("station St4 ");
-			});
+			}, 30_000);
 
 			test("an untouched tick writes nothing", async () => {
 				const { s } = await midRun();
