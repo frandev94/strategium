@@ -1,3 +1,18 @@
+## [0.2.40] - 2026-11-23
+
+### 🚀 Features
+
+- *(extension)* Rate each agent from the reviewers' verdict
+
+### 🐛 Bug Fixes
+
+- *(extension)* Rate a blocking-task builder; the FALL line is provisional
+- *(extension)* Ratings stay one per agent and are cleaned on every end
+- *(extension)* Each agent id keeps its own rating
+
+### 📚 Documentation
+
+- Agent ratings, and the name action in the skill's action list
 ## [0.2.39] - 2026-11-23
 
 ### 🚀 Features
