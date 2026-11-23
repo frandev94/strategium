@@ -1,3 +1,15 @@
+## [0.2.51] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Clean the run key, station name, task text and agent id before drawing
+- *(cockpit)* Clean the squad id in the brothers box and the chronicle time
+
+### 🧪 Testing
+
+- *(rules)* The discovery hook gets a timeout for cold Windows runners
+- *(cockpit)* Cover a named squad with a hostile slice id
+- *(cockpit)* Keep the hostile slice typed so the check passes
 ## [0.2.50] - 2026-11-23
 
 ### 🐛 Bug Fixes
