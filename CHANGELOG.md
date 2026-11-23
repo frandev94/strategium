@@ -1,3 +1,17 @@
+## [0.2.46] - 2026-11-23
+
+### 🚀 Features
+
+- *(extension)* Switch ends the run and begins another key in one call
+
+### 🐛 Bug Fixes
+
+- *(extension)* Switch keeps the session's own repo and waits for its agents
+- *(extension)* Switch refusal names builders; recovery docs
+
+### 📚 Documentation
+
+- Switch between keys
 ## [0.2.45] - 2026-11-23
 
 ### 🚀 Features
