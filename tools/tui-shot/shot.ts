@@ -877,13 +877,18 @@ export function askRows(rows: string[]): string[] {
 	const i = rows.findIndex(r => /^\W*ask\b/i.test(r) || r.includes("REPLAY-ANSWER"));
 	return i < 0 ? rows : rows.slice(i);
 }
+// omp 18.x draws every option; 19.x draws only the current one plus a "1/2" counter.
+export const dialogShowsPick = (rows: string[]) => {
+	const t = rows.join("\n");
+	return t.includes("REPLAY: pick one") && t.includes("Yes") && (t.includes("No") || /\b1\/2\b/.test(t));
+};
 function checksAsk(C: Ctx) {
 	const c = snapOf(C, "cockpit"), d = snapOf(C, "dialog"), a = snapOf(C, "answered");
 	C.ck("cockpit: rows 0 and last are the frame", c.row(0).startsWith("╔═") && c.row(c.rows - 1).startsWith("╚═"), [cut(c.row(0), 0, 20), cut(c.row(c.rows - 1), 0, 20)], null, c);
 	C.ck("dialog: cockpit closed, normal buffer", d.type === "normal" && !d.framed(), d.type, "normal, no frame", d);
 	let y = d.where("Ask");
 	for (const i of range(Math.max(y, 0), Math.min(y + 8, d.rows))) if (d.row(i)) C.say("dialog | " + d.row(i)); // the dialog as drawn, with its hint line
-	C.ck("dialog: REPLAY: pick one, Yes and No on screen", d.has("REPLAY: pick one") && d.has("Yes") && d.has("No"), null, null, d);
+	C.ck("dialog: REPLAY: pick one, Yes and No (or the 1/2 counter) on screen", dialogShowsPick(d.rowsText), null, null, d);
 	y = a.where("REPLAY-ANSWER"); // the answer prints as a JSON block under it
 	C.ck("answered: REPLAY-ANSWER with No", y >= 0 && range(y, y + 5).map(i => a.row(i)).join(" ").includes('"pick": "No"'), null, null, a);
 	C.ck("answered: no cancel on screen", !askRows(a.rowsText).some(r => r.toLowerCase().includes("cancel")), null, null, a);

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allExit, askRows, type Args, CASTER_TEXT, casterEnv, namesEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+import { allExit, askRows, type Args, CASTER_TEXT, casterEnv, dialogShowsPick, namesEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
 
 const cancelled = (rows: string[]) => askRows(rows).some(r => r.toLowerCase().includes("cancel"));
 test("askRows: the startup tip's 'cancels' above the ask is ignored", () => {
@@ -16,6 +16,11 @@ test("askRows: 'Ask cancelled' at or after the ask row is caught", () => {
 test("askRows: no marker scans every row", () => {
 	expect(askRows(["a", "b cancelled"])).toEqual(["a", "b cancelled"]);
 	expect(cancelled(["Tip: ⎋ cancels", "nothing"])).toBe(true);
+});
+test("dialogShowsPick: omp 18 (both options) and 19 (counter) pass, a screen without Yes fails", () => {
+	expect(dialogShowsPick(["REPLAY: pick one", "❯ Yes", "  No"])).toBe(true);
+	expect(dialogShowsPick(["REPLAY: pick one", "❯ ‹ Yes ›  1/2"])).toBe(true);
+	expect(dialogShowsPick(["REPLAY: pick one", "❯ ‹ Maybe ›  1/2"])).toBe(false);
 });
 
 const args = (argv: string[]) => {
