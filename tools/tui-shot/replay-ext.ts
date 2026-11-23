@@ -21,6 +21,8 @@ export default function (pi: ExtensionAPI) {
 	const dir = process.env.STRATEGIUM_REPLAY_DIR;
 	if (!dir) return;
 	const log = (rec: Record<string, unknown>) => appendFileSync(join(dir, "replay.log"), `${JSON.stringify(rec)}\n`);
+	let endVia: "write" | "bash" = "write"; // how the end call goes: `write xd://strategium` (omp 18.22), else the bash command form (19.x refuses that target)
+	let endTried = false;
 
 	// Duck-typed AssistantMessageEventStream: the loop only does for-await (agent-loop.ts:2295) and result() (:2354).
 	const stream = (events: unknown[], final: unknown) => ({
@@ -61,20 +63,30 @@ export default function (pi: ExtensionAPI) {
 
 			const msgs = context.messages as Msg[];
 			const last = msgs[msgs.length - 1];
-			if (last?.role === "toolResult") return text(`REPLAY-ANSWER ${textOf(last).slice(0, 200)}`);
+			// A host that refuses `write xd://strategium` answers with an error result: the next turn ends the run with the bash command form.
+			const refused = endTried && endVia === "write" && last?.role === "toolResult" && (last as Msg & { isError?: boolean }).isError === true;
+			if (refused) endVia = "bash";
+			if (last?.role === "toolResult" && !refused) return text(`REPLAY-ANSWER ${textOf(last).slice(0, 200)}`);
 			// Side turns (title...) carry no tools: they get plain text, only the main turn waits and calls ask.
 			const names = (context.tools ?? []).map(t => t.name);
-			if (last?.role !== "user" || !textOf(last).trimEnd().endsWith("replay-ask") || !names.length) return text("replay");
+			const ending = refused || textOf(last).trimEnd().endsWith("replay-end");
+			if (!refused && (last?.role !== "user" || !(ending || textOf(last).trimEnd().endsWith("replay-ask")) || !names.length)) return text("replay");
+			if (ending) endTried = true;
 
-			// ask is a discoverable device when tools.xdev is on (tools/ask.ts:371): then it is `write xd://ask`.
-			const call = names.includes("ask")
-				? { name: "ask", arguments: { html: FORM } }
-				: { name: "write", arguments: { path: "xd://ask", content: JSON.stringify({ html: FORM }) } };
+			// ask is a discoverable device when tools.xdev is on (tools/ask.ts:371): then it is `write xd://ask`. The strategium tool is not a model tool here: it ends the run as `write xd://strategium` or, where the host has no such target, as its bash command form.
+			const endArgs = JSON.stringify({ action: "end" });
+			const call = ending
+				? endVia === "write"
+					? { name: "write", arguments: { path: "xd://strategium", content: endArgs } }
+					: { name: "bash", arguments: { command: `strategium -j '${endArgs}'` } }
+				: names.includes("ask")
+					? { name: "ask", arguments: { html: FORM } }
+					: { name: "write", arguments: { path: "xd://ask", content: JSON.stringify({ html: FORM }) } };
 			const message = out([{ type: "toolCall", id: "replay-ask-1", ...call }], "toolUse");
 			async function* events() {
 				const start = { type: "start", partial: out([], "toolUse") };
 				yield start;
-				log({ ev: "stream", phase: "start" });
+				log({ ev: "stream", phase: "start", names });
 				while (!existsSync(join(dir!, "go"))) {
 					if (options?.signal?.aborted) return;
 					await sleep(100);

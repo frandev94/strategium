@@ -1020,3 +1020,14 @@ function cockpitLines(view: View, width: number, frame: number, pal: Palette, he
 		si,
 	);
 }
+
+/** The final screen an open cockpit shows once its run ended: the debrief summary under a header with the key. Plain chrome at every width; a summary taller than `height` is clipped with a `…` row, the footer stays last. */
+export function renderDebrief(key: string, summary: string[], width: number, pal: Palette, height?: number): string[] {
+	const head = fit(`${paint(pal.gold, "✠ STRATEGIUM")} · ${paint(pal.parchment, clean(key))} · ${paint(pal.gold, "debrief")}`, width);
+	const rows = summary.flatMap(l => wrap(clean(l), width - 4).map((r, i) => paint(pal.parchment, `${i ? "    " : "  "}${r}`)));
+	const room = height === undefined ? rows.length : Math.max(0, height - 3);
+	const body = rows.length > room ? [...rows.slice(0, Math.max(0, room - 1)), paint(pal.iron, "  …")] : rows;
+	const gap = height === undefined ? [] : Array<string>(Math.max(0, room - body.length)).fill("");
+	const lines = [head, "", ...body, ...gap, paint(pal.iron, "esc/q close")].map(l => fit(l, width));
+	return pal.bg ? lines.map(l => pal.bg + pad(l, width) + BG_RESET) : lines;
+}

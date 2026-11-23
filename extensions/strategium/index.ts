@@ -33,7 +33,7 @@ import { debrief, type AgentCost, type Reported } from "./debrief";
 import { casterFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./caster";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, FINAL_STATUSES, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
+import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, FINAL_STATUSES, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, renderDebrief, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
 import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./names";
 import { applyRun, corrupted, type Brothers, type Honour, honours, loadRoster, rankBrothers, runOutcomes, squadBrothers, STALE_MS, unfinished, updateRoster, withRosterLock } from "./roster";
 import { loadContract, noteTarget, recordLine, recordNote, secretKind } from "./vault";
@@ -661,7 +661,7 @@ function rolesFor(run: Run, live: { key?: string; deployed?: Map<string, Deploye
 }
 
 /** Build the run's debrief and save it under <state>/debriefs (kept after the run): the result lines for `end`. A failure never stops the end. */
-function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } } | undefined, clamp: boolean, honoursIn?: { rows: Honour[]; unsaved?: string }): string[] {
+function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } } | undefined, clamp: boolean, honoursIn?: { rows: Honour[]; unsaved?: string }, out?: { summary?: string[] }): string[] {
 	try {
 		const evs = eventsSince(run.key, run.since);
 		// A run stopped before `end` has no pause tail: its last interval closes at the stop (or at a later station entry). A takeover keeps it: the crash gap is real.
@@ -690,16 +690,21 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 		try {
 			writeAtomic(file, markdown);
 		} catch (err) {
-			return [`DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`, ...summary, markdown];
+			const failed = `DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`;
+			if (out) out.summary = [failed, ...summary]; // the open cockpit's final screen shows what the end reports, without the markdown
+			return [failed, ...summary, markdown];
 		}
+		if (out) out.summary = [`DEBRIEF ${file}`, ...summary];
 		return [`DEBRIEF ${file}`, ...summary];
 	} catch (err) {
-		return [`DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`];
+		const failed = `DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`;
+		if (out) out.summary = [failed];
+		return [failed];
 	}
 }
 
 /** End this session's run, or another session's run of `key` by naming that crashed session's id in `takeover`. */
-function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } }, names = false): string {
+function endRun(sid: string, key?: string, takeover?: string, reported?: Reported, live?: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } }, names = false, out?: { summary?: string[] }): string {
 	// ownRun() may drop the run file, so ask for it once.
 	const mine = ownRun(sid);
 	const run = key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine;
@@ -716,7 +721,7 @@ function endRun(sid: string, key?: string, takeover?: string, reported?: Reporte
 	const tally = recordTally(run, rolesFor(run, live), record?.error === "roster busy" ? 2000 : undefined);
 	release(stateDir(), run.key, sid);
 	// After the last span is closed and before the run's files go: the debrief reads them.
-	const lines = writeDebrief(run, reported, live, run.sid === sid, names ? { rows: record?.honours ?? [], ...(record?.error ? { unsaved: record.error } : {}) } : undefined);
+	const lines = writeDebrief(run, reported, live, run.sid === sid, names ? { rows: record?.honours ?? [], ...(record?.error ? { unsaved: record.error } : {}) } : undefined, out);
 	dropFiles(run.sid);
 	dropPointer(sid);
 	return [`ENDED ${run.key}`, ...lines, ...(record ? [record.line] : []), ...(tally ? [tally] : [])].join("\n");
@@ -1749,6 +1754,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		overlay: undefined as Tui | undefined,
 		status: undefined as "working" | "awaiting" | undefined,
 		close: undefined as (() => void) | undefined,
+		debrief: undefined as { key: string; lines: string[] } | undefined, // the final screen: set at `end` while the overlay is open, so the overlay outlives the run
 		caster: {} as CasterState,
 	};
 	const SEAL_LINES = 200;
@@ -1777,6 +1783,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		cockpit.seal = undefined;
 		cockpit.nav = {};
 		cockpit.transcript = undefined;
+		cockpit.debrief = undefined;
 		cockpit.dirty = key !== undefined;
 	};
 	/** The open transcript's rows (the one nav names; undefined with none open): the files are stat'ed and read again only when their size or mtime changed. */
@@ -2025,6 +2032,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			cockpit.overlay = undefined;
 			cockpit.nav = {}; // a closed cockpit reads no transcript on a later redraw
 			cockpit.transcript = undefined;
+			cockpit.debrief = undefined;
 		};
 		// Not awaited: the command returns at once and the overlay lives until Esc or q.
 		Promise.resolve(
@@ -2034,7 +2042,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					let open = true; // a timer callback the host still holds after close does nothing
 					const timer = setInterval(() => {
 						try {
-							if (!open) return;
+							if (!open || cockpit.debrief) return; // the final screen is static: nothing to redraw until esc/q or a new run
 							frame++;
 							if (live) setAgentStatus(live); // the host's idle flag lags agent_end, and the last job ending sends no event
 							// Every second frame the children's files are read again: at most once a second.
@@ -2058,10 +2066,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					cockpit.overlay = tui;
 					cockpit.close = close;
 					return {
-						render: width => renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows, relic.on),
+						render: width => (cockpit.debrief ? renderDebrief(cockpit.debrief.key, cockpit.debrief.lines, width, pal, tui.terminal.rows) : renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows, relic.on)),
 						handleInput: data => {
 							const act = keyAction(data, !!cockpit.nav.detail);
 							if (act === "close") return close();
+							if (cockpit.debrief) return; // the final screen takes no other key
 							if (!act || !cockpit.view || !cockpit.input) return;
 							const open = cockpit.nav.detail?.transcript;
 							cockpit.nav = navigate(cockpit.view, act);
@@ -2125,12 +2134,21 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const mine = ownRun(sid);
 		// endRun picks the same run and deletes its file: the end line is built from this copy.
 		const target = vault.dir ? (key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine) : undefined;
-		const result = endRun(sid, key, takeover, reported, cockpit, naming.on);
+		const out: { summary?: string[] } = {};
+		const result = endRun(sid, key, takeover, reported, cockpit, naming.on, out);
 		if (target && result.split("\n", 1)[0] === `ENDED ${target.key}`) {
 			const time = result.split("\n").find(l => l.startsWith("TIME "))?.slice(5).split(":")[0];
 			vaultWrite(ctx, target, `run ended${target.merged ? ", PR merged" : ""}${time ? ` (${time})` : ""}`);
 		}
 		if (mine && result.split("\n", 1)[0] === `ENDED ${mine.key}`) {
+			// An open cockpit stays up as the final screen; a closed one is not opened.
+			if (cockpit.close && out.summary) {
+				abortCaster(); // no run left to cast about
+				cockpit.nav = {}; // an open detail must not make esc a "back" on the final screen
+				cockpit.transcript = undefined;
+				cockpit.debrief = { key: mine.key, lines: [...out.summary, ...(mine.merged ? ["PR merged"] : [])] };
+				cockpit.overlay?.requestRender();
+			}
 			await restoreTools(mine.hidden);
 			const err = alert(sid, "theme", `${mine.key}: run ended`, ctx);
 			if (err) alarmWarn(ctx, err);
@@ -2162,7 +2180,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const sid = sidOf(ctx);
 			const found = ownRun(sid);
 			if (!found) {
-				cockpit.close?.();
+				if (!cockpit.debrief) cockpit.close?.(); // the final screen waits for esc/q
 				return ctx.ui.setStatus("strategium", undefined);
 			}
 			// A gap in our own heartbeats means the machine slept: close the block at the last beat and stay paused.
@@ -2811,6 +2829,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 
 	const onSession = async (e: { type: string; reason?: string }, ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
+		if (cockpit.debrief) cockpit.close?.(); // another session: the old run's final screen goes
 		// omp emits session_switch, not session_start, for a session opened in the same process: follow the latest one.
 		const prevSid = liveSid;
 		live = ctx;

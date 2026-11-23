@@ -23,6 +23,7 @@ import {
 	palette,
 	pushEntry,
 	renderCockpit,
+	renderDebrief,
 	sealsFrom,
 	type Deployed,
 	type Entry,
@@ -3338,5 +3339,53 @@ describe("control characters in model text", () => {
 		for (const l of renderCockpit(view, 100, 0, TRUE)) expect(plain(l)).not.toMatch(bad);
 		const named = cockpitView(input({ phases: phs, slices: [slice as never], names: { squads: { [slice.id]: { name: "N" } } } as never }));
 		for (const l of renderCockpit(named, 100, 0, TRUE)) expect(plain(l)).not.toMatch(bad);
+	});
+});
+
+describe("renderDebrief", () => {
+	const SUMMARY = ["TIME 42 min active, 3 min paused: Muster 5, Skirmish 30", "SEALS Plan 2m, MR 1m", "SPAWNS 3: battle-brother 2, inquisitor 1", "COST none"];
+	test.each([50, 72, 100, 160])("at %i columns every row fits and carries the key, the summary and the close hint", w => {
+		const rows = renderDebrief("K-1", SUMMARY, w, TRUE);
+		for (const r of rows) expect(Bun.stringWidth(r)).toBeLessThanOrEqual(w);
+		const text = plain(rows.join("\n"));
+		expect(text).toContain("K-1");
+		expect(text).toContain("debrief");
+		expect(text).toContain("SEALS Plan 2m, MR 1m");
+		expect(plain(rows.at(-1)!)).toContain("esc/q close");
+	});
+	test("control characters in the key or the summary are cleaned", () => {
+		const rows = renderDebrief("K\x1b[2J-1", ["TIME\x07 1\x1b[31m min"], 72, TRUE);
+		expect(rows.join("\n")).not.toMatch(/\x07|\x1b\[2J|\x1b\[31m/);
+	});
+	test("a summary taller than the height is clipped with a … row and keeps the footer, filling the height exactly", () => {
+		const many = Array.from({ length: 30 }, (_, i) => `LINE ${i}`);
+		const rows = renderDebrief("K-1", many, 72, TRUE, 10);
+		expect(rows).toHaveLength(10);
+		expect(plain(rows.at(-2)!)).toContain("…");
+		expect(plain(rows.at(-1)!)).toContain("esc/q close");
+		expect(plain(rows.join("\n"))).not.toContain("LINE 29");
+	});
+	test("a short summary is padded so the footer sits on the last row", () => {
+		expect(renderDebrief("K-1", SUMMARY, 72, TRUE, 20)).toHaveLength(20);
+	});
+	test("a long summary line wraps instead of being cut", () => {
+		const rows = renderDebrief("K-1", ["TIME " + "word ".repeat(40)], 50, TRUE);
+		expect(plain(rows.join("\n")).match(/word/g)).toHaveLength(40);
+	});
+	test("a wrapped line continues indented 2 columns more than its first row", () => {
+		const rows = renderDebrief("K-1", ["TIME " + "word ".repeat(40)], 50, TRUE).map(plain);
+		const body = rows.filter(r => r.includes("word"));
+		expect(body[0].startsWith("  TIME")).toBe(true);
+		for (const r of body.slice(1)) expect(r.startsWith("    word")).toBe(true);
+	});
+	test("a themed background fills every row to the full width", () => {
+		const pal = palette("truecolor", THEMES["blood-angels"]);
+		expect(pal.bg).toBeDefined();
+		const rows = renderDebrief("K-1", SUMMARY, 72, pal, 12);
+		for (const r of rows) {
+			expect(r.startsWith(pal.bg!)).toBe(true);
+			expect(Bun.stringWidth(r)).toBe(72);
+		}
+		for (const r of renderDebrief("K-1", SUMMARY, 72, TRUE)) expect(r).not.toContain("\x1b[48;");
 	});
 });
