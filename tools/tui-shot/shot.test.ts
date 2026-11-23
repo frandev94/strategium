@@ -1,5 +1,22 @@
 import { expect, test } from "bun:test";
-import { allExit, type Args, CASTER_TEXT, casterEnv, namesEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+import { allExit, askRows, type Args, CASTER_TEXT, casterEnv, namesEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+
+const cancelled = (rows: string[]) => askRows(rows).some(r => r.toLowerCase().includes("cancel"));
+test("askRows: the startup tip's 'cancels' above the ask is ignored", () => {
+	expect(cancelled(["Tip: press Esc, ⎋ cancels", "● ask", "REPLAY-ANSWER", '{"pick": "No"}'])).toBe(false);
+});
+test("askRows: each marker alone (answer row, boxed Ask header) hides the tip's 'cancels'", () => {
+	expect(cancelled(["Tip: ⎋ cancels", "REPLAY-ANSWER", '{"pick": "No"}'])).toBe(false);
+	expect(cancelled(["Tip: ⎋ cancels", "╭─ ? Ask ─", "│ No"])).toBe(false);
+});
+test("askRows: 'Ask cancelled' at or after the ask row is caught", () => {
+	expect(cancelled(["Tip: ⎋ cancels", "● ask", "Ask cancelled"])).toBe(true);
+	expect(cancelled(["Tip: x", "REPLAY-ANSWER cancelled"])).toBe(true);
+});
+test("askRows: no marker scans every row", () => {
+	expect(askRows(["a", "b cancelled"])).toEqual(["a", "b cancelled"]);
+	expect(cancelled(["Tip: ⎋ cancels", "nothing"])).toBe(true);
+});
 
 const args = (argv: string[]) => {
 	const a = parseArgs(argv);
