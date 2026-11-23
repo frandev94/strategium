@@ -5,6 +5,10 @@ const cancelled = (rows: string[]) => askRows(rows).some(r => r.toLowerCase().in
 test("askRows: the startup tip's 'cancels' above the ask is ignored", () => {
 	expect(cancelled(["Tip: press Esc, ⎋ cancels", "● ask", "REPLAY-ANSWER", '{"pick": "No"}'])).toBe(false);
 });
+test("askRows: each marker alone (answer row, boxed Ask header) hides the tip's 'cancels'", () => {
+	expect(cancelled(["Tip: ⎋ cancels", "REPLAY-ANSWER", '{"pick": "No"}'])).toBe(false);
+	expect(cancelled(["Tip: ⎋ cancels", "╭─ ? Ask ─", "│ No"])).toBe(false);
+});
 test("askRows: 'Ask cancelled' at or after the ask row is caught", () => {
 	expect(cancelled(["Tip: ⎋ cancels", "● ask", "Ask cancelled"])).toBe(true);
 	expect(cancelled(["Tip: x", "REPLAY-ANSWER cancelled"])).toBe(true);
