@@ -1,3 +1,13 @@
+## [0.2.54] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(extension)* Notifications read as one sentence and say the next step
+- *(extension)* Notification hints that hold, and one sentence style
+
+### 🧪 Testing
+
+- *(extension)* Pin the alarm-exit hint
 ## [0.2.53] - 2026-11-23
 
 ### 🐛 Bug Fixes
