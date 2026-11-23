@@ -3329,14 +3329,14 @@ describe("control characters in model text", () => {
 		}
 	});
 	test("slice id, chronicle time and a browsed station name carry none", () => {
-		const slice = { id: `s${evil}\n` } as never;
+		const slice = { id: `s${evil}\n` };
 		const phs: Phase[] = [
 			{ name: `Br${evil}`, tasks: [{ content: "[battle-brother] x", status: "completed" }] },
 			{ name: "Act", tasks: [{ content: "[battle-brother] y", status: "in_progress" }] },
 		];
-		const view = cockpitView(input({ phases: phs, slices: [slice], chronicle: [{ at: `1${evil}`, who: "X", text: "t" }], nav: { shown: { phase: 0, from: 1 } } }));
+		const view = cockpitView(input({ phases: phs, slices: [slice as never], chronicle: [{ at: `1${evil}`, who: "X", text: "t" }], nav: { shown: { phase: 0, from: 1 } } }));
 		for (const l of renderCockpit(view, 100, 0, TRUE)) expect(plain(l)).not.toMatch(bad);
-		const named = cockpitView(input({ phases: phs, slices: [slice], names: { squads: { [slice.id]: { name: "N" } as never } } as never }));
+		const named = cockpitView(input({ phases: phs, slices: [slice as never], names: { squads: { [slice.id]: { name: "N" } } } as never }));
 		for (const l of renderCockpit(named, 100, 0, TRUE)) expect(plain(l)).not.toMatch(bad);
 	});
 });
