@@ -45,17 +45,48 @@ export function claim(dir: string, key: string, sid: string, takeover?: string):
 	const want = takeover.slice(-8);
 	const guard = `${lock}.force`;
 	acquireGuard(guard, sid, held);
+	let marker: string | undefined;
 	try {
 		const now = holder(lock);
 		if (!now || now.slice(-8) !== want) throw held();
+		// Point of no return: one exclusive marker per dead holder, whatever happens to the guard
+		// (two takeovers can both judge it stale and both own a "guard"). Re-read the holder after
+		// taking it: a takeover that finished in between has already replaced it.
+		const mine = `${lock}.from-${safeName(now)}`;
+		takeMarker(mine, held);
+		marker = mine;
+		const again = holder(lock);
+		if (again !== now) throw held();
 		// Replace the lock in one step: rm + create leaves it missing, and a session reading it
 		// then believes it lost the ticket.
 		const tmp = `${lock}.${process.pid}.swap`;
 		writeFileSync(tmp, sid, { flag: "wx" });
 		renameSync(tmp, lock);
 	} finally {
-		rmSync(guard, { force: true });
+		// Cleanup must never throw: a winner that errors after winning looks like a loser (Bun on
+		// Windows throws EFAULT when two processes delete the same file).
+		try {
+			rmSync(guard, { force: true });
+		} catch {}
+		try {
+			if (marker) rmSync(marker, { force: true });
+		} catch {}
 	}
+}
+
+/** Exclusive create of the per-holder marker; a marker left by a killed process is dropped after five minutes. */
+function takeMarker(marker: string, held: () => Error): void {
+	for (let i = 0; i < 2; i++) {
+		try {
+			writeFileSync(marker, "", { flag: "wx" });
+			return;
+		} catch {}
+		try {
+			if (Date.now() - statSync(marker).mtimeMs <= 5 * 60_000) break;
+			rmSync(marker, { force: true });
+		} catch {}
+	}
+	throw held();
 }
 
 /**
@@ -66,8 +97,9 @@ function acquireGuard(guard: string, sid: string, held: () => Error): void {
 	const stale = (): boolean => {
 		try {
 			// A guard just created and not yet written is empty: its age is the file's, not "unparseable = stale".
+			// A half-written one ("sid ") reads as 0: also the file's age.
 			const at = Number(readFileSync(guard, "utf8").split(" ")[1]);
-			return Date.now() - (Number.isFinite(at) ? at : statSync(guard).mtimeMs) > 5 * 60_000;
+			return Date.now() - (Number.isFinite(at) && at > 0 ? at : statSync(guard).mtimeMs) > 5 * 60_000;
 		} catch {
 			return false;
 		}
@@ -77,7 +109,9 @@ function acquireGuard(guard: string, sid: string, held: () => Error): void {
 		return;
 	} catch {}
 	if (!stale()) throw held();
-	rmSync(guard, { force: true });
+	try {
+		rmSync(guard, { force: true });
+	} catch {}
 	try {
 		writeFileSync(guard, `${sid} ${Date.now()}`, { flag: "wx" });
 	} catch {
