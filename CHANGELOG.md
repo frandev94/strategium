@@ -1,3 +1,12 @@
+## [0.2.47] - 2026-11-23
+
+### 🚀 Features
+
+- *(timer)* Report splits each overlap between the keys that ran in it
+
+### 🐛 Bug Fixes
+
+- *(timer)* A past day's open block ends at 23:59; no 0-min overlap lines
 ## [0.2.46] - 2026-11-23
 
 ### 🚀 Features
