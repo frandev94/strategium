@@ -372,6 +372,10 @@ describe("recordLine", () => {
 		expect(existsSync(join(root, "2026-11-21.md"))).toBe(false);
 	});
 
+	test("refuses a control character in the daily path", () => {
+		expect(rec("x", "1", { ...contract, daily: "Daily/\x01{date}.md" })).toBe(DAILY_BAD);
+	});
+
 	test("reports daily busy while vault.lock is held, then works once it is gone", () => {
 		mkdirSync(state, { recursive: true });
 		writeFileSync(join(state, "vault.lock"), `${process.pid}-held`);
@@ -639,12 +643,19 @@ describe("recordNote (#152)", () => {
 	test("refuses a folder, and a symlink or junction that leaves the vault", () => {
 		mkdirSync(note("Projects/K.md"), { recursive: true });
 		expect(rec()).toBe("note not a regular file");
+		expect(noteTarget(vault, contract, now, "Projects/K.md")).toEqual({ error: "not a regular file" });
 		const outside = join(root, "outside");
 		mkdirSync(outside);
 		writeFileSync(join(outside, "K.md"), "out");
 		symlinkSync(outside, join(vault, "Hosts"), "junction");
 		expect(rec("Hosts/K.md")).toBe("note outside the vault");
 		expect(readFileSync(join(outside, "K.md"), "utf8")).toBe("out");
+	});
+
+	test("refuses a control character in the note path", () => {
+		seed("x\n");
+		expect(rec("Projects/K\n.md")).toBe("note not a relative .md path inside the vault");
+		expect(rec("Projects/K\x01.md")).toBe("note not a relative .md path inside the vault");
 	});
 
 	test("refuses a note over 4 MiB and one that is not UTF-8, leaving both byte-equal", () => {
@@ -720,6 +731,20 @@ describe("secretKind (#152)", () => {
 		"set NODE_ENV to production",
 		"GET /api/v1/users?id=7",
 		"sk-learn installed",
+		"task-based-orchestration-of-battle-brothers",
+		"disk-usage-monitoring-for-the-vault-host",
+		"feat/152-task-queue-redesign-for-the-run",
+		"shots in C:/Users/fcojg/AppData/Local/Temp/agent-previews/run152",
+		"moved Debugging/attachments/Strategium152/cockpit.png",
+		"see github.com/frandev94/Strategium/pull/154",
+		"Projects/Strategium-Kanban-Board-Notes2026.md",
+		"feat/152-Record-Action-Captain-Vault-Entries1",
+		"aB".repeat(20),
+		"aB1" + "x".repeat(28),
+		"AB=x",
+		"eyJabcdefg.abcdefgh",
+		"eyJabcdefgh.abcdefg",
+		"Bearer " + "a".repeat(15),
 		"skill://strategium-github",
 		"",
 	];
@@ -729,6 +754,20 @@ describe("secretKind (#152)", () => {
 
 	test("NODE_ENV=production is the accepted false positive", () => {
 		expect(secretKind("NODE_ENV=production")).toBe("NAME=value");
+	});
+
+	test("boundaries: 32 mixed characters are a key, 31 are not; 3-character NAME, 8-character JWT header and 16-character Bearer are refused", () => {
+		expect(secretKind("aB1" + "x".repeat(29))).toBe("key-like string");
+		expect(secretKind("aB1" + "x".repeat(28))).toBeUndefined();
+		expect(secretKind("aB1" + "x".repeat(37))).toBe("key-like string");
+		expect(secretKind("ABC=x")).toBe("NAME=value");
+		expect(secretKind("eyJabcdefgh.abcdefgh")).toBe("token");
+		expect(secretKind("Bearer " + "a".repeat(16))).toBe("token");
+	});
+
+	test("sk- counts only at a word start", () => {
+		expect(secretKind("sk-" + "a".repeat(20))).toBe("token");
+		expect(secretKind("task-" + "a".repeat(20))).toBeUndefined();
 	});
 
 	test("hostile 200k inputs stay under 200 ms each", () => {

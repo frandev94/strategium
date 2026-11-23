@@ -22,7 +22,7 @@ const code = (e: unknown): string => String((e as NodeJS.ErrnoException)?.code ?
 function dailyOk(daily: unknown): daily is string {
 	if (typeof daily !== "string" || daily.length > 200 || !daily.includes("{date}") || !daily.endsWith(".md")) return false;
 	// Empty segments cover absolute (`/x`, `\\x`) and doubled separators; ":" covers drive letters; a leading "." covers `.`, `..`, `.obsidian`, `.git`.
-	return daily.split(/[\\/]/).every((s) => s !== "" && !s.startsWith(".") && !/[ .]$/.test(s) && !/[:<>"|?*\0]/.test(s));
+	return daily.split(/[\\/]/).every((s) => s !== "" && !s.startsWith(".") && !/[ .]$/.test(s) && !/[:<>"|?*\x00-\x1f]/.test(s));
 }
 
 const headingOk = (h: unknown): h is string => typeof h === "string" && h.length <= 200 && /^#{1,6} \S[^\r\n]*$/.test(h);
@@ -30,7 +30,7 @@ const headingOk = (h: unknown): h is string => typeof h === "string" && h.length
 /** A vault-relative `.md` path of at most 200 chars. `wild` allows `*` inside a segment and `**` as a whole segment (a glob); otherwise no `*` (a note). */
 function pathOk(p: unknown, wild: boolean): p is string {
 	if (typeof p !== "string" || p.length > 200 || !p.endsWith(".md")) return false;
-	return p.split(/[\\/]/).every((s) => s !== "" && !s.startsWith(".") && !/[ .]$/.test(s) && !/[:<>"|?\0]/.test(s) && (wild ? s === "**" || !s.includes("**") : !s.includes("*")));
+	return p.split(/[\\/]/).every((s) => s !== "" && !s.startsWith(".") && !/[ .]$/.test(s) && !/[:<>"|?\x00-\x1f]/.test(s) && (wild ? s === "**" || !s.includes("**") : !s.includes("*")));
 }
 
 const notesOk = (n: unknown): n is string[] => Array.isArray(n) && n.length >= 1 && n.length <= 32 && n.every((g) => pathOk(g, true));
@@ -385,7 +385,7 @@ const KINDS: [string, RegExp][] = [
 	["private key", /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----/],
 	[
 		"token",
-		/gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|npm_[A-Za-z0-9]{36}/,
+		/gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|npm_[A-Za-z0-9]{36}/,
 	],
 	["NAME=value", /(?:^|[\s;,(`'"])(?:export\s+)?[A-Z][A-Z0-9_]{2,}=[^\s=]/],
 	["token", /\bBearer\s+\S{16,}/i],
@@ -410,6 +410,7 @@ export function secretKind(text: string): string | undefined {
 		tail.lastIndex = end + 1;
 		if (tail.test(text)) return "token";
 	}
-	for (const m of text.matchAll(/[A-Za-z0-9+/_=-]{32,}/g)) if (/[A-Z]/.test(m[0]) && /[a-z]/.test(m[0]) && /\d/.test(m[0])) return "key-like string";
+	// No separators in the class: paths, URLs and slugs break into short runs, a bare base64/hex-like key does not.
+	for (const m of text.matchAll(/[A-Za-z0-9+=]{32,}/g)) if (/[A-Z]/.test(m[0]) && /[a-z]/.test(m[0]) && /\d/.test(m[0])) return "key-like string";
 	return undefined;
 }

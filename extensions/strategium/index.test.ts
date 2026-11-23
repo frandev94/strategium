@@ -10076,7 +10076,8 @@ describe("vault record (#152)", () => {
 	// Built at run time so the file holds no token-shaped literal.
 	const GH = `ghp_${"a1B2".repeat(6)}`;
 
-	test("the tool description and schema name record, text and note", async () => {
+	// The test host stubs zod, so the schema itself cannot be read here; the description is what the model sees.
+	test("the tool description names record, text and note", async () => {
 		const s = setup();
 		expect(s.tool.description).toContain("record (text, note?; Captain only)");
 	});
@@ -10108,6 +10109,24 @@ describe("vault record (#152)", () => {
 			expect(await s.call({ action: "record", text: "x", note }), label).toBe(`ERROR record refused: note ${note}: ${why}; nothing was written`);
 			expect(bytes(v), label).toEqual(before);
 		}
+	});
+
+	test("R2: a note that is a folder is refused and nothing is written", async () => {
+		const v = withNote();
+		mkdirSync(join(v, "Projects", "Dir.md"));
+		const s = await begun(v);
+		const before = bytes(v);
+		expect(await s.call({ action: "record", text: "x", note: "Projects/Dir.md" })).toBe("ERROR record refused: note Projects/Dir.md: not a regular file; nothing was written");
+		expect(bytes(v)).toEqual(before);
+	});
+
+	test("record refuses text over 200 characters and writes nothing", async () => {
+		const v = withNote();
+		const s = await begun(v);
+		const before = bytes(v);
+		expect(await s.call({ action: "record", text: "a ".repeat(101) })).toBe("ERROR record needs text of at most 200 characters");
+		expect(bytes(v)).toEqual(before);
+		expect(await s.call({ action: "record", text: "a ".repeat(100) })).toBe("RECORDED daily");
 	});
 
 	test("R3: a secret text is refused with its kind, before the vault and the note are looked at", async () => {
