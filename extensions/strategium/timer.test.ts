@@ -287,6 +287,14 @@ describe("ticket claims across processes", () => {
 			writeFileSync(`${lockPath(dir, "RACE-1")}.force`, `session-dead0001 ${Date.now() - 6 * 60_000}`);
 			expect(() => claim(dir, "RACE-1", "me", "dead0001")).not.toThrow();
 		}));
+	test("a guard created but not yet written still blocks the takeover", () =>
+		withDir(async dir => {
+			deadLock(dir);
+			// The winner has created the guard and not yet written its timestamp: empty is not stale.
+			writeFileSync(`${lockPath(dir, "RACE-1")}.force`, "");
+			expect(() => claim(dir, "RACE-1", "me", "dead0001")).toThrow();
+			expect(holds(dir, "RACE-1", "me")).toBe(false);
+		}));
 	test("a guard one minute old blocks the takeover", () =>
 		withDir(async dir => {
 			deadLock(dir);

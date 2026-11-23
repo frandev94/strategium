@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 
@@ -65,8 +65,9 @@ export function claim(dir: string, key: string, sid: string, takeover?: string):
 function acquireGuard(guard: string, sid: string, held: () => Error): void {
 	const stale = (): boolean => {
 		try {
-			const age = Date.now() - Number(readFileSync(guard, "utf8").split(" ")[1]);
-			return !Number.isFinite(age) || age > 5 * 60_000;
+			// A guard just created and not yet written is empty: its age is the file's, not "unparseable = stale".
+			const at = Number(readFileSync(guard, "utf8").split(" ")[1]);
+			return Date.now() - (Number.isFinite(at) ? at : statSync(guard).mtimeMs) > 5 * 60_000;
 		} catch {
 			return false;
 		}
