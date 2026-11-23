@@ -298,6 +298,7 @@ describe("bash forms that hide a command", () => {
 		["then lines", "then\n".repeat(4000)], ["timeout options", "timeout -k .;".repeat(1500)], ["wrapper options", "env -x;".repeat(2800)],
 		["assign lines", "A=x\n".repeat(5000)], ["long digits", "1".repeat(50000)], ["git options", "git -c ".repeat(5000)],
 		["assign equals", "a=b=".repeat(12500)], ["assign repeats", "A=x".repeat(16666)], ["git many options", "git -c a=b ".repeat(4500)],
+		["heredoc openers", "<<x\n".repeat(12500)], ["closed-looking heredocs", "<<EOF\n".repeat(20000)],
 	])("scans hostile %s in under 100 ms", (_name, cmd) => {
 		const t0 = performance.now();
 		bashBlock(cmd);

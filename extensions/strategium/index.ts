@@ -1398,15 +1398,68 @@ const asCommands = (s: string) =>
 	s.replace(/\$\{IFS\}|\$IFS\b/g, " ").replace(CASE_ARM, m => `${m.slice(0, -1)};`).replace(/\{(?=\s)/g, ";").replace(REDIRECTION, "");
 
 /**
+ * Linear heredoc stripper. Same reading as /<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2(?=\n|$)/: the opener line stays
+ * (its redirect writes the file), the body goes, the terminator is the first line from two lines below the opener that
+ * equals the word after optional leading blanks. Terminator lookups use a word -> line numbers map, so no opener rescans the text.
+ * shortcut: a word is never shortened to match a terminator (the regex would backtrack `<<EOF` to `EO`); nobody writes that.
+ */
+function stripHeredocs(s: string): string {
+	let starts: number[] | undefined;
+	let byWord: Map<string, number[]> | undefined;
+	const index = () => {
+		starts = [0];
+		byWord = new Map();
+		for (let i = s.indexOf("\n"); i >= 0; i = s.indexOf("\n", i + 1)) starts.push(i + 1);
+		starts.forEach((st, n) => {
+			let a = st;
+			while (s[a] === " " || s[a] === "\t") a++;
+			const e = n + 1 < starts!.length ? starts![n + 1] - 1 : s.length;
+			if (a < e) (byWord!.get(s.slice(a, e)) ?? byWord!.set(s.slice(a, e), []).get(s.slice(a, e))!).push(n);
+		});
+	};
+	const lineOf = (pos: number) => {
+		let lo = 0, hi = starts!.length - 1;
+		while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts![m] <= pos) lo = m; else hi = m - 1; }
+		return lo;
+	};
+	let out = "", copied = 0, nl = -2;
+	for (let i = s.indexOf("<<"); i >= 0; i = s.indexOf("<<", i + 1)) {
+		if (s[i - 1] === "<") continue;
+		let p = i + 2;
+		if (s[p] === "-") p++;
+		while (/\s/.test(s[p] ?? "x")) p++;
+		const q = s[p] === "'" || s[p] === '"' ? s[p] : "";
+		const w0 = p + q.length;
+		let w1 = w0;
+		while (/\w/.test(s[w1] ?? " ")) w1++;
+		if (w1 === w0 || (q && s[w1] !== q)) continue;
+		const rest = w1 + q.length;
+		if (nl !== -1 && nl < rest) nl = s.indexOf("\n", rest);
+		if (nl < 0) continue;
+		if (!starts) index();
+		const lines = byWord!.get(s.slice(w0, w1));
+		if (!lines) continue;
+		const from = lineOf(rest) + 2;
+		let lo = 0, hi = lines.length;
+		while (lo < hi) { const m = (lo + hi) >> 1; if (lines[m] < from) lo = m + 1; else hi = m; }
+		if (lo === lines.length) continue;
+		const t = lines[lo];
+		const end = t + 1 < starts!.length ? starts![t + 1] - 1 : s.length;
+		out += s.slice(copied, i) + "<<HEREDOC" + s.slice(rest, nl);
+		copied = end;
+		i = end - 1;
+	}
+	return out + s.slice(copied);
+}
+
+/**
  * Why a bash command is not allowed for the Captain during a run: test and build runners, and file writes.
  * Undefined when it may run.
  */
 // ponytail: a pattern list, not a shell parser; it stops slips, not a determined workaround.
 export function bashBlock(command: string): string | undefined {
 	// Heredoc bodies are data; quoted strings are blanked, except a quoted redirect target.
-	const cmd = command
-		// The opener line stays (its redirect writes the file); only the body lines go. `<<<` is a here-string, not a heredoc.
-		.replace(/(?<!<)<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2(?=\n|$)/g, "<<HEREDOC$3")
+	const cmd = stripHeredocs(command)
 		.replace(/(>>?\s*)?('[^']*'|"[^"]*")/g, (m, redir) => (redir ? m : '""'));
 	// A backslash before a word character is an escape (r\m); a Windows path keeps its own, so both readings are checked.
 	// A runner is also looked for in the command as written: `$IFS` inside an assignment value is no space there.
