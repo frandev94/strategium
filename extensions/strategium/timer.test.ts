@@ -530,6 +530,9 @@ describe("isVia / viaOf", () => {
 			{ key: " A", reason: "estimate" },
 			{ key: "A ", reason: "estimate" },
 			{ key: "A", reason: "guess" },
+			{ key: "a\x1bb", reason: "estimate" },
+			{ key: "a\x7fb", reason: "estimate" },
+			{ key: "a\tb", reason: "estimate" },
 			{ key: 3, reason: "estimate" },
 			null,
 			"P",
@@ -596,5 +599,42 @@ describe("poolOf / dueAlert with a shared parent booking", () => {
 		expect(poolOf([{ ts: t(0), event: "start", key: "P", booked: 10 }], "P", at(6))).toBeUndefined();
 		expect(dueAlert(evs, "A", at(6))).toBeUndefined();
 		expect(dueAlert(evs, "A", at(8))).toBeUndefined();
+	});
+});
+
+describe("poolOf / dueAlert: wall time and group booking", () => {
+	test("keys running at once count their overlap once: 4/10, not 8/10", () => {
+		const evs: Ev[] = [
+			{ ts: t(5), event: "start", key: "K-1", booked: 10, via: pb },
+			{ ts: t(5), event: "start", key: "K-2", booked: 10, via: pb },
+		];
+		expect(poolOf(evs, "K-1", at(9))).toEqual({ parent: "P", keys: ["K-1", "K-2"], booked: 10, el: 4 });
+		expect(dueAlert(evs, "K-1", at(9))).toBeUndefined(); // 8 summed minutes would be 80 %
+		expect(dueAlert(evs, "K-2", at(10))).toBe(50);
+	});
+	test("priors and adjustments of each key still add on top of the wall time", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 10, via: pb, prior: 1 },
+			{ ts: t(0), event: "start", key: "B", booked: 10, via: pb },
+			{ ts: t(1), event: "adjust", key: "B", prior: 0.5 },
+		];
+		expect(poolOf(evs, "A", at(2))?.el).toBe(3.5);
+	});
+	test("within a group the latest booking wins and dueAlert uses it", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 10, via: pb },
+			{ ts: t(1), event: "stop", key: "A" },
+			{ ts: t(1), event: "start", key: "B", booked: 20, via: pb },
+		];
+		expect(poolOf(evs, "A", at(6))?.booked).toBe(20);
+		expect(dueAlert(evs, "A", at(6))).toBeUndefined(); // 6/20 = 30 %, not 60 % of 10
+		expect(dueAlert(evs, "A", at(10))).toBe(50);
+	});
+	test("an alert whose pool is not a string is read by its key", () => {
+		const evs = [
+			{ ts: t(0), event: "start", key: "A", booked: 10 },
+			{ ts: t(5), event: "alert", key: "A", pool: 5, p: 50 },
+		] as unknown as Ev[];
+		expect(dueAlert(evs, "A", at(6))).toBeUndefined();
 	});
 });

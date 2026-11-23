@@ -2051,6 +2051,19 @@ describe("the midnight rollover", () => {
 		await reports(s, "K-1 00:00-now (3 min)");
 	});
 
+	test("a key open over midnight, then begin with booked and via, records the via on the new day's start", async () => {
+		const s = setup();
+		setSystemTime(T(23, 30));
+		await s.call({ action: "begin", key: "K-1" });
+		await s.start();
+		await toMidnight(s);
+		const pb = { key: "P", reason: "parent booking" } as const;
+		await s.call({ action: "begin", key: "K-1", booked: 90, via: pb });
+		const last = dayEvents(s.dir, 17).filter(e => e.event === "start").at(-1)!;
+		expect(last.booked).toBe(90);
+		expect(last.via).toEqual(pb);
+	});
+
 	test.each([undefined, 120])("a paused run opens nothing at midnight (booked %p)", async booked => {
 		const s = setup();
 		setSystemTime(T(23, 30));
@@ -10439,6 +10452,18 @@ describe("via on begin and switch", () => {
 		expect(starts(s.dir)[0].via).toEqual(pb);
 	});
 
+	test("a stopped key restarted the same day with booked and no via drops the via", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 60, via: pb });
+		setSystemTime(T(9, 5));
+		await s.call({ action: "end" });
+		setSystemTime(T(9, 10));
+		await s.call({ action: "begin", key: "K-1", booked: 30 });
+		expect(starts(s.dir).at(-1)!.via).toBeUndefined();
+		expect(await s.call({ action: "status" })).not.toContain("via P");
+	});
+
 	test("an estimate via is shown but never shared", async () => {
 		const s = setup();
 		setSystemTime(T(9, 0));
@@ -10522,7 +10547,7 @@ describe("via on begin and switch", () => {
 		setSystemTime(T(9, 0));
 		await a.call({ action: "begin", key: "K-1", booked: 4, via: pb });
 		await b.call({ action: "begin", key: "K-2", booked: 4, via: pb });
-		setSystemTime(T(9, 1));
+		setSystemTime(T(9, 2));
 		a.start();
 		expect(a.calls.map(c => (c[0] as { content: string }).content)).toEqual(["TIMER 50% K-1 2/4 min via P (shared K-1+K-2)"]);
 		expect(a.notes).toEqual(["Strategium: 50% of the booking for K-1 (shared via P: K-1+K-2)"]);
@@ -10530,7 +10555,7 @@ describe("via on begin and switch", () => {
 		b.start();
 		expect(b.calls).toHaveLength(0);
 		expect(alertEvents(a.dir)).toHaveLength(1);
-		setSystemTime(T(9, 2));
+		setSystemTime(T(9, 4));
 		b.start();
 		a.start();
 		expect(b.calls.map(c => (c[0] as { content: string }).content)).toEqual(["TIMER 100% K-2 4/4 min via P (shared K-1+K-2)"]);

@@ -194,8 +194,11 @@ export function poolOf(evs: Ev[], key: string, now: Date): { parent: string; key
 	let booked: number | undefined;
 	for (const e of evs) if (e.event === "start" && e.booked !== undefined && keys.includes(e.key)) booked = e.booked;
 	if (booked === undefined) return undefined;
+	// Wall time: the union of the keys' spans (overlap counted once) plus each key's prior and adjustments.
+	const mine = evs.filter(e => keys.includes(e.key));
 	let el = 0;
-	for (const k of keys) el += elapsedMin(evs, k, now);
+	for (const s of stretches(mine.filter(isSpan), now)) el += (s.end - s.start) / 60_000;
+	for (const e of mine) if (e.event === "start" || e.event === "adjust") el += e.prior ?? 0;
 	return { parent, keys, booked, el };
 }
 
