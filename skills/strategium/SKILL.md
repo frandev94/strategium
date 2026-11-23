@@ -109,9 +109,9 @@ Agents:
 | Servitor | `sonic` | `@smol` / medium |
 | Adept | `task` | `@task` / auto |
 
-## Timer (servo-skull, ticketing only)
+## Timer (ticketing only)
 
-The servo-skull is the booking timer: a monitoring device, not an agent (`sonic` is the servitor).
+The booking timer is a monitor, not an agent (`sonic` is the servitor).
 
 Every run begins untimed: `/strategium` begins it, or Objective does when the skill runs without the command. A run is timed once `begin` or `start` gives it `booked`, which Orders does with the booking; only a timed run has a booking. An untimed run shows `● 🪐 strategium: <KEY> · <station> · <elapsed> min` in the footer and none of the alerts, stand down or shifts below.
 

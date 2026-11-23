@@ -84,7 +84,7 @@ One row per agent id.
 None of these is an agent unless the roster says so.
 
 - Servitors: mind-scrubbed humans, cybernetically altered to run predefined tasks. `sonic` is the one servitor in Strategium.
-- Servo-skulls: small floating monitoring devices. The booking timer is the servo-skull (`Timer (servo-skull, ticketing only)` in the strategium skill). It is a monitor, not an agent. It is not `sonic`.
+- Servo-skulls: small floating monitoring devices. In Strategium the Servo-skull is the cockpit narrator (`/strategium-config servo-skull`). The booking timer (`Timer (ticketing only)` in the strategium skill) is a monitor, not an agent, and not `sonic`.
 - Techmarines and the Master of the Forge: the Armoury's engineers and their head. Documented for the Armoury, not used by any agent.
 - Dreadnoughts: entombed heroes in walking war machines, the usual bearers of the honorific Venerable (see Honorifics and posts). Never used as a generic name for ordinary agents.
 - Chapter Fleet: the workflow infrastructure described under Departments.
