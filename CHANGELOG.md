@@ -1,3 +1,9 @@
+## [0.2.60] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(guard)* A quoted heredoc opener and an empty heredoc body no longer hide commands
+- *(guard)* The quote-blind heredoc reading is checked too
 ## [0.2.59] - 2026-11-23
 
 ### 🚀 Features
