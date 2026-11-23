@@ -1364,7 +1364,7 @@ const EXT = String.raw`(?:\.exe|\.cmd)?`;
 // SP is a blank that is not a newline: a newline already starts a command, so crossing it would rescan the rest again.
 const SP = String.raw`[^\S\n]`;
 const WORD = String.raw`[^\s;&|()\x60]`;
-const ASSIGN = String.raw`\w+(?:\[[^\]\s;&|()\x60]*\])?\+?=(?:${WORD}|\$\(\(?${WORD}*\)\)?)*`;
+const ASSIGN = String.raw`\w+(?:\[[^\]\s;&|()\x60]*\])?\+?=${WORD}*(?:\$\(\(?${WORD}*\)\)?${WORD}*)*`;
 const COMMAND_START = String.raw`(?:^|[;&|(\n\x60])`;
 const RUNNER = new RegExp(
 	String.raw`${COMMAND_START}${SP}*` +
@@ -1376,6 +1376,9 @@ const RUNNER = new RegExp(
 const WRITE_WORD = new RegExp(String.raw`${COMMAND_START}${SP}*(?:${ASSIGN}${SP}+)*(?:rm|rmdir|mv|cp|touch|truncate|tee|ln)\b`);
 // git's global options (-C dir, -c k=v, --git-dir=x) come before the subcommand and must not hide it; at most eight, so
 // each `git` start reads a bounded stretch.
+// shortcut: nine or more global options before anything are refused whatever follows (git + 9 options + a read-only
+// subcommand is a false positive), because the bounded form above stops reading at eight and must stay linear.
+const WRITE_GIT_MANY = /\bgit\s+(?:(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?|-\w)\s+){9}/;
 const WRITE_GIT = /\bgit\s+(?:(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?|-\w)\s+){0,8}(checkout\s+(\S+\s+)?--(?=\s|$)|checkout\s+\.(?=\s|$)|(restore|reset\s+--hard|clean|stash|apply|am|rm|mv)\b)/;
 // A redirect, unless it goes to a file descriptor, /dev/null or a scratch place.
 const WRITE_REDIRECT = />>?(?!>)(?!\s*(?:&[\d-]|\/dev\/null\b|["']?(?:\$\{?(?:TEMP|TMP|TMPDIR)\}?|\/tmp\/|%TEMP%|(?:out|local):\/\/)))/;
@@ -1404,7 +1407,7 @@ export function bashBlock(command: string): string | undefined {
 	// A runner is also looked for in the command as written: `$IFS` inside an assignment value is no space there.
 	const readings = [asCommands(cmd), asCommands(cmd.replace(/\\(?=\w)/g, ""))];
 	if (RUNNER.test(cmd) || readings.some(r => RUNNER.test(r))) return "Strategium: the Captain runs no builds or test suites. Delegate the check to a sonic agent.";
-	if (readings.some(r => WRITE_WORD.test(r)) || /\bsed\s+(-\w*i|--in-place)/.test(cmd) || /\bperl\s+-\w*i/.test(cmd) || WRITE_GIT.test(cmd) || WRITE_REDIRECT.test(cmd))
+	if (readings.some(r => WRITE_WORD.test(r)) || /\bsed\s+(-\w*i|--in-place)/.test(cmd) || /\bperl\s+-\w*i/.test(cmd) || WRITE_GIT.test(cmd) || WRITE_GIT_MANY.test(cmd) || WRITE_REDIRECT.test(cmd))
 		return "Strategium: the Captain writes no files through bash during a run. Delegate the change to an agent; scratch output may only be redirected into $TEMP.";
 	return undefined;
 }

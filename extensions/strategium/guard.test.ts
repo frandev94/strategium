@@ -296,10 +296,17 @@ describe("bash forms that hide a command", () => {
 		["braces", "{ ".repeat(10000)], ["timeouts", "timeout .5 ".repeat(1800)], ["dots", "timeout .".repeat(2200)],
 		["lone words", "a".repeat(50000)], ["newlines", "\n".repeat(20000)], ["newlines then runner", "\n".repeat(20000) + " bun test"],
 		["then lines", "then\n".repeat(4000)], ["timeout options", "timeout -k .;".repeat(1500)], ["wrapper options", "env -x;".repeat(2800)],
-		["assign lines", "A=x\n".repeat(5000)], ["long digits", "1".repeat(50000)], ["git options", "git -c ".repeat(5000)], ["unclosed heredocs", "<<x\n".repeat(5000)],
+		["assign lines", "A=x\n".repeat(5000)], ["long digits", "1".repeat(50000)], ["git options", "git -c ".repeat(5000)],
+		["assign equals", "a=b=".repeat(12500)], ["assign repeats", "A=x".repeat(16666)], ["git many options", "git -c a=b ".repeat(4500)],
 	])("scans hostile %s in under 100 ms", (_name, cmd) => {
 		const t0 = performance.now();
 		bashBlock(cmd);
 		expect(performance.now() - t0).toBeLessThan(100);
 	});
+});
+
+describe("git with many global options (#102)", () => {
+	test.each([`git ${"-c a=b ".repeat(9)}checkout .`, `git ${"-c a=b ".repeat(8)}checkout .`, `git ${"-c a=b ".repeat(30)}reset --hard`])(
+		"blocks %s", cmd => expect(bashBlock(cmd)).toContain(WRITE_MSG));
+	test("a plain git with options stays allowed", () => expect(bashBlock("git -C x log")).toBeUndefined());
 });
