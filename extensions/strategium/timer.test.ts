@@ -18,6 +18,8 @@ import {
 	nowIso,
 	openKeys,
 	overlapMin,
+	overlaps,
+	splitMin,
 	release,
 	writeAtomic,
 } from "./timer";
@@ -318,6 +320,86 @@ describe("the rules behind the numbers", () => {
 			{ ts: t(30), event: "stop", key: "C" },
 		];
 		expect(overlapMin(three, at(60))).toBe(30);
+	});
+
+	describe("overlaps and splitMin", () => {
+		const span = (key: string, a: number, b?: number): Ev[] => [
+			{ ts: t(a), event: "start", key },
+			...(b === undefined ? [] : [{ ts: t(b), event: "stop", key } as Ev]),
+		];
+		const sorted = (evs: Ev[]) => evs.sort((x, y) => x.ts.localeCompare(y.ts));
+		const mins = (m: Map<string, number>) => Object.fromEntries(m);
+
+		test("two keys overlapping 30 min give one interval and 45 + 45", () => {
+			const evs = sorted([...span("A", 0, 60), ...span("B", 30, 90)]);
+			expect(overlaps(evs, at(120))).toEqual([{ start: at(30), end: at(60), keys: ["A", "B"] }]);
+			expect(mins(splitMin(evs, at(120)))).toEqual({ A: 45, B: 45 });
+		});
+
+		test("a nested overlap of three keys splits each interval by the keys in it", () => {
+			const evs = sorted([...span("A", 0, 60), ...span("B", 10, 50), ...span("C", 20, 30)]);
+			expect(overlaps(evs, at(60))).toEqual([
+				{ start: at(10), end: at(20), keys: ["A", "B"] },
+				{ start: at(20), end: at(30), keys: ["A", "B", "C"] },
+				{ start: at(30), end: at(50), keys: ["A", "B"] },
+			]);
+			const m = splitMin(evs, at(60));
+			expect(m.get("A")).toBeCloseTo(10 + 5 + 10 / 3 + 10 + 10, 6);
+			expect(m.get("B")).toBeCloseTo(5 + 10 / 3 + 10, 6);
+			expect(m.get("C")).toBeCloseTo(10 / 3, 6);
+		});
+
+		test("an open span runs to now", () => {
+			const evs = sorted([...span("A", 0), ...span("B", 30)]);
+			expect(overlaps(evs, at(50))).toEqual([{ start: at(30), end: at(50), keys: ["A", "B"] }]);
+			expect(mins(splitMin(evs, at(50)))).toEqual({ A: 40, B: 10 });
+		});
+
+		test("a past day's now is its 23:59:59", () => {
+			const evs = sorted([...span("A", 0), ...span("B", 30)]);
+			const end = new Date(2026, 10, 16, 23, 59, 59);
+			expect(overlaps(evs, end)[0].end).toEqual(end);
+		});
+
+		test("no overlap gives no interval and the measured minutes", () => {
+			const evs = sorted([...span("A", 0, 10), ...span("B", 10, 25)]);
+			expect(overlaps(evs, at(60))).toEqual([]);
+			expect(mins(splitMin(evs, at(60)))).toEqual({ A: 10, B: 15 });
+		});
+
+		test("a repeated start of an open key does not split its interval", () => {
+			const evs = sorted([...span("A", 0, 60), ...span("B", 10, 50), { ts: t(30), event: "start", key: "A" } as Ev]);
+			expect(overlaps(evs, at(60))).toEqual([{ start: at(10), end: at(50), keys: ["A", "B"] }]);
+		});
+
+		test("for random span sets the split sums to the union and no key gains time it did not run", () => {
+			let seed = 7;
+			const rnd = (n: number) => {
+				seed = (seed * 1103515245 + 12345) % 2 ** 31;
+				return seed % n;
+			};
+			for (let run = 0; run < 200; run++) {
+				const evs: Ev[] = [];
+				const intervals: [number, number][] = [];
+				for (const key of ["A", "B", "C", "D"].slice(0, 1 + rnd(4))) {
+					let from = rnd(30);
+					for (let k = 0, n = 1 + rnd(3); k < n; k++) {
+						const len = 1 + rnd(40);
+						evs.push(...span(key, from, from + len));
+						intervals.push([from, from + len]);
+						from += len + 1 + rnd(20);
+					}
+				}
+				sorted(evs);
+				const edges = [...new Set(intervals.flat())].sort((x, y) => x - y);
+				let union = 0;
+				for (let i = 1; i < edges.length; i++)
+					if (intervals.some(([a, b]) => a <= edges[i - 1] && b >= edges[i])) union += edges[i] - edges[i - 1];
+				const m = splitMin(evs, at(1000));
+				expect([...m.values()].reduce((a, b) => a + b, 0)).toBeCloseTo(union, 6);
+				for (const [k, v] of m) expect(v).toBeLessThanOrEqual(elapsedMin(evs, k, at(1000)) + 1e-9);
+			}
+		});
 	});
 
 	test("an adjustment inside two open tickets does not change the overlap", () => {

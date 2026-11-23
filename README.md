@@ -342,6 +342,8 @@ A run is **timed** when its objective is a ticket of a theatre, or when you give
 
 An **untimed** run still counts its time (`status`, `report`), with no alerts, no stand down and no shifts.
 
+When two or more tickets run at once, `report` adds, after its `OVERLAP <n> min` line, one `OVERLAP <key>+<key> HH:MM-HH:MM (<n> min, <n> each)` line per interval in which the same keys ran together (an interval still open ends in `now`, or at 23:59 on a past day) and one `SPLIT <key> <n> min` line per key: its measured minutes with every overlap shared equally among the keys in it, so the totals add up to the wall time of the union of the blocks. Minutes are floored, so the sum can fall up to one minute per key short of it. Prior and adjustments stay out of the split. Without an overlap the report is unchanged.
+
 ### Configuration
 
 | Variable | Meaning |
