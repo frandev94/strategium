@@ -628,6 +628,7 @@ describe("notifications", () => {
 		await s.sub("config", "volume 35 preview");
 		await Bun.sleep(20);
 		expect(s.notes.filter(n => n.includes("exited with code 1"))).toHaveLength(1);
+		expect(s.notes.find(n => n.includes("exited with code 1"))).toEndWith("silence it with /strategium-config notify off.");
 	});
 
 	test("config volume refuses more than 100 and shows the default 20 when unset", async () => {
