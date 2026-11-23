@@ -1584,6 +1584,32 @@ describe("the run follows an approved plan", () => {
 		expect(t).toContain("Squads: a, b");
 	});
 
+	test("the host disposing the overlay (no Esc, no q) frees the cockpit so it opens again", async () => {
+		const { s, sm, ctx } = await owner();
+		await todoResult(s, ctx, "start", [phase("Plan", ["[seal] Plan", "in_progress"])]);
+		await s.call({ action: "seal", lines: ["Squads: a, b"] });
+		await approve(s, sm, ctx);
+		const again = setup("sess-B", s.dir);
+		const comps: { dispose?(): void }[] = [];
+		(again.ctx as unknown as { ui: Record<string, unknown> }).ui.custom = (factory: (...a: unknown[]) => { dispose?(): void }) => {
+			comps.push(factory({ requestRender() {}, terminal: { rows: 40 } }, {}, {}, () => {}));
+			return new Promise(() => {});
+		};
+		(again.ctx as unknown as { hasUI: boolean }).hasUI = true;
+		await again.start();
+		await again.sub("cockpit");
+		expect(comps.length).toBe(1);
+		comps[0].dispose!(); // the host tears the overlay down on its own
+		await again.sub("cockpit");
+		expect(comps.length).toBe(2);
+		comps[1].dispose!();
+		comps[1].dispose!(); // idempotent
+		comps[0].dispose!(); // an old overlay disposed late leaves nothing behind
+		await again.sub("cockpit");
+		expect(comps.length).toBe(3);
+		comps[2].dispose!();
+	});
+
 	const planStations = () => [
 		phase("Muster", ["[captain] Objective", "completed"], ["[captain] Orders", "completed"]),
 		phase("Auspex", ["[scout] Map", "completed"]),
