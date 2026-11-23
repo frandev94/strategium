@@ -1,3 +1,17 @@
+## [0.2.44] - 2026-11-23
+
+### 🚀 Features
+
+- *(extension)* Record a run's events in a notes vault
+
+### 🐛 Bug Fixes
+
+- *(extension)* Vault records the real PR command and never loses a daily
+- *(extension)* PR line only for a real create; daily placement in more shapes
+
+### 📚 Documentation
+
+- Vault records (setting, contract, events)
 ## [0.2.43] - 2026-11-23
 
 ### 🚀 Features
