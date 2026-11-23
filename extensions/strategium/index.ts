@@ -29,6 +29,7 @@ import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
 import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./names";
 import { applyRun, corrupted, type Brothers, type Honour, honours, loadRoster, rankBrothers, runOutcomes, squadBrothers, STALE_MS, unfinished, updateRoster, withRosterLock } from "./roster";
+import { addResults, loadTally, proposals, squadKind, tallyLines, updateTally } from "./tally";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -610,6 +611,11 @@ function savedRoles(sid: string): Map<string, { role: string; squad?: string }> 
 	return roles;
 }
 
+/** The role and squad of each agent of the run: the live cockpit registry when it is this run's, else what the cockpit saved beside the run. */
+function rolesFor(run: Run, live: { key?: string; deployed?: Map<string, Deployed> } | undefined): Map<string, { role: string; squad?: string }> {
+	return live?.key === run.key && live.deployed ? new Map([...live.deployed].map(([id, d]) => [id, { role: d.role, squad: d.squad }])) : savedRoles(run.sid);
+}
+
 /** Build the run's debrief and save it under <state>/debriefs (kept after the run): the result lines for `end`. A failure never stops the end. */
 function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } } | undefined, clamp: boolean, honoursIn?: { rows: Honour[]; unsaved?: string }): string[] {
 	try {
@@ -625,7 +631,7 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 		const known = new Map<string, Slice>();
 		for (const s of [...(run.slices ?? []), ...(run.stopped ?? []), ...agents]) if (!known.has(s.id)) known.set(s.id, s);
 		const squads = [...known.values()].map(s => ({ id: s.id, ...(s.tier ? { tier: s.tier } : {}), state: running.has(s.id) ? ("running" as const) : stopped.has(s.id) ? ("stopped" as const) : ("not built" as const) }));
-		const roles = live?.key === run.key && live.deployed ? new Map([...live.deployed].map(([id, d]) => [id, { role: d.role, squad: d.squad }])) : savedRoles(run.sid);
+		const roles = rolesFor(run, live);
 		const rows = liveRows(run);
 		// A live file with no deployed entry (a nested child, an eval spawn without spawnKey) still counts, as role `other`.
 		// shortcut: an eval spawn without spawnKey shows a `?` row and an `other` row for the same child, and a sync task spawn counts as `other`; upgrade if hosts omit spawnKey.
@@ -662,12 +668,22 @@ function endRun(sid: string, key?: string, takeover?: string, reported?: Reporte
 	stopKey(run.key);
 	// The roster record goes in before the claim is released: until then the brothers still count as on campaign.
 	const record = names ? recordRun(run) : undefined;
+	// recordRun already waited out a busy lock: a second full wait would freeze the end again.
+	const tally = recordTally(run, rolesFor(run, live), record?.error === "roster busy" ? 2000 : undefined);
 	release(stateDir(), run.key, sid);
 	// After the last span is closed and before the run's files go: the debrief reads them.
 	const lines = writeDebrief(run, reported, live, run.sid === sid, names ? { rows: record?.honours ?? [], ...(record?.error ? { unsaved: record.error } : {}) } : undefined);
 	dropFiles(run.sid);
 	dropPointer(sid);
-	return [`ENDED ${run.key}`, ...lines, ...(record ? [record.line] : [])].join("\n");
+	return [`ENDED ${run.key}`, ...lines, ...(record ? [record.line] : []), ...(tally ? [tally] : [])].join("\n");
+}
+
+/** The TALLY and PROPOSE lines for `report`, or one WARN line when tally.json is unreadable; nothing for a missing or empty tally. */
+function tallyReport(): string[] {
+	const loaded = loadTally(stateDir());
+	if ("error" in loaded) return [`WARN TALLY ${path.join(stateDir(), "tally.json")} unreadable (${loaded.error}): fix or delete it`];
+	const { selectors } = parseTiers(process.env.STRATEGIUM_TIERS);
+	return [...tallyLines(loaded.rows), ...proposals(loaded.rows, LADDER.map(tier => ({ tier, selector: selectors[tier] })))];
 }
 
 function report(date?: string): string {
@@ -679,7 +695,8 @@ function report(date?: string): string {
 	const now = date && date !== path.basename(today(), ".jsonl") ? new Date(`${date}T23:59:59`) : new Date();
 	const bl = blocks(evs, now);
 	const keys = [...new Set(evs.filter(e => e.event === "start" || e.event === "stop" || e.event === "adjust").map(e => e.key))];
-	if (!keys.length) return "IDLE";
+	const tally = date === undefined ? tallyReport() : [];
+	if (!keys.length) return ["IDLE", ...tally].join("\n");
 	const sum = (k: string, ev: string) =>
 		evs.filter(e => e.key === k && e.event === ev).reduce((n, e) => n + (e.prior ?? 0), 0);
 	const overlap = Math.floor(overlapMin(evs, now));
@@ -693,6 +710,7 @@ function report(date?: string): string {
 			return `TOTAL ${k} measured ${measured} min, worked ${worked} min with prior and adjustments (~${Math.round(worked / 15) * 15} min)`;
 		}),
 		...(overlap ? [`OVERLAP ${overlap} min with two or more tickets running at once; split them before booking`] : []),
+		...tally,
 	].join("\n");
 }
 
@@ -910,6 +928,32 @@ function recordRun(run: Run): { line: string; honours: Honour[]; error?: string 
 	// An unsaved record has no known "before": no joins, Crux or corruption.
 	const rows = honours(outcomes, merged, err ? undefined : seen.before);
 	return err ? { line: `WARN ROSTER not written: ${err}`, honours: rows, error: err } : { line: `ROSTER ${outcomes.length} squad(s) recorded`, honours: rows };
+}
+
+/** Fold the run's rated builders into the tally at `end`: the line to print, undefined when no builder was rated. Never throws. */
+function recordTally(run: Run, roles: Map<string, { role: string; squad?: string }>, waitMs = STALE_MS + 2000): string | undefined {
+	try {
+		const names = cleanNames(run.names);
+		const known = [...Object.values(run.agents ?? {}), ...(run.stopped ?? []), ...(run.slices ?? [])];
+		let skipped = 0;
+		const results = Object.entries(cleanRatings(run.ratings) ?? {}).flatMap(([id, r]) => {
+			const hit = names?.find(n => n.name === baseId(id));
+			const who = hit ? { role: hit.agent, squad: hit.squad } : roles.get(id);
+			if (!who || !isBuilderRole(who.role)) return [];
+			// The agent's own copy under its id first (a redraft may reuse a squad id for other files), then any slice of that squad.
+			const own = run.agents?.[id];
+			const slice = own?.id === who.squad ? own : who.squad ? known.find(s => s.id === who.squad) : undefined;
+			if (!slice) skipped++;
+			return slice ? [{ model: r.model, effort: r.effort, kind: squadKind(slice.files), rating: r.rating }] : [];
+		});
+		if (!results.length && !skipped) return undefined;
+		const note = skipped ? ` (${skipped} skipped)` : "";
+		if (!results.length) return `TALLY recorded 0 rating(s)${note}`;
+		const err = updateTally(stateDir(), rows => addResults(rows, results), waitMs);
+		return err ? `WARN TALLY not written: ${err}` : `TALLY recorded ${results.length} rating(s)${note}`;
+	} catch (err) {
+		return `WARN TALLY not written: ${err instanceof Error ? err.message : String(err)}`;
+	}
 }
 
 /** The name behind a spawn id (omp's -N suffix dropped) in the run's names, if any. */
@@ -1969,7 +2013,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?, reported?), attention (message), notify (on?), slices (slices), redraft, name (agent, squad?, again?, source?), reuse (squad), rate (agent, rating, evidence, model, effort), seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id (with names on, after the name from the name action); parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>, or when its name came from the name action) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound, toast and names settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex; it makes the run's builder names obsolete. name (agent, squad?, again?) hands out the agent's lore name and answers NAME <name> or ERROR <reason>. It works only with names on (status shows NAMES on|off (<source>); /strategium-config names on|off|default or env STRATEGIUM_NAMES=1; off by default, and then it answers ERROR). agent is a roster agent; squad, a declared squad id, is required for battle-brother and veteran and refused for the other agents; again: true keeps a non-builder agent's persona; source (battle-brother and veteran only) is the name of a spawned builder of this run that is not corrupted: the new builder takes its surname. With names on, the name of every task item (and the label of an eval agent) must come from this action: a refusal says so, and slices adds a NAMES <squad>=<name>, ... line for the parallel squads. reuse (squad) lists up to 3 proven builders of this run that have ended and whose squad shares files, or a folder, with the squad (REUSE line, then a SEED line for the brief); it writes nothing. A task item or the call's context with a line Reuse: <agent id> that names a corrupted agent is blocked. rate (Captain only) stores your verdict on one agent of this run, by the agent id the task result shows: rating is proven, proven-regression (proven, but it added a new BLOCKING finding on the lines a penance touched) or corrupted (a reproduced BLOCKING finding, an apothecary survivor or fuzz crash, a red acceptance check, or a rule breach: a commit, git push, a gh write, or a write outside its worktree); evidence = 1-8 short items (finding IDs, the failing check, the breached rule); model and effort = what the agent ran on (the tier selector @task:medium is model @task, effort medium; effort default when none). Corrupted is final for that agent; with names on it also marks the squad's brother as fallen, provisionally: the squad falls at end unless a later builder replaces it. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned. end writes the run's debrief (time per station, seals, squads, spawns) to <state dir>/debriefs and answers ENDED <key>, DEBRIEF <path> and summary lines; reported = {apothecary: {killed, survived, crashes}, review: {pass, fail, opened, fixed, not_reproduced}}: whole numbers from the agents' reports, shown only in the (reported) sections.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?, reported?), attention (message), notify (on?), slices (slices), redraft, name (agent, squad?, again?, source?), reuse (squad), rate (agent, rating, evidence, model, effort), seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id (with names on, after the name from the name action); parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>, or when its name came from the name action) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound, toast and names settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex; it makes the run's builder names obsolete. name (agent, squad?, again?) hands out the agent's lore name and answers NAME <name> or ERROR <reason>. It works only with names on (status shows NAMES on|off (<source>); /strategium-config names on|off|default or env STRATEGIUM_NAMES=1; off by default, and then it answers ERROR). agent is a roster agent; squad, a declared squad id, is required for battle-brother and veteran and refused for the other agents; again: true keeps a non-builder agent's persona; source (battle-brother and veteran only) is the name of a spawned builder of this run that is not corrupted: the new builder takes its surname. With names on, the name of every task item (and the label of an eval agent) must come from this action: a refusal says so, and slices adds a NAMES <squad>=<name>, ... line for the parallel squads. reuse (squad) lists up to 3 proven builders of this run that have ended and whose squad shares files, or a folder, with the squad (REUSE line, then a SEED line for the brief); it writes nothing. A task item or the call's context with a line Reuse: <agent id> that names a corrupted agent is blocked. rate (Captain only) stores your verdict on one agent of this run, by the agent id the task result shows: rating is proven, proven-regression (proven, but it added a new BLOCKING finding on the lines a penance touched) or corrupted (a reproduced BLOCKING finding, an apothecary survivor or fuzz crash, a red acceptance check, or a rule breach: a commit, git push, a gh write, or a write outside its worktree); evidence = 1-8 short items (finding IDs, the failing check, the breached rule); model and effort = what the agent ran on (the tier selector @task:medium is model @task, effort medium; effort default when none). Corrupted is final for that agent; with names on it also marks the squad's brother as fallen, provisionally: the squad falls at end unless a later builder replaces it. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned. end writes the run's debrief (time per station, seals, squads, spawns) to <state dir>/debriefs and answers ENDED <key>, DEBRIEF <path> and summary lines; reported = {apothecary: {killed, survived, crashes}, review: {pass, fail, opened, fixed, not_reproduced}}: whole numbers from the agents' reports, shown only in the (reported) sections. report (date?) also ends with the TALLY and PROPOSE lines of <state dir>/tally.json (per model, effort and squad kind: proven, proven-regression, corrupted; PROPOSE names a heavier default tier for a kind whose tier keeps failing), or a WARN line when that file is unreadable; a report with a date shows none. end also adds the run's rated builders to <state dir>/tally.json and answers TALLY recorded <n> rating(s), or WARN TALLY not written: <reason>; nothing when no builder of a declared squad was rated.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub" && input.action !== "signal") return text("ERROR strategium tool is for the main session only");
@@ -2083,7 +2127,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 							[
 								`RATED ${id} ${rating.rating}${was ? ` (was ${was.rating})` : ""} model=${rating.model} effort=${rating.effort} evidence=${rating.evidence.length}`,
 								...(brother?.name === baseId(id) ? [`FALL ${(first ?? brother).surname} squad ${squad} falls at end unless a later builder replaces it`] : []),
-								...(rating.rating === "corrupted" ? [`LESSON write local://${run.key}-lessons.md for ${id}${squad ? ` before the next round of squad ${squad}` : ""}`] : []),
+								...(rating.rating === "corrupted" ? [`LESSON write local://${run.key}-lessons.md for ${id}${squad ? ` before the next round of squad ${squad}` : ""}${rating.evidence[0]?.startsWith("cause:") ? "" : "; start evidence with cause: <why>"}`] : []),
 							].join("\n"),
 						);
 					}
