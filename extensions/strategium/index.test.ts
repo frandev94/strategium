@@ -7989,6 +7989,16 @@ describe("the debrief at end", () => {
 		expect(spawn(b, { agent: "battle-brother", spawnKey: "S1" })?.block).toBeUndefined();
 		expect(await b.call({ action: "switch", key: "K-2" })).not.toContain("ERROR");
 	});
+
+	test("a takeover of a run with no agents leaves slices undeclared, so the SLICES guard still blocks a battle-brother", async () => {
+		const a = setup("sess-0001");
+		await begun(a);
+		const b = setup("sess-0002", a.dir);
+		await b.call({ action: "begin", key: "K-1", theatre: "github", takeover: "sess-0001" });
+		const run = JSON.parse(readFileSync(join(a.dir, "runs", "sess-0002.json"), "utf8"));
+		expect(run.slices).toBeUndefined();
+		expect(spawn(b, { agent: "battle-brother", spawnKey: "S1" })?.block).toBe(true);
+	});
 });
 
 describe("agent names (#133)", () => {
