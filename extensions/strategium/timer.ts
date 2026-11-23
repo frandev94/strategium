@@ -94,6 +94,10 @@ export function release(dir: string, key: string, sid: string): void {
 	if (holds(dir, key, sid)) rmSync(lockPath(dir, key), { force: true });
 }
 
+export const VIA_REASONS = ["parent booking", "estimate"] as const;
+/** Where a start's `booked` comes from when it is not the key's own booking: another key's booking, or an estimate. */
+export type Via = { key: string; reason: (typeof VIA_REASONS)[number] };
+
 /**
  * `prior`: minutes worked on `key` today before tracking started (estimate, set by `begin`).
  * `adjust` events carry a manual correction in `prior` (plus or minus minutes, set by `add`).
@@ -103,6 +107,8 @@ export type Ev = {
 	event: "start" | "stop" | "alert" | "adjust" | "station" | "seal" | "spawn" | "redraft";
 	key: string;
 	booked?: number;
+	via?: Via; // start event, only next to `booked`
+	pool?: string; // alert event: parent key of the shared booking it was raised for
 	prior?: number;
 	p?: number;
 	station?: string; // station event: the todo station entered
@@ -144,6 +150,58 @@ export function bookedMin(evs: Ev[], key: string): number | undefined {
 		if (e.key === key && e.event === "start" && e.booked !== undefined) return e.booked;
 	}
 	return undefined;
+}
+
+/** Untrusted input (tool call, day file): a one-line key of 1-64 characters and a known reason. */
+export function isVia(v: unknown): v is Via {
+	if (typeof v !== "object" || v === null) return false;
+	const { key, reason } = v as Record<string, unknown>;
+	return (
+		typeof key === "string" &&
+		key.length >= 1 &&
+		key.length <= 64 &&
+		key === key.trim() &&
+		!/[\x00-\x1f\x7f\u0085\u200b-\u200f\u2028-\u202e\u2066-\u2069]/.test(key) &&
+		(VIA_REASONS as readonly unknown[]).includes(reason)
+	);
+}
+
+/** The `via` of the start `bookedMin` reads, when it is valid. */
+export function viaOf(evs: Ev[], key: string): Via | undefined {
+	for (let i = evs.length - 1; i >= 0; i--) {
+		const e = evs[i];
+		if (e.key === key && e.event === "start" && e.booked !== undefined) return isVia(e.via) ? { key: e.via.key, reason: e.via.reason } : undefined;
+	}
+	return undefined;
+}
+
+/**
+ * Keys booked through the same parent booking share it (plus the parent when it has its own booking today).
+ * An estimate never pools. A key via a parent is pooled even alone, so alert identity never changes when a sibling joins.
+ */
+export function poolOf(evs: Ev[], key: string, now: Date): { parent: string; keys: string[]; booked: number; el: number } | undefined {
+	const via = viaOf(evs, key);
+	const through = (k: string, parent: string) => {
+		const v = viaOf(evs, k);
+		return v?.reason === "parent booking" && v.key === parent;
+	};
+	const ownBooking = (k: string) => bookedMin(evs, k) !== undefined && !viaOf(evs, k);
+	const starts = new Set(evs.filter(e => e.event === "start").map(e => e.key));
+	let parent: string;
+	if (via?.reason === "parent booking") parent = via.key;
+	else if (ownBooking(key) && [...starts].some(k => through(k, key))) parent = key;
+	else return undefined;
+	const keys = [...starts].filter(k => through(k, parent) || (k === parent && ownBooking(k))).sort();
+	let booked: number | undefined;
+	for (const e of evs) if (e.event === "start" && e.booked !== undefined && keys.includes(e.key)) booked = e.booked;
+	if (booked === undefined) return undefined;
+	// Wall time: the union of the keys' spans (overlap counted once) plus each key's prior and adjustments.
+	const mine = evs.filter(e => keys.includes(e.key));
+	let ms = 0;
+	for (const s of stretches(mine.filter(isSpan), now)) ms += s.end - s.start;
+	for (const e of mine) if (e.event === "start" || e.event === "adjust") ms += (e.prior ?? 0) * 60_000;
+	const el = Math.max(0, ms / 60_000);
+	return { parent, keys, booked, el };
 }
 
 /** Keys whose last start/stop event is a start (several when tickets run in parallel). */
@@ -210,13 +268,15 @@ export function splitMin(evs: Ev[], now: Date): Map<string, number> {
 
 /** Highest newly crossed threshold, or undefined. After a gap only the highest fires, once. */
 export function dueAlert(evs: Ev[], key: string, now: Date): number | undefined {
-	const booked = bookedMin(evs, key);
+	const pool = poolOf(evs, key, now);
+	const id = pool?.parent ?? key;
+	const booked = pool ? pool.booked : bookedMin(evs, key);
 	if (!booked) return undefined;
-	const el = elapsedMin(evs, key, now);
+	const el = pool ? pool.el : elapsedMin(evs, key, now);
 	let reached = 0;
 	for (const p of THRESHOLDS) if (el >= (booked * p) / 100) reached = p;
 	let alerted = 0;
-	for (const e of evs) if (e.key === key && e.event === "alert" && (e.p ?? 0) > alerted) alerted = e.p ?? 0;
+	for (const e of evs) if (e.event === "alert" && (typeof e.pool === "string" ? e.pool : e.key) === id && (e.p ?? 0) > alerted) alerted = e.p ?? 0;
 	return reached > alerted ? reached : undefined;
 }
 

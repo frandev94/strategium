@@ -13,14 +13,17 @@ import {
 	elapsedMin,
 	type Ev,
 	holds,
+	isVia,
 	load,
 	lockPath,
 	nowIso,
 	openKeys,
 	overlapMin,
 	overlaps,
+	poolOf,
 	splitMin,
 	release,
+	viaOf,
 	writeAtomic,
 } from "./timer";
 
@@ -510,4 +513,157 @@ describe("writeAtomic", () => {
 			mkdirSync(join(dir, "f.json"));
 			expect(() => writeAtomic(join(dir, "f.json"), "x")).toThrow();
 		}));
+});
+
+const pb = { key: "P", reason: "parent booking" } as const;
+describe("isVia / viaOf", () => {
+	test("accepts both reasons and a 64-char key", () => {
+		expect(isVia({ key: "P", reason: "parent booking" })).toBe(true);
+		expect(isVia({ key: "x".repeat(64), reason: "estimate" })).toBe(true);
+	});
+	test("refuses empty, long, multi-line, padded keys, unknown reasons and non-objects", () => {
+		for (const v of [
+			{ key: "", reason: "estimate" },
+			{ key: "x".repeat(65), reason: "estimate" },
+			{ key: "a\nb", reason: "estimate" },
+			{ key: "a\u2028b", reason: "estimate" },
+			{ key: " A", reason: "estimate" },
+			{ key: "A ", reason: "estimate" },
+			{ key: "A", reason: "guess" },
+			{ key: "a\x1bb", reason: "estimate" },
+			{ key: "a\x7fb", reason: "estimate" },
+			{ key: "a\tb", reason: "estimate" },
+			{ key: "a\u0085b", reason: "estimate" },
+			{ key: "a\u2029b", reason: "estimate" },
+			{ key: "a\u200bb", reason: "estimate" },
+			{ key: "a\u200fb", reason: "estimate" },
+			{ key: "a\u202ab", reason: "estimate" },
+			{ key: "a\u202eb", reason: "estimate" },
+			{ key: "a\u2066b", reason: "estimate" },
+			{ key: "a\u2069b", reason: "estimate" },
+			{ key: 3, reason: "estimate" },
+			null,
+			"P",
+			undefined,
+		]) expect(isVia(v)).toBe(false);
+	});
+	test("viaOf follows the last booked start: a later booked start without via drops it, an unbooked one does not", () => {
+		const evs: Ev[] = [{ ts: t(0), event: "start", key: "A", booked: 10, via: pb }];
+		expect(viaOf(evs, "A")).toEqual(pb);
+		expect(viaOf([...evs, { ts: t(1), event: "start", key: "A" }], "A")).toEqual(pb);
+		expect(viaOf([...evs, { ts: t(1), event: "start", key: "A", booked: 5 }], "A")).toBeUndefined();
+	});
+	test("a malformed via in the events reads as none", () => {
+		const evs = [{ ts: t(0), event: "start", key: "A", booked: 10, via: { key: "a\nb", reason: "estimate" } }] as Ev[];
+		expect(viaOf(evs, "A")).toBeUndefined();
+	});
+});
+
+describe("poolOf / dueAlert with a shared parent booking", () => {
+	const ab: Ev[] = [
+		{ ts: t(0), event: "start", key: "A", booked: 10, via: pb },
+		{ ts: t(3), event: "stop", key: "A" },
+		{ ts: t(3), event: "start", key: "B", booked: 10, via: pb },
+		{ ts: t(5), event: "stop", key: "B" },
+	];
+	test("sums the minutes of the keys booked through one parent and gives them all the same pool", () => {
+		const a = poolOf(ab, "A", at(6));
+		expect(a).toEqual({ parent: "P", keys: ["A", "B"], booked: 10, el: 5 });
+		expect(poolOf(ab, "B", at(6))).toEqual(a);
+	});
+	test("alerts on the summed minutes, once for the group whichever key recorded it", () => {
+		const running = ab.slice(0, 3); // B keeps running
+		expect(dueAlert(running, "A", at(6))).toBe(50);
+		const alerted = [...running, { ts: t(5), event: "alert", key: "A", pool: "P", p: 50 } as Ev];
+		expect(dueAlert(alerted, "B", at(6))).toBeUndefined();
+		expect(dueAlert(alerted, "B", at(8))).toBe(80);
+	});
+	test("the parent with its own booking joins the pool and its earlier alert counts", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "P", booked: 10 },
+			{ ts: t(2), event: "stop", key: "P" },
+			{ ts: t(2), event: "alert", key: "P", p: 50 } as Ev,
+			{ ts: t(2), event: "start", key: "A", booked: 10, via: pb },
+			{ ts: t(4), event: "stop", key: "A" },
+		];
+		const p = poolOf(evs, "P", at(6));
+		expect(p).toEqual({ parent: "P", keys: ["A", "P"], booked: 10, el: 4 });
+		expect(poolOf(evs, "A", at(6))).toEqual(p);
+		expect(dueAlert(evs, "A", at(6))).toBeUndefined();
+	});
+	test("a key's alerts under its own booking do not suppress the pool's", () => {
+		const evs: Ev[] = [{ ts: t(0), event: "alert", key: "A", p: 50 } as Ev, ...ab];
+		expect(dueAlert(evs, "A", at(6))).toBe(50);
+	});
+	test("estimate never pools; a parent without sub-tasks has no pool", () => {
+		const est = { key: "A", reason: "estimate" } as const;
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 10, via: est },
+			{ ts: t(3), event: "stop", key: "A" },
+			{ ts: t(3), event: "start", key: "B", booked: 10, via: { key: "B", reason: "estimate" } },
+		];
+		expect(poolOf(evs, "A", at(6))).toBeUndefined();
+		expect(poolOf(evs, "B", at(6))).toBeUndefined();
+		expect(poolOf([{ ts: t(0), event: "start", key: "P", booked: 10 }], "P", at(6))).toBeUndefined();
+		expect(dueAlert(evs, "A", at(6))).toBeUndefined();
+		expect(dueAlert(evs, "A", at(8))).toBeUndefined();
+	});
+});
+
+describe("poolOf / dueAlert: wall time and group booking", () => {
+	test("keys running at once count their overlap once: 4/10, not 8/10", () => {
+		const evs: Ev[] = [
+			{ ts: t(5), event: "start", key: "K-1", booked: 10, via: pb },
+			{ ts: t(5), event: "start", key: "K-2", booked: 10, via: pb },
+		];
+		expect(poolOf(evs, "K-1", at(9))).toEqual({ parent: "P", keys: ["K-1", "K-2"], booked: 10, el: 4 });
+		expect(dueAlert(evs, "K-1", at(9))).toBeUndefined(); // 8 summed minutes would be 80 %
+		expect(dueAlert(evs, "K-2", at(10))).toBe(50);
+	});
+	test("priors and adjustments of each key still add on top of the wall time", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 10, via: pb, prior: 1 },
+			{ ts: t(0), event: "start", key: "B", booked: 10, via: pb },
+			{ ts: t(1), event: "adjust", key: "B", prior: 0.5 },
+		];
+		expect(poolOf(evs, "A", at(2))?.el).toBe(3.5);
+	});
+	test("within a group the latest booking wins and dueAlert uses it", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 10, via: pb },
+			{ ts: t(1), event: "stop", key: "A" },
+			{ ts: t(1), event: "start", key: "B", booked: 20, via: pb },
+		];
+		expect(poolOf(evs, "A", at(6))?.booked).toBe(20);
+		expect(dueAlert(evs, "A", at(6))).toBeUndefined(); // 6/20 = 30 %, not 60 % of 10
+		expect(dueAlert(evs, "A", at(10))).toBe(50);
+	});
+	test("an alert whose pool is not a string is read by its key", () => {
+		const evs = [
+			{ ts: t(0), event: "start", key: "A", booked: 10 },
+			{ ts: t(5), event: "alert", key: "A", pool: 5, p: 50 },
+		] as unknown as Ev[];
+		expect(dueAlert(evs, "A", at(6))).toBeUndefined();
+	});
+});
+
+describe("poolOf: who joins a group", () => {
+	const A: Ev = { ts: t(0), event: "start", key: "A", booked: 10, via: pb };
+	test("a parent with via estimate is not pooled with its sub-task", () => {
+		const evs: Ev[] = [{ ts: t(0), event: "start", key: "P", booked: 10, via: { key: "P", reason: "estimate" } }, { ...A, ts: t(1) }];
+		expect(poolOf(evs, "A", at(3))?.keys).toEqual(["A"]);
+		expect(poolOf(evs, "P", at(3))).toBeUndefined();
+	});
+	test("a parent that is itself via another parent keeps its sub-tasks' group without it", () => {
+		const evs: Ev[] = [{ ts: t(0), event: "start", key: "P", booked: 10, via: { key: "G", reason: "parent booking" } }, { ...A, ts: t(1) }];
+		expect(poolOf(evs, "A", at(3))).toEqual({ parent: "P", keys: ["A"], booked: 10, el: 2 });
+		expect(poolOf(evs, "P", at(3))?.parent).toBe("G");
+	});
+	test("the sum is taken in milliseconds and divided once", () => {
+		const evs: Ev[] = [
+			{ ts: t(0), event: "start", key: "A", booked: 10, via: pb, prior: 0.1 },
+			{ ts: t(0), event: "start", key: "B", booked: 10, via: pb, prior: 0.2 },
+		];
+		expect(poolOf(evs, "A", at(0))?.el).toBe(0.3);
+	});
 });
