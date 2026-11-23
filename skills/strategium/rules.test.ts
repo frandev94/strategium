@@ -122,7 +122,7 @@ function discover() {
 			cwd,
 			env: { ...process.env, HOME: home, USERPROFILE: home },
 		});
-		if (p.exitCode !== 0) throw new Error(`discover.ts failed: ${p.stderr.toString()}`);
+		if (p.exitCode !== 0) throw new Error(`discover.ts failed (exit ${p.exitCode}): ${p.stderr.toString() || p.stdout.toString()}`);
 		return { home, ...(JSON.parse(readFileSync(out, "utf8")) as { childHome: string; rules: Found[] }) };
 	} finally {
 		rmSync(tmp, { recursive: true, force: true });
@@ -136,7 +136,7 @@ describe("omp discovery (claude-plugins provider, isolated HOME)", () => {
 		found = discover();
 		const prefix = (rulesDir + sep).toLowerCase();
 		inRules = found.rules.filter(r => resolve(r.path).toLowerCase().startsWith(prefix));
-	});
+	}, 60_000); // cold Windows runner: the discovery child can exceed bun's 5 s hook default
 
 	test("the child ran with the isolated home", () => {
 		expect(found.childHome).toContain("strategium-rules-");
