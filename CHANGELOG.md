@@ -1,3 +1,21 @@
+## [0.2.56] - 2026-11-23
+
+### 🚀 Features
+
+- *(cockpit)* The cockpit shows the debrief summary as its last screen
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Esc closes the final screen from a detail; the replay ends the run on omp 18 and 19
+
+### 📚 Documentation
+
+- The cockpit's final screen after end
+- PR merged on the final screen needs names or a vault
+
+### 🧪 Testing
+
+- *(cockpit)* Keys on the final screen open nothing esc would have to back out of
 ## [0.2.55] - 2026-11-23
 
 ### 🐛 Bug Fixes

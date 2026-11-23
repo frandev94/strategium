@@ -11,7 +11,7 @@
 			"name": "strategium",
 			"description": "An orchestrator workflow with delegated agents and seals, and optional ticketing with a booking timer",
 			"source": "./",
-			"version": "0.2.55",
+			"version": "0.2.56",
 			"author": {
 				"name": "Fran Glez"
 			},
