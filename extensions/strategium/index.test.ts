@@ -9753,6 +9753,16 @@ describe("vault records (#151)", () => {
 		expect(readFileSync(dailyFile(v), "utf8").split("\n")[0]).toBe("## 📝 Log");
 	});
 
+	test("B1: a switch writes the old key's end line and the new key's begin line", async () => {
+		const v = vaultDir();
+		const s = withVault(v);
+		at(9, 5);
+		await s.call({ action: "begin", key: "K-1" });
+		at(9, 30);
+		await s.call({ action: "switch", key: "K-2" });
+		expect(dailyLines(v).map(l => l.replace(/^- \d\d:\d\d - Strategium /, ""))).toEqual(["K-1: run begun", "K-1: run ended (25 min active, 0 min paused)", "K-2: run begun"]);
+	});
+
 	test("A2: restart, same-key begin, takeover, replayed todo and a second gh pr create add no line", async () => {
 		const v = vaultDir();
 		const s = withVault(v);
@@ -10235,6 +10245,8 @@ describe("switch (#155)", () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1", archmagos: true });
 		await s.call({ action: "slices", slices: [{ id: "S1", parallel: true, files: ["a.ts"] }] });
+		s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases: [{ name: "Muster", tasks: [{ content: "captain: Objective", status: "pending" }] }] } }, s.ctx));
+		expect(JSON.parse(readFileSync(runFile(s.dir), "utf8"))).toHaveProperty("phases");
 		await s.call({ action: "switch", key: "K-2" });
 		const run = JSON.parse(readFileSync(runFile(s.dir), "utf8"));
 		expect(run.key).toBe("K-2");
@@ -10271,6 +10283,29 @@ describe("switch (#155)", () => {
 		expect(await s.call({ action: "status" })).toContain(`RUN K-2 theatre=none repo=${s.dir}`);
 	});
 
+	test("a takeover switch with no own repo leaves K-2 without a repo, never the holder's", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		const other = setup("sess-0002", s.dir);
+		await other.call({ action: "begin", key: "K-2" });
+		await other.call({ action: "repo", repo: join(s.dir, "elsewhere") });
+		await setup("sess-0001", s.dir).call({ action: "switch", key: "K-2", takeover: "sess-0002" });
+		expect(JSON.parse(readFileSync(runFile(s.dir), "utf8"))).not.toHaveProperty("repo");
+	});
+
+	test("running agents refuse the switch and change nothing", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		const run = JSON.parse(readFileSync(runFile(s.dir), "utf8"));
+		run.agents = { A: { id: "S1", parallel: true, files: ["a.ts"] } };
+		writeFileSync(runFile(s.dir), JSON.stringify(run));
+		const before = readFileSync(runFile(s.dir), "utf8");
+		expect(await s.call({ action: "switch", key: "K-2" })).toBe("ERROR K-1 still has running agents: wait for them or end the run first");
+		expect(readFileSync(runFile(s.dir), "utf8")).toBe(before);
+		expect(existsSync(lockPath(s.dir, "K-2"))).toBe(false);
+		expect(debriefs(s.dir)).toEqual([]);
+	});
+
 	test("a failed end releases the new key's claim and begins nothing", async () => {
 		const s = setup();
 		await s.call({ action: "begin", key: "K-1" });
@@ -10289,10 +10324,11 @@ describe("switch (#155)", () => {
 		// A directory where the run file's temp goes: the new run cannot be written.
 		const tmp = `${runFile(s.dir)}.${process.pid}.tmp`;
 		mkdirSync(tmp);
-		const out = await s.call({ action: "switch", key: "K-2" });
+		const out = await s.call({ action: "switch", key: "K-2", booked: 90 });
 		expect(out).toStartWith("ENDED K-1");
 		expect(out).toContain("ERROR begin K-2 failed after K-1 ended");
-		expect(out).toContain(`call strategium begin key K-2 theatre github, then repo ${s.dir}`);
+		expect(out).toContain(`call strategium begin key K-2 theatre github booked 90, then repo ${s.dir}`);
+		expect(readFileSync(lockPath(s.dir, "K-2"), "utf8")).toBe("sess-0001");
 		rmSync(tmp, { recursive: true });
 		expect(await s.call({ action: "begin", key: "K-2", theatre: "github" })).toContain("K-2");
 	});

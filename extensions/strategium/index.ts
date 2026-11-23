@@ -522,7 +522,7 @@ function closeGap(run: Run, force = false): string | undefined {
 }
 
 /** Claim `key` for session `sid`. A ticket held by a crashed session is taken over by naming its id in `takeover`. */
-function begin(sid: string, key: string, theatre: string, booked?: number, spent?: number, takeover?: string): void {
+function begin(sid: string, key: string, theatre: string, booked?: number, spent?: number, takeover?: string, ownRepo?: { repo?: string }): void {
 	claim(stateDir(), key, sid, takeover);
 	const other = allRuns().find(r => r.key === key && r.sid !== sid);
 	if (other) {
@@ -541,7 +541,7 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	// Begun again on the same key, every stored field stays except the booking mode.
 	const { untimed: _u, ...kept } = keep ?? {};
 	// A run begun under another key still hands its hidden tools on, or end could never restore them.
-	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: keep ? keep.repo : other?.repo, since: keep?.since ?? other?.since ?? nowIso(), ...(keep ? {} : { recorded: other?.recorded }), ...(untimed ? { untimed: true as const } : {}) });
+	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: ownRepo ? ownRepo.repo : keep ? keep.repo : other?.repo, since: keep?.since ?? other?.since ?? nowIso(), ...(keep ? {} : { recorded: other?.recorded }), ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
 	sweepPointers();
 	startKey(key, booked, spent, untimed);
@@ -2000,10 +2000,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	}
 
 	/** Begin `key` for the session: the tool's `begin` and the /strategium command both come here, so the edit guard is armed the same way. */
-	async function beginRun(sid: string, key: string, theatre: string, booked: number | undefined, spent: number | undefined, takeover: string | undefined, archmagos: boolean | undefined, ctx: SessionCtx): Promise<string> {
+	async function beginRun(sid: string, key: string, theatre: string, booked: number | undefined, spent: number | undefined, takeover: string | undefined, archmagos: boolean | undefined, ctx: SessionCtx, ownRepo?: { repo?: string }): Promise<string> {
 		// A session that lost its ticket drops its files here; its in-memory cockpit goes too, or a begin of the same key would bring it back.
 		if (!ownRun(sid)) resetCockpit();
-		begin(sid, key, theatre, booked, spent, takeover);
+		begin(sid, key, theatre, booked, spent, takeover, ownRepo);
 		// A block start always restarts the idle count.
 		idleSince = undefined;
 		const run = ownRun(sid)!;
@@ -2297,6 +2297,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const old = ownRun(sid);
 						if (!old) return text("ERROR no run to switch from in this session");
 						if (key === old.key) return text(`ERROR ${key} is already this session's run`);
+						if (Object.keys(old.agents ?? {}).length) return text(`ERROR ${old.key} still has running agents: wait for them or end the run first`);
 						// Claim first: a refused key leaves the old run running, and no session can take it between the two halves.
 						claim(stateDir(), key, sid, params.takeover);
 						let ended: string;
@@ -2304,20 +2305,17 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 							ended = await finish(sid, ctx);
 						} catch (err) {
 							release(stateDir(), key, sid);
+							// The end ran and a later step threw: the run is gone and the claim on key is released, so say what to call.
+							if (!ownRun(sid)) return text(`ERROR ${old.key} ended but ${key} did not begin: ${err instanceof Error ? err.message : String(err)}; call strategium begin key ${key} theatre ${old.theatre}${params.booked !== undefined ? ` booked ${params.booked}` : ""}${old.repo ? `, then repo ${old.repo}` : ""}`);
 							throw err;
 						}
-						if (ended.split("\n", 1)[0] !== `ENDED ${old.key}`) {
-							release(stateDir(), key, sid);
-							return text(ended);
-						}
 						try {
-							const begun = await beginRun(sid, key, old.theatre, params.booked, undefined, params.takeover, undefined, ctx);
-							// begin() takes the repo of another session's run of the key on a takeover; a switch keeps this session's.
-							if (old.repo) writeRun({ ...readRun(sid)!, repo: old.repo });
+							// The claim is already ours, so no takeover here; this session's repo (or none) goes onto the run in the same write.
+							const begun = await beginRun(sid, key, old.theatre, params.booked, undefined, undefined, undefined, ctx, { repo: old.repo });
 							return text(`${ended}\n${begun}`);
 						} catch (err) {
 							// The end cannot be undone and the claim on key stays ours, so the retry begin succeeds.
-							return text(`${ended}\nERROR begin ${key} failed after ${old.key} ended: ${err instanceof Error ? err.message : String(err)}; call strategium begin key ${key} theatre ${old.theatre}${old.repo ? `, then repo ${old.repo}` : ""}`);
+							return text(`${ended}\nERROR begin ${key} failed after ${old.key} ended: ${err instanceof Error ? err.message : String(err)}; call strategium begin key ${key} theatre ${old.theatre}${params.booked !== undefined ? ` booked ${params.booked}` : ""}${old.repo ? `, then repo ${old.repo}` : ""}`);
 						}
 					}
 					case "attention": {
