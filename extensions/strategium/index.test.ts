@@ -8652,10 +8652,42 @@ console.log("FAILED " + failed);`;
 		test("a corrupted latest builder: the FALL line, and at end a fall in the roster even though its job completed", async () => {
 			const s = await open();
 			const name = await running(s, "S1");
-			expect(await rate(s, name, "corrupted")).toBe(`RATED ${name} corrupted model=@task effort=medium evidence=1\nFALL ${surname(name)} squad S1 at end`);
+			expect(await rate(s, name, "corrupted")).toBe(`RATED ${name} corrupted model=@task effort=medium evidence=1\nFALL ${surname(name)} squad S1 falls at end unless a later builder replaces it`);
 			returned(s, "battle-brother", name, "S1", "completed");
 			expect(await s.call({ action: "end" })).toContain("ROSTER 1 squad(s) recorded");
 			expect(roster(s.dir)[surname(name)]).toEqual(svc({ falls: 1, squads: 1 }));
+		});
+
+		test("a builder spawned by a blocking task, never in the cockpit registry, can be rated", async () => {
+			const s = await open();
+			const name = await nameFor(s, "battle-brother", "S1");
+			spawn(s, "battle-brother", name);
+			expect(await rate(s, name, "corrupted")).toContain(`FALL ${surname(name)} squad S1`);
+			expect(await rate(s, `${name}-2`, "corrupted")).toStartWith(`RATED ${name}-2 corrupted model=`);
+			const unspawned = await nameFor(s, "battle-brother", "S2");
+			expect(await rate(s, unspawned, "proven")).toBe(`ERROR ${unspawned} is not an agent of this run: pass the agent id the task result shows`);
+		});
+
+		test("rate corrupted, redraft, end: no fall reaches roster.json", async () => {
+			const s = await open();
+			const name = await running(s, "S1");
+			await rate(s, name, "corrupted");
+			await s.call({ action: "redraft" });
+			await s.call({ action: "end" });
+			const file = join(s.dir, "roster.json");
+			expect((existsSync(file) ? roster(s.dir) : {})[surname(name)]?.falls ?? 0).toBe(0);
+		});
+
+		test("a hand-edited invalid corrupted entry does not block a proven re-rate, and a non-object ratings is not written back", async () => {
+			const s = await open();
+			const name = await running(s, "S1");
+			const file = join(s.dir, "runs", "sess-0001.json");
+			const edit = (ratings: unknown) => writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), ratings }));
+			edit({ [name]: { rating: "corrupted" } });
+			expect(await rate(s, name, "proven")).toBe(`RATED ${name} proven model=@task effort=medium evidence=1`);
+			edit("junk");
+			await rate(s, name, "proven");
+			expect(Object.keys(JSON.parse(readFileSync(file, "utf8")).ratings)).toEqual([name]);
 		});
 
 		test("a proven builder has no FALL line and the record is the plain pass", async () => {

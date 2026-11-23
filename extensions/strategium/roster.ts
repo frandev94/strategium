@@ -50,7 +50,7 @@ export function runOutcomes(run: { names?: readonly NameEntry[]; builds?: unknow
 	const builds = isObject(run.builds) ? run.builds : {};
 	const rated = isObject(run.ratings) ? Object.entries(run.ratings).filter(([, r]) => isObject(r) && r.rating === "corrupted").map(([id]) => baseId(id)) : [];
 	const out: Outcome[] = [];
-	for (const squad of new Set([...Object.keys(ended), ...names.filter(isBuilder).map(e => e.squad as string)])) {
+	for (const squad of new Set([...Object.keys(ended), ...names.filter(e => isBuilder(e) && typeof e.squad === "string").map(e => e.squad as string)])) {
 		const end = ended[squad];
 		const own = names.filter(e => isBuilder(e) && e.squad === squad);
 		const latest = own.findLast(e => e.spawned) ?? own.at(-1);

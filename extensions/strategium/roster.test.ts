@@ -594,4 +594,13 @@ describe("runOutcomes with ratings (#141, D6)", () => {
 		expect(runOutcomes({ ...base, ratings: { ScoutPaulus: rated("corrupted") } })).toEqual(runOutcomes(base));
 		expect(runOutcomes({ ...base, ratings: "junk" })).toEqual(runOutcomes(base));
 	});
+	test("a corrupted spawned builder with a penitent allocated but unspawned: the squad fell", () => {
+		const names = [builder("a", "Lorenzo"), penitent("a", "Lorenzo", { spawned: undefined })];
+		expect(runOutcomes({ names, builds: { a: 1 }, ratings: { BrotherLorenzo: rated("corrupted") } })).toEqual([{ brother: "Lorenzo", squad: "a", kind: "fell", penances: 0 }]);
+	});
+	test("a hand-edited name whose squad is not a string gives no outcome", () => {
+		const bad = { ...builder("a", "Lorenzo"), squad: 7 } as unknown as NameEntry;
+		expect(runOutcomes({ names: [bad], builds: { a: 1 }, ended: { a: "ok" } })).toEqual([]);
+		expect(runOutcomes({ names: [bad], ratings: { BrotherLorenzo: rated("corrupted") } })).toEqual([]);
+	});
 });

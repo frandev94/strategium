@@ -1,9 +1,7 @@
 // The run report: a pure builder from a key's events, squads and notes to markdown. Does no fs itself, no ctx, no index.ts.
-import { isCost, type Live, oneLine, type Rating, RATING_WORD, usd } from "./cockpit";
+import { isCost, type Live, oneLine, type Rating, RATING_WORD, RATINGS, usd } from "./cockpit";
 import type { Honour } from "./roster";
 import { bookedMin, type Ev } from "./timer";
-
-const KINDS = Object.keys(RATING_WORD) as Rating["rating"][];
 
 export type Reported = {
 	apothecary?: { killed?: number; survived?: number; crashes?: number };
@@ -210,11 +208,11 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 	];
 
 	// Only known verdicts count; a record with none left shows no section.
-	const rated = Object.entries(input.ratings ?? {}).filter(([, r]) => r && Object.hasOwn(RATING_WORD, r.rating));
-	const verdicts = (rs: Rating[]) => KINDS.map(k => rs.filter(r => r.rating === k).length);
+	const rated = Object.entries(input.ratings ?? {}).filter(([, r]) => r && RATINGS.includes(r.rating));
+	const verdicts = (rs: Rating[]) => RATINGS.map(k => rs.filter(r => r.rating === k).length);
 	const counts3 = verdicts(rated.map(x => x[1]));
 	const tiers = [...Map.groupBy(rated, ([, r]) => `${cell(r.model)}\0${cell(r.effort)}`)].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-	const evidence = (r: Rating) => (Array.isArray(r.evidence) ? oneLine(r.evidence.map(oneLine).join(", ")).slice(0, 200).replace(/[\\|]/g, "\\$&") || "—" : "—");
+	const evidence = (r: Rating) => (Array.isArray(r.evidence) ? [...oneLine(r.evidence.map(oneLine).join(", "))].slice(0, 200).join("").replace(/[\\|]/g, "\\$&") || "—" : "—");
 	const agentOf = new Map(agents.map(a => [a.id, a]));
 
 	const md = [
@@ -317,7 +315,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 				? `COST (${who}, list price) ${spend.text} · ${byRole.map(r => `${roleName(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
 				: "COST none",
 			...(hs ? [`HONOURS ${hs.rows.flatMap(honourLine).join(", ") || "none"}`] : []),
-			...(rated.length ? [`RATINGS ${rated.length}: ${KINDS.map((k, i) => [k, counts3[i]] as const).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(", ")}`] : []),
+			...(rated.length ? [`RATINGS ${rated.length}: ${RATINGS.map((k, i) => [k, counts3[i]] as const).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(", ")}`] : []),
 		],
 	};
 }

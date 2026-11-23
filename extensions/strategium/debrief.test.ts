@@ -642,6 +642,23 @@ describe("debrief ratings", () => {
 		expect(line.split(" | ").at(-1)!.replace(/ \|$/, "").replace(/\\/g, "").length).toBeLessThanOrEqual(200);
 	});
 
+	test("evidence is cut by code points: an astral character at the boundary stays whole", () => {
+		const ratings = { A: rate("corrupted", "m", "low", ["x".repeat(199) + "😀😀"]) };
+		const line = section(debrief(input(evs, { ratings })).markdown, "Ratings").split("\n").find(l => l.startsWith("| A "))!;
+		expect(line.isWellFormed()).toBe(true);
+		expect(line).toContain("x".repeat(199) + "😀 |");
+	});
+
+	test("an unknown rating value and a null entry are not printed", () => {
+		const ratings = { A: rate("proven", "@task", "low"), B: { ...rate("proven", "@task", "low"), rating: "bogus" }, C: null } as unknown as DebriefInput["ratings"];
+		const out = debrief(input(evs, { ratings }));
+		const body = section(out.markdown, "Ratings");
+		expect(body).toContain("| A ");
+		expect(body).not.toContain("| B ");
+		expect(body).not.toContain("| C ");
+		expect(out.summary.at(-1)).toBe("RATINGS 1: proven 1");
+	});
+
 	test("per-tier table groups by model then effort, counts each verdict and totals", () => {
 		const ratings = { ...three, B: rate("proven", "@task", "high"), C: rate("proven", "@task", "medium") };
 		const lines = section(debrief(input(evs, { ratings })).markdown, "Ratings").split("\n").filter(l => l.startsWith("| "));
