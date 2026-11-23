@@ -1,3 +1,18 @@
+## [0.2.61] - 2026-11-23
+
+### 🚀 Features
+
+- *(cockpit)* Ask the Servo-skull about the whole mission
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* Richer mission facts and an answer that stays in view
+- *(cockpit)* A blocked reason survives the fact cap
+
+### 📚 Documentation
+
+- Asking the Servo-skull
+- Each Servo-skull question is one paid call
 ## [0.2.60] - 2026-11-23
 
 ### 🐛 Bug Fixes
