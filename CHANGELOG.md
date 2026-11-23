@@ -1,3 +1,13 @@
+## [0.2.57] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(guard)* Heredoc bodies are found by a linear scan
+- *(guard)* The heredoc scan matches the regex, word shortening included
+
+### 🧪 Testing
+
+- *(guard)* A quoted heredoc word with no closing quote still counts as text
 ## [0.2.56] - 2026-11-23
 
 ### 🚀 Features
