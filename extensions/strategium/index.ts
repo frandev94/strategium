@@ -1677,6 +1677,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	const cockpit = {
 		key: undefined as string | undefined,
 		chronicle: [] as Entry[],
+		station: undefined as string | undefined, // the station the chronicle last saw, kept across a rebuild init so the next done does not log it again
+		asked: undefined as string | null | undefined, // the seal the chronicle last saw waiting (null: none); undefined: not known yet
 		notes: {} as Record<string, Note>,
 		dirty: false,
 		seal: undefined as { id: string; lines: string[] } | undefined, // what the Captain prepared for the seal that waits (the `seal` action)
@@ -1709,6 +1711,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		cockpit.caster = {};
 		cockpit.key = key;
 		cockpit.chronicle = [];
+		cockpit.station = undefined;
+		cockpit.asked = undefined;
 		cockpit.notes = {};
 		cockpit.deployed.clear();
 		cockpit.roster = undefined;
@@ -3213,14 +3217,19 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		// A rebuild's init is auto-started by omp at its first task, which is not where the run is: no station or seal-waiting entry.
 		const rebuild = isRebuild(details?.op, before, phases);
 		const now = rebuild ? undefined : whereFrom(phases);
-		if (now && now.station !== was?.station) {
+		// Seeded from the persisted phases, so a restart or a new run starts from what the run already showed.
+		cockpit.station ??= was?.station;
+		if (cockpit.asked === undefined && was) cockpit.asked = was.seal ?? null;
+		if (now && now.station !== cockpit.station) {
 			log(run.key, "STRATEGOS", `station ${now.station}`);
 			record({ event: "station", key: run.key, station: now.station.slice(0, 200) });
 		}
-		if (now?.seal && now.seal !== was?.seal) {
+		if (now) cockpit.station = now.station;
+		if (now?.seal && now.seal !== cockpit.asked) {
 			log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
 			record({ event: "seal", key: run.key, seal: (waitingSeal(phases)?.id ?? now.seal).slice(0, 200), state: "asked" });
 		}
+		if (now) cockpit.asked = now.seal ?? null;
 		// A hand-off (plan stations replaced by the remaining ones) is the approval: the seal that waited is granted.
 		const handedOff = isHandOff(details?.op, before, phases) ? waitingSeal(before) : undefined;
 		let sealed: Run = { ...run, phases };

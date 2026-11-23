@@ -1658,6 +1658,91 @@ describe("the run follows an approved plan", () => {
 		expect(movedRun(s.dir).recorded).toEqual(["begin", "seal:Plan"]);
 	});
 
+	test("a mid-run rebuild init does not make the next done log the station again (#97)", async () => {
+		const { s, ctx } = await owner();
+		const stations = (muster: string, skirmish: string) => [phase("Muster", ["[captain] Objective", muster]), phase("Skirmish", ["[battle-brother] Squads", skirmish])];
+		await todoResult(s, ctx, "start", stations("completed", "in_progress"));
+		await todoResult(s, ctx, "init", stations("in_progress", "pending"));
+		await todoResult(s, ctx, "done", stations("completed", "in_progress"));
+		expect((JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.cockpit"), "utf8")).chronicle as { text: string }[]).filter(e => e.text === "station Skirmish")).toHaveLength(1);
+	});
+
+	test("a restart then a rebuild init does not make the next done log the station again (#97)", async () => {
+		const { s, ctx } = await owner();
+		const stations = (muster: string, skirmish: string) => [phase("Muster", ["[captain] Objective", muster]), phase("Skirmish", ["[battle-brother] Squads", skirmish])];
+		await todoResult(s, ctx, "start", stations("completed", "in_progress"));
+		const again = setup("sess-A", s.dir);
+		await again.start();
+		await todoResult(again, again.ctx, "init", stations("in_progress", "pending"));
+		await todoResult(again, again.ctx, "done", stations("completed", "in_progress"));
+		const text = (JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.cockpit"), "utf8")).chronicle as { text: string }[]).map(e => e.text);
+		expect(text.filter(t => t === "station Skirmish")).toHaveLength(1);
+	});
+
+	test("a new run in the same session logs its first station even when the last run ended there (#97)", async () => {
+		const { s, ctx } = await owner();
+		const todo = [phase("Muster", ["[captain] Objective", "in_progress"])];
+		await todoResult(s, ctx, "start", todo);
+		await s.call({ action: "end" });
+		await s.call({ action: "begin", key: "K-2" });
+		await todoResult(s, ctx, "start", todo);
+		const text = (JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.cockpit"), "utf8")).chronicle as { text: string }[]).map(e => e.text);
+		expect(text.filter(t => t === "station Muster")).toHaveLength(1);
+		expect(load(join(s.dir, "2026-11-16.jsonl")).filter(e => e.event === "station" && e.key === "K-2")).toHaveLength(1);
+	});
+
+	test("a rebuild init while a seal waits logs seal awaits and its journal record once, and a seal asked again after its grant still logs (#97)", async () => {
+		const { s, ctx } = await owner();
+		const seal = (status: string, next: string) => [phase("Plan", ["[seal] Plan", status]), phase("Skirmish", ["[battle-brother] Squads", next])];
+		await todoResult(s, ctx, "start", seal("in_progress", "pending"));
+		await todoResult(s, ctx, "init", [phase("Muster", ["[captain] Objective", "in_progress"]), ...seal("pending", "pending")]);
+		await todoResult(s, ctx, "done", seal("in_progress", "pending"));
+		const asked = () => (JSON.parse(readFileSync(join(s.dir, "runs", "sess-A.cockpit"), "utf8")).chronicle as { text: string }[]).filter(e => e.text.includes("seal Plan awaits"));
+		expect(asked()).toHaveLength(1);
+		expect(load(join(s.dir, "2026-11-16.jsonl")).filter(e => e.event === "seal" && e.state === "asked")).toHaveLength(1);
+		await todoResult(s, ctx, "done", seal("completed", "in_progress"));
+		await todoResult(s, ctx, "done", seal("in_progress", "pending"));
+		expect(asked()).toHaveLength(2);
+	});
+
+	const askedCount = (dir: string) => (JSON.parse(readFileSync(join(dir, "runs", "sess-A.cockpit"), "utf8")).chronicle as { text: string }[]).filter(e => e.text.includes("seal Plan awaits")).length;
+	const askedEvents = (dir: string) => load(join(dir, "2026-11-16.jsonl")).filter(e => e.event === "seal" && e.state === "asked" && e.key === "K-1").length;
+
+	test("a seal that waited, was left, and waits again after a restart is logged twice (#97)", async () => {
+		const { s, ctx } = await owner();
+		const plan = (status: string) => [phase("Draft", ["[captain] Draft", status === "in_progress" ? "completed" : "in_progress"]), phase("Plan", ["[seal] Plan", status])];
+		await todoResult(s, ctx, "start", [phase("Plan", ["[seal] Plan", "in_progress"])]);
+		await todoResult(s, ctx, "done", plan("pending"));
+		const again = setup("sess-A", s.dir);
+		await again.start();
+		await todoResult(again, again.ctx, "done", plan("in_progress"));
+		expect(askedCount(s.dir)).toBe(2);
+		expect(askedEvents(s.dir)).toBe(2);
+	});
+
+	test("a restart then a rebuild init while a seal waits logs it once (#97)", async () => {
+		const { s, ctx } = await owner();
+		const seal = (status: string) => [phase("Plan", ["[seal] Plan", status]), phase("Skirmish", ["[battle-brother] Squads", "pending"])];
+		await todoResult(s, ctx, "start", seal("in_progress"));
+		const again = setup("sess-A", s.dir);
+		await again.start();
+		await todoResult(again, again.ctx, "init", [phase("Muster", ["[captain] Objective", "in_progress"]), ...seal("pending")]);
+		await todoResult(again, again.ctx, "done", seal("in_progress"));
+		expect(askedCount(s.dir)).toBe(1);
+		expect(askedEvents(s.dir)).toBe(1);
+	});
+
+	test("a run that ended with a seal waiting does not hide it from the next run of the session (#97)", async () => {
+		const { s, ctx } = await owner();
+		const todo = [phase("Plan", ["[seal] Plan", "in_progress"])];
+		await todoResult(s, ctx, "start", todo);
+		await s.call({ action: "end" });
+		await s.call({ action: "begin", key: "K-2" });
+		await todoResult(s, ctx, "start", todo);
+		expect(askedCount(s.dir)).toBe(1);
+		expect(load(join(s.dir, "2026-11-16.jsonl")).filter(e => e.event === "seal" && e.state === "asked" && e.key === "K-2")).toHaveLength(1);
+	});
+
 	test("a rebuild init while the Plan seal waits (plan-mode compaction) logs no grant", async () => {
 		const { s, sm, ctx } = await owner();
 		await todoResult(s, ctx, "start", planStations());
