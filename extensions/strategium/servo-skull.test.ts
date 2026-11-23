@@ -318,3 +318,46 @@ describe("the mission (#178)", () => {
 		expect((await answer(async () => ({ text: "" }), "q", ["f"], sig())).text).toBe("no answer");
 	});
 });
+
+describe("the mission, review fixes (#178)", () => {
+	const base = { key: "178", chronicle: [] as Entry[], live: new Map<string, Live>() };
+	const agent = (over: Partial<Deployed> = {}): Deployed => ({ who: "bb1", role: "battle-brother", state: "active", ...over });
+
+	test("an agent's line carries the narration's live row, its progress, blocked and stalled", () => {
+		const live = new Map<string, Live>([["bb1", { since: 1, at: 2, tool: "bash", intent: "run the tests", current: "forge", line: "half done", done: 1, total: 3 }]]);
+		const f = missionFacts({ ...base, live, deployed: new Map([["bb1", agent({ stalled: 5, blocked: true })]]) }).find(l => l.startsWith("agent bb1"))!;
+		for (const s of ["bash", "run the tests", "forge", "half done", "1/3", "blocked", "stalled"]) expect(f).toContain(s);
+		const ok = missionFacts({ ...base, live, deployed: new Map([["bb1", agent()]]) }).find(l => l.startsWith("agent bb1"))!;
+		expect(ok).not.toContain("blocked");
+		expect(ok).not.toContain("stalled");
+	});
+	test("a row's blocked flag alone says blocked", () => {
+		const live = new Map<string, Live>([["bb1", { since: 1, at: 2, blocked: true }]]);
+		expect(missionFacts({ ...base, live, deployed: new Map([["bb1", agent()]]) }).join("\n")).toContain("blocked");
+	});
+	test("squads come with their files and tier, and a long last line is not cut at 80", () => {
+		const live = new Map<string, Live>([["bb1", { since: 1, at: 2, line: "w".repeat(150) }]]);
+		const f = missionFacts({ ...base, live, deployed: new Map([["bb1", agent()]]), slices: [{ id: "alpha", files: ["a.ts", "b.ts"], tier: "heavy" }] });
+		expect(f.find(l => l.startsWith("squad alpha"))).toBe("squad alpha: tier heavy · files a.ts, b.ts");
+		expect(f.find(l => l.startsWith("agent bb1"))).toContain("w".repeat(120));
+	});
+	test("every line is at most 200 characters, whatever is long", () => {
+		const long = "z".repeat(400);
+		const deployed = new Map([["bb1", agent({ name: long, squad: long, station: long })]]);
+		const f = missionFacts({ ...base, deployed, phases: [{ name: long, tasks: [{ content: long, status: "in_progress" }] }], chronicle: [{ at: "1", who: long, text: long }], slices: [{ id: long, files: [long], tier: long }], seal: { id: long, lines: [long] } });
+		expect(f.length).toBeGreaterThan(5);
+		expect(f.every(l => [...l].length <= 200)).toBe(true);
+	});
+	test("500 agents give 60 agent lines and 20 log lines", () => {
+		const deployed = new Map([...Array(500).keys()].map(i => [`a${i}`, agent({ who: `a${i}` })] as [string, Deployed]));
+		const f = missionFacts({ ...base, deployed, chronicle: Array.from({ length: 300 }, () => ({ at: "1", who: "x", text: "y" })) });
+		expect(f.filter(l => l.startsWith("agent ")).length).toBe(60);
+		expect(f.filter(l => l.startsWith("log ")).length).toBe(20);
+	});
+	test("a long answer is cut with an ellipsis, a short one is not", async () => {
+		const r = await answer(async () => ({ text: "y".repeat(900) }), "q", [], sig());
+		expect([...r.text].length).toBe(400);
+		expect(r.text.endsWith("…")).toBe(true);
+		expect((await answer(async () => ({ text: "short" }), "q", [], sig())).text).toBe("short");
+	});
+});

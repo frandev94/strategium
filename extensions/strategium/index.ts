@@ -1816,7 +1816,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		ignored.push(...Object.keys(process.env).filter(k => k.startsWith("STRATEGIUM_CASTER")).map(k => `${k} (now ${k.replace("CASTER", "SERVO_SKULL")})`));
 		if (existsSync(path.join(stateDir(), "caster"))) ignored.push("saved file caster (now servo-skull; can be deleted)");
 		const resolved = "alias" in alias && cockpit.servoSkull.spend?.model ? ` → ${cockpit.servoSkull.spend.model}` : "";
-		return `servo-skull: ${servoSkull.on ? "on" : "off"} (${servoSkull.from}) · model ${"alias" in alias ? alias.alias : alias.error}${resolved} · every ${every.min} min${ignored.length ? ` · ignored: ${ignored.join(", ")}` : ""}`;
+		return `servo-skull: ${servoSkull.on ? "on" : "off"} (${servoSkull.from}) · model ${"alias" in alias ? alias.alias : alias.error}${resolved} · every ${every.min} min${ignored.length ? ` · ignored: ${ignored.join(", ")}` : ""}${servoSkull.on ? " · ask: /strategium-skull <question>" : ""}`;
 	};
 
 	// The cockpit: an overlay on demand while this session has a run. Everything it shows beyond the run file
@@ -1844,6 +1844,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		debrief: undefined as { key: string; lines: string[] } | undefined, // the final screen: set at `end` while the overlay is open, so the overlay outlives the run
 		servoSkull: {} as ServoSkullState,
 	};
+	/** At most n characters, a cut one ending in `…`. */
+	const brief = (s: string, n: number) => ([...s].length > n ? `${chars(s, n - 1)}…` : s);
+	let cockpitWidth = 0; // the width the open cockpit was last drawn at; 0 before its first render
 	const SEAL_LINES = 200;
 	const SEAL_LINE_CHARS = 500;
 	/** Abort the servo-skull's call in flight, if any: it no longer counts as in flight, its reply is not shown, and its attempt is forgotten so a reopened cockpit calls again. */
@@ -2004,7 +2007,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
 			seal: cockpit.seal,
-			servoSkull: servoSkull.on ? (cockpit.servoSkull.answer ? { station: `answer to "${chars(cockpit.servoSkull.answer.question, 40)}"`, text: cockpit.servoSkull.answer.text, dim: false, at: cockpit.servoSkull.answer.at } : { station: cockpit.servoSkull.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.servoSkull.text ?? "listening…", dim: cockpit.servoSkull.text === undefined || cockpit.servoSkull.dim === true, at: cockpit.servoSkull.at }) : undefined,
+			servoSkull: servoSkull.on ? (cockpit.servoSkull.answer ? { station: `answer to "${brief(cockpit.servoSkull.answer.question, 40)}"`, text: cockpit.servoSkull.answer.text, dim: false, at: cockpit.servoSkull.answer.at } : { station: cockpit.servoSkull.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.servoSkull.text ?? "listening…", dim: cockpit.servoSkull.text === undefined || cockpit.servoSkull.dim === true, at: cockpit.servoSkull.at }) : undefined,
 			transcript: cockpit.transcript,
 			names: naming.on ? { squads: squadBrothers(cleanNames(run.names), "brothers" in roster ? roster.brothers : undefined), ...("error" in roster ? { unreadable: true as const } : {}) } : undefined,
 		};
@@ -2090,6 +2093,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			Object.assign(c, { text: prep.reason, dim: true, station, at: undefined });
 			return redraw();
 		}
+		const startedAt = Date.now();
 		const ctrl = new AbortController();
 		const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(30_000)]);
 		const facts = servoSkullFacts(view, cockpit.input.live, cockpit.chronicle);
@@ -2102,7 +2106,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				countSpend(c, r.reply);
 				if (!ctrl.signal.aborted) {
 					Object.assign(c, { text: r.text, dim: r.dim, station, at: r.dim ? undefined : Date.now() });
-					delete c.answer;
+					if (!r.dim && c.answer && c.answer.at < startedAt) delete c.answer; // a summary that started after the answer arrived replaces it
 				}
 				redraw();
 			})
@@ -2160,7 +2164,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					cockpit.overlay = tui;
 					cockpit.close = close;
 					return {
-						render: width => (cockpit.debrief ? renderDebrief(cockpit.debrief.key, cockpit.debrief.lines, width, pal, tui.terminal.rows) : renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows, relic.on)),
+						render: width => ((cockpitWidth = width), cockpit.debrief ? renderDebrief(cockpit.debrief.key, cockpit.debrief.lines, width, pal, tui.terminal.rows) : renderCockpit(cockpit.view!, width, frame, pal, tui.terminal.rows, relic.on)),
 						handleInput: data => {
 							const act = keyAction(data, !!cockpit.nav.detail);
 							if (act === "close") return close();
@@ -2769,7 +2773,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		notify(ctx, addMin(run, Number(arg)));
 	});
 
-	subcommand("skull", "Ask the servo-skull a question about the whole run; it answers in the cockpit's servo-skull box when the cockpit is open, here otherwise", async (arg, ctx, sid) => {
+	subcommand("skull", "Ask the servo-skull a question about the whole run (one paid model call per question); it answers in the cockpit's servo-skull box when the cockpit shows it, here otherwise", async (arg, ctx, sid) => {
 		if (ctx.agent?.kind === "sub") return;
 		const run = ownRun(sid);
 		if (!run) return notify(ctx, NO_RUN, "warning");
@@ -2782,16 +2786,20 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		if ("reason" in prep) return notify(ctx, `The servo-skull cannot answer: ${prep.reason}.`, "warning");
 		const ctrl = new AbortController();
 		c.ask = ctrl;
+		notify(ctx, "The Servo-skull is answering…");
 		try {
-			const facts = missionFacts({ key: run.key, phases: run.phases, deployed: cockpit.deployed, live: liveRows(run), chronicle: cockpit.chronicle, seal: cockpit.seal, returns: { redraft: run.redraft === true, builds: run.builds }, clock: cockpit.clock });
+			const facts = missionFacts({ key: run.key, phases: run.phases, deployed: cockpit.deployed, live: liveRows(run), chronicle: cockpit.chronicle, seal: cockpit.seal, returns: { redraft: run.redraft === true, builds: run.builds }, clock: cockpit.clock, slices: run.slices });
 			const r = await answer(prep.complete, arg, facts, AbortSignal.any([ctrl.signal, AbortSignal.timeout(30_000)]));
-			if (cockpit.servoSkull !== c || !readRun(sid)) return; // the run was reset or has ended meanwhile: the reply is not counted or shown
+			const fresh = readRun(sid);
+			if (cockpit.servoSkull !== c || fresh?.key !== run.key) return; // the run was reset, has ended or is another one meanwhile: the reply is not counted or shown
 			countSpend(c, r.reply); // paid, shown or not
-			const question = chars(oneLine(arg), 300);
 			if (r.dim) return notify(ctx, `The servo-skull could not answer: ${r.text}.`, "warning");
+			const question = chars(oneLine(arg), 300);
 			c.answer = { question, text: r.text, at: Date.now() }; // a cockpit opened later still shows it, until a summary replaces it
-			if (cockpit.close) drawCockpit(run, ctx);
-			else notify(ctx, `Servo-skull on "${chars(question, 60)}": ${r.text}`);
+			// The box shows it only in the main view of a cockpit at least 72 columns wide (the width is 0 until the first render).
+			const boxShows = !!cockpit.close && !cockpit.nav.detail && !cockpit.debrief && (cockpitWidth === 0 || cockpitWidth >= 72);
+			if (cockpit.close) drawCockpit(fresh, ctx);
+			if (!boxShows) notify(ctx, `Servo-skull on "${brief(question, 60)}": ${r.text}`);
 		} finally {
 			if (c.ask === ctrl) c.ask = undefined;
 		}

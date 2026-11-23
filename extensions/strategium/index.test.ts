@@ -4530,6 +4530,102 @@ describe("cockpit", () => {
 				expect(calls[0].context.messages[0].content).toContain("STATION:");
 				expect(shownText(ui)).not.toContain("answer to");
 			});
+
+			const summaryCall = (c: Call) => c.context.systemPrompt[0].includes("live commentator");
+			// A summary that waits to be landed by the test; questions answer at once.
+			const gated = (text = "Scout A returned.") => {
+				const lands: ((v: unknown) => void)[] = [];
+				return { lands, answer: (c: Call) => (summaryCall(c) ? new Promise(r => lands.push(r)) : Promise.resolve(reply(text))) };
+			};
+
+			test("an answer stays when a summary that started before it lands, and the next summary replaces it", async () => {
+				const g = gated();
+				const { s, ui } = await casting({ env: ON, answer: g.answer });
+				await tick(); // a summary is in flight
+				await s.sub("skull", "q?");
+				expect(shownText(ui)).toContain("Scout A returned.");
+				g.lands[0](reply("Alpha is green."));
+				await Bun.sleep(0);
+				expect(shownText(ui)).toContain("Scout A returned.");
+				t0(120);
+				station(s, "Draft");
+				await tick();
+				g.lands[1](reply("Draft is open."));
+				await Bun.sleep(0);
+				expect(shownText(ui)).toContain("Draft is open.");
+				expect(shownText(ui)).not.toContain("Scout A returned.");
+			});
+
+			test("opening the cockpit right after asking shows the answer", async () => {
+				const { s, ui } = await casting({ env: ON, open: false, answer: async () => reply("Scout A returned.") });
+				await s.sub("skull", "q?");
+				await s.sub("cockpit");
+				expect(shownText(ui)).toContain("Scout A returned.");
+				expect(shownText(ui)).toContain('answer to "q?"');
+			});
+
+			test("an open cockpit too narrow for the box gets the chat message too", async () => {
+				const { s, ui } = await casting({ env: ON, answer: async () => reply("Scout A returned.") });
+				ui.opened.at(-1)!.component.render(60);
+				await s.sub("skull", "who?");
+				expect(s.notes.at(-1)).toBe('Servo-skull on "who?": Scout A returned.');
+			});
+
+			test("a short info notice says the servo-skull is answering", async () => {
+				const { s } = await casting({ env: ON, open: false });
+				await s.sub("skull", "who?");
+				expect(s.notes.at(-2)).toBe("The Servo-skull is answering…");
+			});
+
+			test("a long question and a long answer are cut with an ellipsis, in the box and in the chat", async () => {
+				const q = `${"q".repeat(120)}`;
+				const closed = await casting({ env: ON, open: false, answer: async () => reply("y".repeat(900)) });
+				await closed.s.sub("skull", q);
+				const msg = closed.s.notes.at(-1)!;
+				expect(msg).toContain(`"${"q".repeat(59)}…"`);
+				expect(msg.endsWith("…")).toBe(true);
+				expect([...msg].length).toBeLessThan(480);
+				const open = await casting({ env: ON, answer: async () => reply("ok") });
+				await open.s.sub("skull", q);
+				expect(shownText(open.ui)).toContain(`answer to "${"q".repeat(39)}…"`);
+			});
+
+			test("a second question while one is in flight is refused", async () => {
+				let land!: (v: unknown) => void;
+				const { s, calls } = await casting({ env: ON, open: false, answer: () => new Promise(r => (land = r)) });
+				const first = s.sub("skull", "one?");
+				await Bun.sleep(0);
+				await s.sub("skull", "two?");
+				expect(s.notes.at(-1)).toContain("still answering");
+				expect(calls).toHaveLength(1);
+				land(reply("done"));
+				await first;
+			});
+
+			test("an answer that lands after end is dropped and not counted", async () => {
+				let land!: (v: unknown) => void;
+				const { s } = await casting({ env: ON, open: false, answer: () => new Promise(r => (land = r)) });
+				const asked = s.sub("skull", "one?");
+				await Bun.sleep(0);
+				await s.call({ action: "end" });
+				land(reply("late answer"));
+				await asked;
+				expect(s.notes.join("\n")).not.toContain("late answer");
+				expect(debriefOf(s)).not.toContain("servo-skull");
+			});
+
+			test("an answer that lands after another key began neither shows nor counts", async () => {
+				let land!: (v: unknown) => void;
+				const { s } = await casting({ env: ON, open: false, answer: () => new Promise(r => (land = r)) });
+				const asked = s.sub("skull", "one?");
+				await Bun.sleep(0);
+				await s.call({ action: "end" });
+				await s.call({ action: "begin", key: "K-2" });
+				land(reply("late answer"));
+				await asked;
+				expect(s.notes.join("\n")).not.toContain("late answer");
+				expect(existsSync(join(s.dir, "runs", "sess-0001.cockpit")) ? cockpitJson(s)["servo-skull"] : undefined).toBeUndefined();
+			});
 		});
 	});
 

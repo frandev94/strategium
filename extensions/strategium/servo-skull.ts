@@ -79,7 +79,7 @@ const failure = (why: unknown) => {
 };
 
 /** One model call, never throwing: a throw or a failed reply is `call failed: <its message>`, an empty one `empty`; all dim. The reply is returned whenever there is one, so its cost is not lost. */
-async function ask(complete: Complete, system: string, user: string, empty: string, signal: AbortSignal): Promise<{ text: string; dim: boolean; reply?: ServoSkullReply }> {
+async function ask(complete: Complete, system: string, user: string, empty: string, signal: AbortSignal, toText: (raw: unknown) => string = servoSkullText): Promise<{ text: string; dim: boolean; reply?: ServoSkullReply }> {
 	let reply: ServoSkullReply;
 	try {
 		reply = await complete(system, user, signal);
@@ -87,7 +87,7 @@ async function ask(complete: Complete, system: string, user: string, empty: stri
 		return { text: failure(e instanceof Error ? e.message : ""), dim: true };
 	}
 	if (reply.failed) return { text: failure(reply.error), dim: true, reply };
-	const text = servoSkullText(reply.text);
+	const text = toText(reply.text);
 	return text ? { text, dim: false, reply } : { text: empty, dim: true, reply };
 }
 
@@ -115,6 +115,7 @@ export type Mission = {
 	seal?: { id: string; lines: string[] };
 	returns?: { redraft?: boolean; builds?: Record<string, number> };
 	clock?: { running: boolean; el: number; bk?: number };
+	slices?: { id: string; files?: string[]; tier?: string }[];
 };
 
 /** The whole run from the cockpit's own state, as short lines for the model: every station, every agent in the registry (finished ones too), seals, returns, time against the booking and the newest chronicle entries. Agent text is untrusted: each line is cleaned and capped, and the total is capped (stations and agents come first, so the log is what a long run loses). */
@@ -130,10 +131,12 @@ export function missionFacts(m: Mission): string[] {
 	const r = m.returns;
 	if (r) out.push(`returns: redraft ${r.redraft ? "used" : "not used"}${Object.entries(r.builds ?? {}).map(([k, n]) => ` · builds ${k} ${n}`).join("")}`);
 	out.push(m.clock ? `time: ${m.clock.el} min${m.clock.bk ? ` of ${m.clock.bk} booked` : ", no booking"}${m.clock.running ? "" : " (paused)"}` : "time: unknown");
+	for (const s of m.slices ?? []) out.push(`squad ${s.id}:${s.tier ? ` tier ${s.tier} ·` : ""} files ${s.files?.length ? s.files.map(line).join(", ") : "none"}`);
 	for (const [id, a] of [...m.deployed].slice(-MISSION_AGENTS)) {
 		const l = m.live.get(id);
-		const last = l && cut(line(l.line) || line(l.current), 80);
-		out.push(`agent ${id}: ${a.role}${a.name ? ` ${a.name}` : ""} · ${a.state}${a.squad ? ` · squad ${a.squad}` : ""}${a.station ? ` · deployed at ${a.station}` : ""}${last ? ` · last: ${last}` : ""}${l?.cost !== undefined ? ` · cost $${l.cost.toFixed(4)}` : ""}`);
+		const row = l && liveRow(l);
+		const flags = [l?.done !== undefined && l.total !== undefined ? `${l.done}/${l.total} tasks` : "", l?.blocked || a.blocked ? "blocked" : "", a.stalled ? "stalled" : ""].filter(Boolean).join(" · ");
+		out.push(`agent ${id}: ${a.role}${a.name ? ` ${a.name}` : ""} · ${a.state}${a.squad ? ` · squad ${a.squad}` : ""}${a.station ? ` · deployed at ${a.station}` : ""}${flags ? ` · ${flags}` : ""}${row ? ` · last: ${row}` : ""}${l?.cost !== undefined ? ` · cost $${l.cost.toFixed(4)}` : ""}`);
 	}
 	for (const e of m.chronicle.slice(-MISSION_LOG)) out.push(`log ${e.at} ${e.who}: ${e.text}`);
 	return out.slice(0, MISSION_LINES).map(fact);
@@ -142,4 +145,4 @@ export function missionFacts(m: Mission): string[] {
 export const servoSkullQuestion = (question: string, facts: string[]) => `QUESTION: ${fact(question)}\nFACTS:\n${facts.join("\n")}`;
 
 /** One answer to the user's question: `no answer` when the model says nothing. */
-export const answer = (complete: Complete, question: string, facts: string[], signal: AbortSignal) => ask(complete, SERVO_SKULL_ASK_SYSTEM, servoSkullQuestion(question, facts), "no answer", signal);
+export const answer = (complete: Complete, question: string, facts: string[], signal: AbortSignal) => ask(complete, SERVO_SKULL_ASK_SYSTEM, servoSkullQuestion(question, facts), "no answer", signal, raw => cut(line(raw), TEXT_CHARS));
