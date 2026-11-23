@@ -294,6 +294,9 @@ export const cockpitKey = (data: string, inDetail: boolean): NavKey | "close" | 
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
 
+/** The statuses after which a task item's agent is gone; the run state, the cockpit tool_result handler and the job ends all read this one list. */
+export const FINAL_STATUSES = ["completed", "failed", "aborted", "cancelled"];
+
 /** Agents that are no longer running, from what the host sends to the model: a task job's label is its agent id (eval agents are task jobs too), and an eval cell's agent status events carry the id and its last state. */
 export function jobEnds(messages: unknown): { id: string; status: string }[] {
 	const out: { id: string; status: string }[] = [];
@@ -304,7 +307,7 @@ export function jobEnds(messages: unknown): { id: string; status: string }[] {
 		for (const cell of Array.isArray(cells) ? cells.map(obj) : []) {
 			const events = obj(cell).statusEvents;
 			for (const e of Array.isArray(events) ? events.map(obj) : [])
-				if (e.op === "agent" && typeof e.id === "string" && ["completed", "failed", "aborted"].includes(String(e.status))) out.push({ id: e.id, status: String(e.status) });
+				if (e.op === "agent" && typeof e.id === "string" && FINAL_STATUSES.includes(String(e.status))) out.push({ id: e.id, status: String(e.status) });
 		}
 	}
 	return out;

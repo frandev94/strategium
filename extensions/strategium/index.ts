@@ -33,7 +33,7 @@ import { debrief, type AgentCost, type Reported } from "./debrief";
 import { casterFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./caster";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
-import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
+import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, FINAL_STATUSES, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
 import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./names";
 import { applyRun, corrupted, type Brothers, type Honour, honours, loadRoster, rankBrothers, runOutcomes, squadBrothers, STALE_MS, unfinished, updateRoster, withRosterLock } from "./roster";
 import { loadContract, noteTarget, recordLine, recordNote, secretKind } from "./vault";
@@ -946,9 +946,6 @@ function setEnded(run: Run, squad: string, end?: "ok" | "failed"): Run {
 
 /** Outcome of an agent's final status: only a real failure is a fall; aborted and cancelled leave the squad without one. */
 const outcomeOf = (status: unknown): "ok" | "failed" | undefined => (status === "completed" ? "ok" : status === "failed" ? "failed" : undefined);
-
-/** The statuses after which a task item's agent is gone; the run state and the cockpit both read this one list. */
-const FINAL_STATUSES = ["completed", "failed", "aborted", "cancelled"];
 
 /**
  * The Captain's own gh pr <verb> / glab mr <verb>: after any `cd …` steps joined by `&&`, the command starts with it,
