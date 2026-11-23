@@ -46,7 +46,7 @@ These rules apply while a Strategium run is open.
 - Recon is one more `scout` with the exact gap, never a full sweep again; 1 per run.
 - A redraft's Auspex is not a Recon: it spends the Redraft budget and its scouts never re-map the whole repo.
 - Penance or redraft: if the code can satisfy the squad's acceptance check as written, it is a penance; if not, it is a redraft. Never spend a penance on a squad that cannot pass.
-- A penance brief carries every open finding ID, never the previous report.
+- A penance brief carries every open finding ID, plus the squad's lessons, never the previous report.
 - A return past a granted seal breaks the seal (except the Review & merge loop): ask for it again when the flow reaches it.
 - Reopen the station you return to: add its new tasks to that phase with `todo.ts --append` and `todo start` the first, so the panel shows the run going back. Never reopen a completed task.
 - A return never rewrites what already passed: Merge bar items that were PASS stay PASS.
