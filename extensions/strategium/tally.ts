@@ -48,7 +48,7 @@ export const serializeTally = (rows: readonly TallyRow[]): string =>
 
 /** The whole file is readable or it is not; no partial salvage. */
 export function parseTally(text: string): { rows: TallyRow[] } | { error: string } {
-	if (text.length > MAX_BYTES) return { error: "larger than 256 KiB" };
+	if (Buffer.byteLength(text) > MAX_BYTES) return { error: "larger than 256 KiB" };
 	let raw: unknown;
 	try {
 		raw = JSON.parse(text);
@@ -126,6 +126,9 @@ export function proposals(rows: readonly TallyRow[], ladder: readonly { tier: st
 		for (let t = ladder.length - 2; t >= 0; t--) {
 			const row = failing.find(r => (r.effort === "default" ? r.model : `${r.model}:${r.effort}`) === ladder[t]!.selector);
 			if (!row) continue;
+			// A heavier tier of this kind with results was adopted or tried: only a failure there proposes the next step.
+			const above = ladder.slice(t + 1).map(l => l.selector);
+			if (rows.some(r => r.kind === kind && r.proven + r.regression + r.corrupted > 0 && above.includes(r.effort === "default" ? r.model : `${r.model}:${r.effort}`))) break;
 			lines.push(`PROPOSE ${kind} squads: default tier ${ladder[t + 1]!.tier} (now ${ladder[t]!.tier}: ${row.model} ${row.effort} corrupted ${row.corrupted} of ${row.proven + row.regression + row.corrupted})`);
 			break;
 		}

@@ -668,7 +668,8 @@ function endRun(sid: string, key?: string, takeover?: string, reported?: Reporte
 	stopKey(run.key);
 	// The roster record goes in before the claim is released: until then the brothers still count as on campaign.
 	const record = names ? recordRun(run) : undefined;
-	const tally = recordTally(run, rolesFor(run, live));
+	// recordRun already waited out a busy lock: a second full wait would freeze the end again.
+	const tally = recordTally(run, rolesFor(run, live), record?.error === "roster busy" ? 2000 : undefined);
 	release(stateDir(), run.key, sid);
 	// After the last span is closed and before the run's files go: the debrief reads them.
 	const lines = writeDebrief(run, reported, live, run.sid === sid, names ? { rows: record?.honours ?? [], ...(record?.error ? { unsaved: record.error } : {}) } : undefined);
@@ -929,19 +930,29 @@ function recordRun(run: Run): { line: string; honours: Honour[]; error?: string 
 	return err ? { line: `WARN ROSTER not written: ${err}`, honours: rows, error: err } : { line: `ROSTER ${outcomes.length} squad(s) recorded`, honours: rows };
 }
 
-/** Fold the run's rated builders into the tally at `end`: the line to print, undefined when no builder of a known squad was rated. Never throws. */
-function recordTally(run: Run, roles: Map<string, { role: string; squad?: string }>): string | undefined {
-	const names = cleanNames(run.names);
-	const known = [...(run.slices ?? []), ...(run.stopped ?? []), ...Object.values(run.agents ?? {})];
-	const results = Object.entries(cleanRatings(run.ratings) ?? {}).flatMap(([id, r]) => {
-		const hit = names?.find(n => n.name === baseId(id));
-		const who = hit ? { role: hit.agent, squad: hit.squad } : roles.get(id);
-		const slice = who?.squad ? known.find(s => s.id === who.squad) : undefined;
-		return who && isBuilderRole(who.role) && slice ? [{ model: r.model, effort: r.effort, kind: squadKind(slice.files), rating: r.rating }] : [];
-	});
-	if (!results.length) return undefined;
-	const err = updateTally(stateDir(), rows => addResults(rows, results), STALE_MS + 2000);
-	return err ? `WARN TALLY not written: ${err}` : `TALLY recorded ${results.length} rating(s)`;
+/** Fold the run's rated builders into the tally at `end`: the line to print, undefined when no builder was rated. Never throws. */
+function recordTally(run: Run, roles: Map<string, { role: string; squad?: string }>, waitMs = STALE_MS + 2000): string | undefined {
+	try {
+		const names = cleanNames(run.names);
+		// An agent's own copy first: a redraft may reuse a squad id for other files.
+		const known = [...Object.values(run.agents ?? {}), ...(run.stopped ?? []), ...(run.slices ?? [])];
+		let skipped = 0;
+		const results = Object.entries(cleanRatings(run.ratings) ?? {}).flatMap(([id, r]) => {
+			const hit = names?.find(n => n.name === baseId(id));
+			const who = hit ? { role: hit.agent, squad: hit.squad } : roles.get(id);
+			if (!who || !isBuilderRole(who.role)) return [];
+			const slice = who.squad ? known.find(s => s.id === who.squad) : undefined;
+			if (!slice) skipped++;
+			return slice ? [{ model: r.model, effort: r.effort, kind: squadKind(slice.files), rating: r.rating }] : [];
+		});
+		if (!results.length && !skipped) return undefined;
+		const note = skipped ? ` (${skipped} skipped)` : "";
+		if (!results.length) return `TALLY recorded 0 rating(s)${note}`;
+		const err = updateTally(stateDir(), rows => addResults(rows, results), waitMs);
+		return err ? `WARN TALLY not written: ${err}` : `TALLY recorded ${results.length} rating(s)${note}`;
+	} catch (err) {
+		return `WARN TALLY not written: ${err instanceof Error ? err.message : String(err)}`;
+	}
 }
 
 /** The name behind a spawn id (omp's -N suffix dropped) in the run's names, if any. */
@@ -2115,7 +2126,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 							[
 								`RATED ${id} ${rating.rating}${was ? ` (was ${was.rating})` : ""} model=${rating.model} effort=${rating.effort} evidence=${rating.evidence.length}`,
 								...(brother?.name === baseId(id) ? [`FALL ${(first ?? brother).surname} squad ${squad} falls at end unless a later builder replaces it`] : []),
-								...(rating.rating === "corrupted" ? [`LESSON write local://${run.key}-lessons.md for ${id}${squad ? ` before the next round of squad ${squad}` : ""}`] : []),
+								...(rating.rating === "corrupted" ? [`LESSON write local://${run.key}-lessons.md for ${id}${squad ? ` before the next round of squad ${squad}` : ""}${rating.evidence[0]?.startsWith("cause:") ? "" : "; start evidence with cause: <why>"}`] : []),
 							].join("\n"),
 						);
 					}

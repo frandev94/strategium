@@ -28,6 +28,9 @@ const walk = (pick: () => number, max: number, tiers: [string, string][] = [["@a
 	});
 const text = (rows: unknown[], version: unknown = 1) => JSON.stringify({ version, rows });
 
+test("squadKind: a nested .github/workflows path is a workflow (CN4)", () => {
+	expect(squadKind(["pkg/.github/workflows/ci.yml"])).toBe("workflow");
+});
 describe("squadKind (D4)", () => {
 	test("docs: every file is prose", () => expect(squadKind(["README.md", "docs/a.TXT", "b.rst"])).toBe("docs"));
 	test("ui: any markup or style file, none of them a workflow", () => expect(squadKind(["src/a.ts", "src/App.tsx"])).toBe("ui"));
@@ -113,6 +116,8 @@ describe("parseTally / serializeTally (D2)", () => {
 		["duplicate row", text([row(), row({ proven: 1 })])],
 	];
 	for (const [name, body] of refused) test(`refuses the whole file: ${name}`, () => expect(parseTally(body)).toHaveProperty("error"));
+	test("the size limit counts bytes, not characters (multibyte model names)", () =>
+		expect(parseTally(`{"version":1,"rows":[],"pad":"${"é".repeat(140_000)}"}`)).toEqual({ error: "larger than 256 KiB" }));
 });
 
 describe("loadTally", () => {
@@ -130,6 +135,11 @@ describe("loadTally", () => {
 });
 
 describe("updateTally", () => {
+	test("refuses to write what the next load would refuse: tally invalid, file untouched", () =>
+		withDir(dir => {
+			expect(updateTally(dir, () => [row({ effort: "High!" })])).toBe("tally invalid (row 0: bad effort)");
+			expect(existsSync(join(dir, "tally.json"))).toBe(false);
+		}));
 	test("writes the new rows and releases the lock", () =>
 		withDir(dir => {
 			expect(updateTally(dir, rows => addResults(rows, [res()]))).toBeUndefined();
@@ -177,6 +187,14 @@ describe("proposals (D7)", () => {
 	test("2 of 4 is not a majority", () => expect(proposals([row({ model: "@smol", proven: 2, corrupted: 2 })], LADDER)).toEqual([]));
 	test("fewer than 3 results is not enough", () => expect(proposals([row({ model: "@smol", corrupted: 2 })], LADDER)).toEqual([]));
 	test("heavy failing proposes nothing", () => expect(proposals([row({ model: "@slow", effort: "high", corrupted: 5 })], LADDER)).toEqual([]));
+	test("CB1: light failing but standard already has results (adopted): no proposal", () =>
+		expect(proposals([row({ model: "@smol", corrupted: 3 }), row({ proven: 1 })], LADDER)).toEqual([]));
+	test("CB1: a standard row with results of another kind does not silence the kind", () =>
+		expect(proposals([row({ model: "@smol", corrupted: 3 }), row({ kind: "docs", proven: 1 })], LADDER)).toHaveLength(1));
+	test("CB1: then standard failing proposes heavy", () =>
+		expect(proposals([row({ model: "@smol", corrupted: 3 }), row({ proven: 1, corrupted: 3 })], LADDER)).toEqual([
+			"PROPOSE code squads: default tier heavy (now standard: @task medium corrupted 3 of 4)",
+		]));
 	test("an unmapped model proposes nothing", () => expect(proposals([row({ model: "hand-typed", corrupted: 5 })], LADDER)).toEqual([]));
 	test("effort default maps to a selector without a colon", () =>
 		expect(proposals([row({ model: "@smol", effort: "default", corrupted: 3 })], [{ tier: "light", selector: "@smol" }, { tier: "standard", selector: "@task" }])).toEqual([

@@ -6962,13 +6962,15 @@ describe("cockpit", () => {
 			const { s } = await rigged();
 			await s.call({ ...good, rating: "corrupted", evidence: ["I-9"] });
 			for (const rating of ["proven", "proven-regression"]) expect(await s.call({ ...good, rating })).toBe("ERROR Scout1 is corrupted for the rest of the run");
-			expect(await s.call({ ...good, rating: "corrupted", evidence: ["I-10"] })).toBe(`RATED Scout1 corrupted (was corrupted) model=@task effort=medium evidence=1\nLESSON write local://K-1-lessons.md for Scout1`);
+			expect(await s.call({ ...good, rating: "corrupted", evidence: ["I-10"] })).toBe(`RATED Scout1 corrupted (was corrupted) model=@task effort=medium evidence=1\nLESSON write local://K-1-lessons.md for Scout1; start evidence with cause: <why>`);
 			expect(runFile(s).ratings).toEqual({ Scout1: { rating: "corrupted", evidence: ["I-10"], model: "@task", effort: "medium" } });
 		});
 
 		test("a corrupted non-builder: the short LESSON line; proven and proven-regression print none (#142)", async () => {
 			const { s } = await rigged();
-			expect(await s.call({ ...good, rating: "corrupted" })).toMatch(/^RATED Scout1 corrupted model=@task effort=medium evidence=1\nLESSON write local:\/\/\S+-lessons\.md for Scout1$/);
+			expect(await s.call({ ...good, rating: "corrupted" })).toMatch(/^RATED Scout1 corrupted model=@task effort=medium evidence=1\nLESSON write local:\/\/\S+-lessons\.md for Scout1; start evidence with cause: <why>$/);
+			const t0 = await rigged();
+			expect(await t0.s.call({ ...good, rating: "corrupted", evidence: ["cause: the check was skipped", "I-3"] })).toMatch(/^RATED Scout1 corrupted model=@task effort=medium evidence=2\nLESSON write local:\/\/\S+-lessons\.md for Scout1$/);
 			const t = await rigged();
 			for (const rating of ["proven", "proven-regression"]) expect(await t.s.call({ ...good, rating })).not.toContain("LESSON");
 		});
@@ -8651,7 +8653,7 @@ describe("service record (#134)", () => {
 			const event = { toolName: "task", input: { tasks: [{ agent: "battle-brother", name: "S1", task: "build squad S1" }] }, details: { progress: [{ index: 0, id: "S1", status: "running" }] }, isError: false };
 			for (const h of s.handlers.tool_result) h(event, s.ctx);
 			const out = await s.call({ action: "rate", agent: "S1", rating: "corrupted", evidence: ["I-3"], model: "@task", effort: "medium" });
-			expect(out).toEndWith("LESSON write local://K-1-lessons.md for S1 before the next round of squad S1");
+			expect(out).toEndWith("LESSON write local://K-1-lessons.md for S1 before the next round of squad S1; start evidence with cause: <why>");
 		});
 	});
 
@@ -8684,7 +8686,7 @@ console.log("FAILED " + failed);`;
 		test("a corrupted latest builder: the FALL line, and at end a fall in the roster even though its job completed", async () => {
 			const s = await open();
 			const name = await running(s, "S1");
-			expect(await rate(s, name, "corrupted")).toBe(`RATED ${name} corrupted model=@task effort=medium evidence=1\nFALL ${surname(name)} squad S1 falls at end unless a later builder replaces it\nLESSON write local://K-1-lessons.md for ${name} before the next round of squad S1`);
+			expect(await rate(s, name, "corrupted")).toBe(`RATED ${name} corrupted model=@task effort=medium evidence=1\nFALL ${surname(name)} squad S1 falls at end unless a later builder replaces it\nLESSON write local://K-1-lessons.md for ${name} before the next round of squad S1; start evidence with cause: <why>`);
 			returned(s, "battle-brother", name, "S1", "completed");
 			expect(await s.call({ action: "end" })).toContain("ROSTER 1 squad(s) recorded");
 			expect(roster(s.dir)[surname(name)]).toEqual(svc({ falls: 1, squads: 1 }));
@@ -9499,6 +9501,75 @@ describe("tally wiring (#144)", () => {
 		expect(readFileSync(join(s.dir, "tally.json"), "utf8")).toBe("not json");
 	});
 
+	// Rewrites the run file the way a crash, a redraft or a hostile edit would leave it.
+	const rewrite = (s: S, change: (run: { slices?: Record<string, unknown>[]; agents?: Record<string, Record<string, unknown>>; names?: Record<string, unknown>[] }) => void) => {
+		const file = join(s.dir, "runs", "sess-0001.json");
+		const run = JSON.parse(readFileSync(file, "utf8"));
+		change(run);
+		writeFileSync(file, JSON.stringify(run));
+	};
+
+	test("CB2/N3: a slice without a files array: end still answers ENDED, warns, and releases the claim", async () => {
+		const s = await begin(false);
+		asyncBuilder(s, "S1");
+		await rate(s, "S1", "proven");
+		rewrite(s, run => {
+			for (const sl of [...(run.slices ?? []), ...Object.values(run.agents ?? {})]) delete sl.files;
+		});
+		const out = await s.call({ action: "end" });
+		expect(out).toStartWith("ENDED K-1");
+		expect(out).toMatch(/\nWARN TALLY not written: .+$/);
+		expect(existsSync(lockPath(s.dir, "K-1"))).toBe(false);
+		expect(existsSync(join(s.dir, "tally.json"))).toBe(false);
+	});
+
+	test("CN2: a redraft that reuses an id keeps the squad kind the agent was built under", async () => {
+		const s = await begin(false);
+		asyncBuilder(s, "S1");
+		await rate(s, "S1", "proven");
+		rewrite(s, run => {
+			for (const sl of run.slices ?? []) if (sl.id === "S1") sl.files = ["src/new.ts"];
+		});
+		await s.call({ action: "end" });
+		expect(tallyOf(s.dir).map(r => r.kind)).toEqual(["docs"]);
+	});
+
+	test("CN2: a builder whose squad is gone is reported as skipped, the others are counted", async () => {
+		const s = await begin(false);
+		asyncBuilder(s, "S1");
+		asyncBuilder(s, "S2");
+		await rate(s, "S1", "proven");
+		await rate(s, "S2", "proven");
+		rewrite(s, run => {
+			run.slices = (run.slices ?? []).filter(sl => sl.id !== "S2");
+			run.agents = Object.fromEntries(Object.entries(run.agents ?? {}).filter(([, sl]) => sl.id !== "S2"));
+		});
+		expect(await s.call({ action: "end" })).toEndWith("TALLY recorded 1 rating(s) (1 skipped)");
+		expect(tallyOf(s.dir)).toEqual([{ model: "@task", effort: "medium", kind: "docs", proven: 1, regression: 0, corrupted: 0 }]);
+	});
+
+	test("CN4: names on: a rating of an agent that is not a builder is not counted, even when its name entry has a squad", async () => {
+		const s = await begin(true);
+		const name = (await s.call({ action: "name", agent: "scout" })).split("\n").at(-1)!.slice(5);
+		s.handlers.before_subagent_spawn[0]({ agent: "scout", spawnKey: name }, s.ctx);
+		rewrite(s, run => {
+			for (const n of run.names ?? []) n.squad = "S1";
+		});
+		expect(await rate(s, name, "proven")).toStartWith("RATED");
+		const out = await s.call({ action: "end" });
+		expect(out).not.toContain("TALLY");
+		expect(existsSync(join(s.dir, "tally.json"))).toBe(false);
+	});
+
+	test("CN4: names on: the -N suffix omp adds to a spawn id is looked through", async () => {
+		const s = await begin(true);
+		const name = (await s.call({ action: "name", agent: "battle-brother", squad: "S1" })).split("\n").at(-1)!.slice(5);
+		asyncBuilder(s, `${name}-2`);
+		expect(await rate(s, `${name}-2`, "proven")).toStartWith("RATED");
+		expect(await s.call({ action: "end" })).toEndWith("TALLY recorded 1 rating(s)");
+		expect(tallyOf(s.dir)).toEqual([{ model: "@task", effort: "medium", kind: "docs", proven: 1, regression: 0, corrupted: 0 }]);
+	});
+
 	describe("report", () => {
 		const seeded = (rows: object[]) => {
 			const s = setup();
@@ -9528,6 +9599,15 @@ describe("tally wiring (#144)", () => {
 			const s = seeded([{ model: "@smol", effort: "medium", kind: "code", proven: 1, regression: 0, corrupted: 2 }]);
 			await day(s);
 			expect(await s.call({ action: "report", date: "2026-11-16" })).not.toContain("TALLY");
+		});
+
+		test("N1: no day file at all: IDLE, then the TALLY and PROPOSE lines", async () => {
+			const s = seeded([{ model: "@smol", effort: "medium", kind: "code", proven: 1, regression: 0, corrupted: 2 }]);
+			expect((await s.call({ action: "report" })).split("\n")).toEqual([
+				"IDLE",
+				"TALLY @smol medium code: proven 1, proven-regression 0, corrupted 2",
+				"PROPOSE code squads: default tier standard (now light: @smol medium corrupted 2 of 3)",
+			]);
 		});
 
 		test("a fresh state dir still answers exactly IDLE", async () => {
