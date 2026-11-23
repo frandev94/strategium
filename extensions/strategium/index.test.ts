@@ -11,7 +11,7 @@ import { append, claim, type Ev, load, lockPath, nowIso, openKeys, release } fro
 
 // The extension registers itself on a host. A fake one is enough: it hands back the tool it
 // registered and does nothing else.
-type Tool = { name: string; execute: (id: string, params: Record<string, unknown>, s: unknown, u: unknown, ctx: unknown) => Promise<{ content: { text: string }[] }> };
+type Tool = { name: string; description?: string; execute: (id: string, params: Record<string, unknown>, s: unknown, u: unknown, ctx: unknown) => Promise<{ content: { text: string }[] }> };
 
 const schema = () => {
 	const s: Record<string, unknown> = {};
@@ -181,7 +181,7 @@ function setup(sid = "sess-0001", shared?: string, deps: Record<string, unknown>
 	const todo = (phases: unknown) => handlers.tool_result[0]({ toolName: "todo", isError: false, details: { phases } }, ctx);
 	// The last footer line, without its colours.
 	const shown = () => (footer.at(-1) ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-	return { dir, call, command, sub, sent, calls, seen, footer, notes, commands, handlers, shortcuts, conflicts, ctx, start, todo, shown, activeTools, setActive };
+	return { dir, tool, call, command, sub, sent, calls, seen, footer, notes, commands, handlers, shortcuts, conflicts, ctx, start, todo, shown, activeTools, setActive };
 }
 
 describe("the strategium tool", () => {
@@ -9425,5 +9425,119 @@ describe("reuse a proven builder (#143)", () => {
 				expect(performance.now() - t0).toBeLessThan(500);
 			});
 		});
+	});
+});
+
+// The tally (#144): `end` folds the builders' ratings into <state dir>/tally.json, `report` shows it.
+describe("tally wiring (#144)", () => {
+	type S = ReturnType<typeof setup>;
+	const SQ = [
+		{ id: "S1", parallel: true, files: ["docs/a.md"] },
+		{ id: "S2", parallel: true, files: ["b.ts"] },
+	];
+	const rate = (s: S, agent: string, rating: string, p: object = {}) => s.call({ action: "rate", agent, rating, evidence: ["I-3"], model: "@task", effort: "medium", ...p });
+	const tallyOf = (dir: string) => JSON.parse(readFileSync(join(dir, "tally.json"), "utf8")).rows as { model: string; effort: string; kind: string; proven: number; regression: number; corrupted: number }[];
+	const begin = async (names: boolean) => {
+		if (names) process.env.STRATEGIUM_NAMES = "1";
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		await s.call({ action: "slices", slices: SQ });
+		return s;
+	};
+	// An async builder: spawned, then running in the cockpit registry (names off).
+	const asyncBuilder = (s: S, id: string, agent = "battle-brother") => {
+		s.handlers.before_subagent_spawn[0]({ agent, spawnKey: id }, s.ctx);
+		const event = { toolName: "task", input: { tasks: [{ agent, name: id, task: `build squad ${id}` }] }, details: { progress: [{ index: 0, id, status: "running" }] }, isError: false };
+		for (const h of s.handlers.tool_result) h(event, s.ctx);
+	};
+
+	test("names off: rated builders of a docs squad and a code squad are tallied at end", async () => {
+		const s = await begin(false);
+		asyncBuilder(s, "S1");
+		asyncBuilder(s, "S2");
+		await rate(s, "S1", "corrupted");
+		await rate(s, "S2", "proven");
+		const out = await s.call({ action: "end" });
+		expect(out).toStartWith("ENDED K-1");
+		expect(out).toEndWith("TALLY recorded 2 rating(s)");
+		expect(tallyOf(s.dir)).toEqual([
+			{ model: "@task", effort: "medium", kind: "code", proven: 1, regression: 0, corrupted: 0 },
+			{ model: "@task", effort: "medium", kind: "docs", proven: 0, regression: 0, corrupted: 1 },
+		]);
+	});
+
+	test("names on: a builder of a blocking task, known only by its name, is counted", async () => {
+		const s = await begin(true);
+		const out = await s.call({ action: "name", agent: "battle-brother", squad: "S1" });
+		const name = out.split("\n").at(-1)!.slice(5);
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		await rate(s, name, "proven-regression");
+		const end = await s.call({ action: "end" });
+		expect(end).toEndWith("TALLY recorded 1 rating(s)");
+		expect(tallyOf(s.dir)).toEqual([{ model: "@task", effort: "medium", kind: "docs", proven: 0, regression: 1, corrupted: 0 }]);
+	});
+
+	test("only a non-builder rated: no TALLY line and no tally.json", async () => {
+		const s = await begin(false);
+		asyncBuilder(s, "Scout1", "scout");
+		expect(await rate(s, "Scout1", "proven")).toStartWith("RATED");
+		const out = await s.call({ action: "end" });
+		expect(out).toStartWith("ENDED K-1");
+		expect(out).not.toContain("TALLY");
+		expect(existsSync(join(s.dir, "tally.json"))).toBe(false);
+	});
+
+	test("an unreadable tally.json: end still answers ENDED, warns, and leaves the bytes alone", async () => {
+		const s = await begin(false);
+		writeFileSync(join(s.dir, "tally.json"), "not json");
+		asyncBuilder(s, "S2");
+		await rate(s, "S2", "proven");
+		const out = await s.call({ action: "end" });
+		expect(out).toStartWith("ENDED K-1");
+		expect(out).toEndWith("WARN TALLY not written: tally unreadable (not valid JSON)");
+		expect(readFileSync(join(s.dir, "tally.json"), "utf8")).toBe("not json");
+	});
+
+	describe("report", () => {
+		const seeded = (rows: object[]) => {
+			const s = setup();
+			writeFileSync(join(s.dir, "tally.json"), JSON.stringify({ version: 1, rows }));
+			return s;
+		};
+		const day = async (s: S) => {
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "stop" });
+		};
+
+		test("ends with the TALLY lines and the PROPOSE line of a failing tier", async () => {
+			const s = seeded([{ model: "@smol", effort: "medium", kind: "code", proven: 1, regression: 0, corrupted: 2 }]);
+			await day(s);
+			const out = (await s.call({ action: "report" })).split("\n");
+			expect(out.slice(-2)).toEqual(["TALLY @smol medium code: proven 1, proven-regression 0, corrupted 2", "PROPOSE code squads: default tier standard (now light: @smol medium corrupted 2 of 3)"]);
+		});
+
+		test("an unreadable tally.json gives a WARN line, not an error", async () => {
+			const s = setup();
+			writeFileSync(join(s.dir, "tally.json"), "{");
+			await day(s);
+			expect((await s.call({ action: "report" })).split("\n").at(-1)).toBe(`WARN TALLY ${join(s.dir, "tally.json")} unreadable (not valid JSON): fix or delete it`);
+		});
+
+		test("a report with a date shows no tally", async () => {
+			const s = seeded([{ model: "@smol", effort: "medium", kind: "code", proven: 1, regression: 0, corrupted: 2 }]);
+			await day(s);
+			expect(await s.call({ action: "report", date: "2026-11-16" })).not.toContain("TALLY");
+		});
+
+		test("a fresh state dir still answers exactly IDLE", async () => {
+			expect(await setup().call({ action: "report" })).toBe("IDLE");
+		});
+	});
+
+	test("the tool description says report shows the tally and end updates it", async () => {
+		const s = setup();
+		expect(s.tool.description).toContain("report (date?) also ends with the TALLY and PROPOSE lines");
+		expect(s.tool.description).toContain("end also adds the run's rated builders to <state dir>/tally.json");
 	});
 });
