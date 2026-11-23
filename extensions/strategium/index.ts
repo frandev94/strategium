@@ -1068,10 +1068,26 @@ const taskItems = (input: unknown) => {
 	return (Array.isArray(o.tasks) ? o.tasks : [o]).map(asObj);
 };
 
-/** True when `id` is rated corrupted; with names on the same name with or without omp's -N suffix counts too (names are unique in a run). */
+/** True when `id` is rated corrupted; with names on the same name with or without omp's -N suffix counts too, whichever form holds the rating (names are unique in a run). */
 function corruptedSource(run: Run, id: string, named: boolean): boolean {
-	const ratings = run.ratings ?? {};
-	return [id, ...(named ? [baseId(id)] : [])].some(k => Object.hasOwn(ratings, k) && ratings[k].rating === "corrupted");
+	return Object.entries(run.ratings ?? {}).some(([k, r]) => r.rating === "corrupted" && (named ? baseId(k) === baseId(id) : k === id));
+}
+
+/**
+ * The ids a brief names on a `Reuse: <id>` line, one line at a time (no \s across lines, so the scan is linear), with an optional
+ * markdown prefix (- * > ** __) and `code`, <angle> or agent:// around the id.
+ * shortcut: eval `agent()` briefs are never scanned (only the `task` tool call is); spawn builders with `task` for the veto to hold, upgrade if the extension sees eval spawns.
+ */
+function reuseSources(text: string): string[] {
+	const out: string[] = [];
+	for (const line of text.split("\n")) {
+		const m = /^[-*>_`\t ]*reuse[ \t]*:[ \t*_`<>]*(?:agent:\/\/)?(\w[\w.-]*)/i.exec(line);
+		if (!m) continue;
+		let id = m[1];
+		while (/[.-]$/.test(id)) id = id.slice(0, -1);
+		out.push(id);
+	}
+	return out;
 }
 
 const isBuilderRole = (agent: string) => agent === "battle-brother" || agent === "veteran";
@@ -2035,7 +2051,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const best = found[0].id;
 						return text(
 							`REUSE squad ${target.id}: ${list}\n` +
-								`SEED brief line "Reuse: ${best}", its commit(s) to git show, agent://${best} (final report) and history://${best}:-60; spawn the agent the ladder calls for (battle-brother for a penance, veteran for the escalation)` +
+								`SEED brief line "Reuse: ${best}", the line "build squad ${target.id}", the squad's lessons and open finding IDs, its commit(s) to git show, agent://${best} (final report) and history://${best}:-60; spawn the agent the ladder calls for (battle-brother for a penance, veteran for the escalation)` +
 								(naming.on ? `; with names on, strategium action name with source: ${best}` : ""),
 						);
 					}
@@ -2775,7 +2791,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		if (run && name === "task") {
 			const input = asObj(e.input);
 			const briefs = [...taskItems(e.input).map(i => String(i.task ?? "")), String(input.context ?? "")];
-			const bad = briefs.flatMap(t => [...t.matchAll(/^\s*reuse:\s*([\w.-]*\w)/gim)].map(m => m[1])).find(id => corruptedSource(run, id, naming.on));
+			const bad = briefs.flatMap(reuseSources).find(id => corruptedSource(run, id, naming.on));
 			if (bad)
 				return {
 					block: true,
