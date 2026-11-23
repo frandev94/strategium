@@ -401,9 +401,9 @@ export function cockpitView(input: ViewInput) {
 					const done = phase.tasks.length > 0 && phase.tasks.every(t => t.status === "completed");
 					const run = phase.tasks.some(t => t.status === "in_progress");
 					const kind: Kind = done ? "done" : run ? "active" : "idle";
-					return { kind, mark: MARK[kind], name: `${phase.name} · viewing · active: ${phases[active].name}` };
+					return { kind, mark: MARK[kind], name: clean(`${phase.name} · viewing · active: ${phases[active].name}`) };
 				})()
-			: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: phase.name, ...(waiting ? { note: label(ic.seal, `seal ${clean(waiting.id)} awaits you`) } : {}) };
+			: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: clean(phase.name), ...(waiting ? { note: label(ic.seal, `seal ${clean(waiting.id)} awaits you`) } : {}) };
 	const lines = waiting && input.seal?.id === waiting.id ? input.seal.lines.map(l => clean(l).trimEnd()) : [];
 	const prepared = lines.some(l => l.trim()) ? lines : undefined;
 	const panel = waiting && { title: label(ic.sealWait, `SEAL ${clean(waiting.id).toUpperCase()} · awaits you`), lines: prepared ?? ["the details are in the Captain's message"], prepared: !!prepared };
@@ -457,7 +457,7 @@ export function cockpitView(input: ViewInput) {
 
 	const tasks = (phase?.tasks ?? []).flatMap((t, i) => {
 		const m = t.content.match(ROLE_TAG);
-		return m ? [{ id: `task:${i}:${t.content}`, status: t.status, role: (m[1] ?? m[2]).toLowerCase(), text: m[3] }] : [];
+		return m ? [{ id: `task:${i}:${t.content}`, status: t.status, role: (m[1] ?? m[2]).toLowerCase(), text: clean(m[3]) }] : [];
 	});
 	const seen = phase ? [...(input.deployed ?? [])].filter(([, d]) => d.station === phase.name) : []; // no phases: no station, so no boxes
 	const boxes = BOXES.flatMap(def => {
@@ -480,7 +480,7 @@ export function cockpitView(input: ViewInput) {
 						return hit ? { ...line, id: key, ...row(...hit) } : { ...line, id: key };
 					})
 				: []),
-			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ id: `agent:${id}`, kind: d.state, mark: MARK[d.state], text: who(d.role, `${id}${mark(id)}`), ...row(id, d) })),
+			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ id: `agent:${id}`, kind: d.state, mark: MARK[d.state], text: who(d.role, `${clean(id)}${mark(id)}`), ...row(id, d) })),
 		].sort((a, b) => RANK[a.kind] - RANK[b.kind]);
 		const tone = def.tone ?? (lines.some(l => l.kind === "failed") ? "red" : lines.some(l => l.kind !== "idle") ? "green" : "iron");
 		return [{ title: label(ic[def.icon], def.title), tone, lines }];
@@ -564,7 +564,7 @@ export function cockpitView(input: ViewInput) {
 
 	const caster = input.caster && { title: `CASTER · ${oneLine(input.caster.station)}${input.caster.at !== undefined && input.now !== undefined ? ` · ${span(minutes(input.now - input.caster.at))}` : ""}`, text: oneLine(input.caster.text), dim: input.caster.dim };
 
-	return { key: input.key, status: input.status, ic, clock, caster, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav, detail };
+	return { key: clean(input.key), status: input.status, ic, clock, caster, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav, detail };
 }
 
 /** A cursor move or a station browse, as `navigate` takes them. */
