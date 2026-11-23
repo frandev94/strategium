@@ -213,6 +213,47 @@ describe("the strategium tool", () => {
 		expect(await call({ action: "report", date: "../../../../home/user/.ssh/known_hosts" })).toContain("ERROR bad date");
 	});
 
+	describe("report splits the overlaps (#156)", () => {
+		const day = (dir: string, d: number, rows: [number, number, "start" | "stop", string][]) => {
+			for (const [h, m, event, key] of rows) append(join(dir, `2026-11-${d}.jsonl`), { ts: nowIso(new Date(2026, 10, d, h, m)), event, key });
+		};
+
+		test("each overlap is listed with its keys and range, and each key gets a split total", async () => {
+			const { call, dir } = setup();
+			setSystemTime(new Date(2026, 10, 16, 12, 0, 0));
+			day(dir, 15, [[9, 0, "start", "A"], [9, 30, "start", "B"], [10, 0, "stop", "A"], [10, 30, "stop", "B"]]);
+			const out = await call({ action: "report", date: "2026-11-15" });
+			const lines = out.split("\n");
+			const i = lines.findIndex(l => l.startsWith("OVERLAP 30 min"));
+			expect(lines.slice(i + 1)).toEqual([
+				"OVERLAP A+B 09:30-10:00 (30 min, 15 each)",
+				"SPLIT A 45 min (measured after an equal split of the overlaps)",
+				"SPLIT B 45 min (measured after an equal split of the overlaps)",
+			]);
+		});
+
+		test("an interval still open ends in now", async () => {
+			const { call, dir } = setup();
+			setSystemTime(new Date(2026, 10, 16, 10, 0, 0));
+			day(dir, 16, [[9, 0, "start", "A"], [9, 30, "start", "B"]]);
+			expect(await call({ action: "report" })).toContain("OVERLAP A+B 09:30-now (30 min, 15 each)");
+		});
+
+		test("without an overlap the report has no OVERLAP or SPLIT line", async () => {
+			const { call, dir } = setup();
+			setSystemTime(new Date(2026, 10, 16, 12, 0, 0));
+			day(dir, 15, [[9, 0, "start", "A"], [9, 30, "stop", "A"], [9, 30, "start", "B"], [10, 0, "stop", "B"]]);
+			const out = await call({ action: "report", date: "2026-11-15" });
+			expect(out).not.toMatch(/OVERLAP|SPLIT/);
+			expect(out.split("\n")).toEqual([
+				"A 09:00-09:30 (30 min)",
+				"B 09:30-10:00 (30 min)",
+				"TOTAL A measured 30 min, worked 30 min with prior and adjustments (~30 min)",
+				"TOTAL B measured 30 min, worked 30 min with prior and adjustments (~30 min)",
+			]);
+		});
+	});
+
 	test("end closes the run and releases the ticket", async () => {
 		const { call } = setup();
 		await call({ action: "begin", key: "K-1", booked: 120 });

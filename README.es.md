@@ -342,6 +342,8 @@ Una run lleva **temporizador** cuando su objetivo es un ticket de un teatro, o c
 
 Una run **sin temporizador** sigue contando su tiempo (`status`, `report`), sin avisos, sin *stand down* y sin turnos.
 
+Cuando dos o más tickets corren a la vez, `report` añade, tras su línea `OVERLAP <n> min`, una línea `OVERLAP <clave>+<clave> HH:MM-HH:MM (<n> min, <n> each)` por cada intervalo en el que corrieron juntas las mismas claves (un intervalo aún abierto termina en `now`, o a las 23:59 en un día pasado) y una línea `SPLIT <clave> <n> min` por clave: sus minutos medidos con cada solape repartido a partes iguales entre las claves que lo componen, de modo que los totales suman el tiempo real de la unión de los bloques. Los minutos se redondean hacia abajo, así que la suma puede quedar hasta un minuto por clave por debajo. Lo previo y los ajustes quedan fuera del reparto. Sin solape, el informe no cambia.
+
 ### Configuración
 
 | Variable | Significado |

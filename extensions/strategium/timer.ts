@@ -169,6 +169,45 @@ export function overlapMin(evs: Ev[], now: Date): number {
 	return total / 60_000;
 }
 
+/** Every stretch between two span events with at least one key open (events in time order); an open span runs to `now`. */
+function stretches(evs: Ev[], now: Date): { start: number; end: number; keys: string[] }[] {
+	const open = new Set<string>();
+	const out: { start: number; end: number; keys: string[] }[] = [];
+	let since = 0;
+	const close = (t: number) => {
+		if (open.size && t > since) out.push({ start: since, end: t, keys: [...open].sort() });
+	};
+	for (const e of evs.filter(isSpan)) {
+		const t = ms(e.ts);
+		close(t);
+		since = t;
+		if (e.event === "start") open.add(e.key);
+		else open.delete(e.key);
+	}
+	close(now.getTime());
+	return out;
+}
+
+/** Every maximal interval during which two or more keys were open; a change in the key set starts a new one. */
+export function overlaps(evs: Ev[], now: Date): { start: Date; end: Date; keys: string[] }[] {
+	const out: { start: number; end: number; keys: string[] }[] = [];
+	for (const s of stretches(evs, now)) {
+		if (s.keys.length < 2) continue;
+		const last = out.at(-1);
+		if (last && last.end === s.start && last.keys.join("\0") === s.keys.join("\0")) last.end = s.end;
+		else out.push(s);
+	}
+	return out.map(o => ({ start: new Date(o.start), end: new Date(o.end), keys: o.keys }));
+}
+
+/** Minutes of span per key with each stretch shared equally by the keys open in it: the totals add up to the wall time. */
+export function splitMin(evs: Ev[], now: Date): Map<string, number> {
+	const out = new Map<string, number>();
+	for (const s of stretches(evs, now))
+		for (const k of s.keys) out.set(k, (out.get(k) ?? 0) + (s.end - s.start) / s.keys.length / 60_000);
+	return out;
+}
+
 /** Highest newly crossed threshold, or undefined. After a gap only the highest fires, once. */
 export function dueAlert(evs: Ev[], key: string, now: Date): number | undefined {
 	const booked = bookedMin(evs, key);

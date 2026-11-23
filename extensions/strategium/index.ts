@@ -17,6 +17,8 @@ import {
 	nowIso,
 	openKeys,
 	overlapMin,
+	overlaps as overlapIntervals,
+	splitMin,
 	release,
 	safeName,
 	writeAtomic,
@@ -703,6 +705,18 @@ function report(date?: string): string {
 	const sum = (k: string, ev: string) =>
 		evs.filter(e => e.key === k && e.event === ev).reduce((n, e) => n + (e.prior ?? 0), 0);
 	const overlap = Math.floor(overlapMin(evs, now));
+	// A block left open ends in "now" on today's report and at 23:59 on a past day, as in `blocks`.
+	const past = date !== undefined && date !== path.basename(today(), ".jsonl");
+	const hhmm = (d: Date) => (d.getTime() !== now.getTime() ? nowIso(d).slice(11, 16) : past ? "23:59" : "now");
+	const split = overlap
+		? [
+				...overlapIntervals(evs, now).map(o => {
+					const m = (o.end.getTime() - o.start.getTime()) / 60_000;
+					return `OVERLAP ${o.keys.join("+")} ${hhmm(o.start)}-${hhmm(o.end)} (${Math.floor(m)} min, ${Math.floor(m / o.keys.length)} each)`;
+				}),
+				...[...splitMin(evs, now)].map(([k, m]) => `SPLIT ${k} ${Math.floor(m)} min (measured after an equal split of the overlaps)`),
+			]
+		: [];
 	return [
 		...keys.flatMap(k => (sum(k, "start") ? [`PRIOR ${k} ${sum(k, "start")} min (estimate, before tracking)`] : [])),
 		...keys.flatMap(k => (sum(k, "adjust") ? [`ADJUST ${k} ${sum(k, "adjust")} min (added by hand)`] : [])),
@@ -712,7 +726,7 @@ function report(date?: string): string {
 			const worked = Math.floor(elapsedMin(evs, k, now));
 			return `TOTAL ${k} measured ${measured} min, worked ${worked} min with prior and adjustments (~${Math.round(worked / 15) * 15} min)`;
 		}),
-		...(overlap ? [`OVERLAP ${overlap} min with two or more tickets running at once; split them before booking`] : []),
+		...(overlap ? [`OVERLAP ${overlap} min with two or more tickets running at once; split them before booking`, ...split] : []),
 		...tally,
 	].join("\n");
 }
