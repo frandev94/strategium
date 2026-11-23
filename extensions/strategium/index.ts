@@ -550,6 +550,17 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	if (other) {
 		// Force: the ticket changes hands, so its open block ends here whatever the heartbeat gap is.
 		closeGap(other, true);
+		// The run's cockpit and its agents' live rows move to the new session before the old files go.
+		try {
+			renameSync(cockpitFile(other.sid), cockpitFile(sid));
+		} catch {
+			// No saved cockpit.
+		}
+		try {
+			renameSync(liveDir(other.sid), liveDir(sid));
+		} catch {
+			// No live rows, or the new session already has some: dropFiles leaves the rest inert.
+		}
 		dropFiles(other.sid);
 	}
 	const mine = readRun(sid);
@@ -560,10 +571,12 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	const untimed = booked === undefined;
 	// Begun again on the same key, the run keeps the station it was at.
 	const keep = mine?.key === key ? mine : undefined;
-	// Begun again on the same key, every stored field stays except the booking mode.
-	const { untimed: _u, ...kept } = keep ?? {};
+	// Begun again on the same key, every stored field stays except the booking mode. A takeover keeps the run's state too, but not the old session's hidden tools, shutdown mark or idle pause.
+	const { untimed: _u, ...own }: Partial<Run> = keep ?? other ?? {};
+	const { hidden: _h, closedBy: _c, idle: _i, ...taken } = own;
+	const kept = keep ? own : taken;
 	// A run begun under another key still hands its hidden tools on, or end could never restore them.
-	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: ownRepo ? ownRepo.repo : keep ? keep.repo : other?.repo, since: keep?.since ?? other?.since ?? nowIso(), ...(keep ? {} : { recorded: other?.recorded }), ...(untimed ? { untimed: true as const } : {}) });
+	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: ownRepo ? ownRepo.repo : keep ? keep.repo : other?.repo, since: keep?.since ?? other?.since ?? nowIso(), ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
 	sweepPointers();
 	startKey(key, booked, spent, untimed, via);

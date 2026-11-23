@@ -2438,6 +2438,45 @@ describe("tools, begin and end", () => {
 			await b.call({ action: "begin", key: "K-1", takeover: "sess-0001" });
 			expect(await b.call({ action: "status" })).toContain(`repo=${a.dir}`);
 		});
+
+		test("a takeover keeps the run's state and its cockpit; only sid changes, the old session's files go", async () => {
+			const a = setup("sess-0001");
+			await a.call({ action: "begin", key: "K-1", booked: 60 });
+			const runPath = (sid: string) => join(a.dir, "runs", `${sid}.json`);
+			const cockpitPath = (sid: string) => join(a.dir, "runs", `${sid}.cockpit`);
+			const state = {
+				slices: [{ id: "S1", parallel: false, files: ["a.ts"] }],
+				stopped: [{ id: "S1", parallel: false, files: ["a.ts"] }],
+				agents: { "0-S1": { id: "S1", parallel: false, files: ["a.ts"] } },
+				builds: { S1: 1 },
+				redraft: true,
+				archmagos: true,
+				archmagosSpawned: 1,
+				librarians: { L1: "done" },
+				scouts: { C1: "running" },
+				ended: { S1: "failed" },
+				phases: [{ name: "Skirmish", tasks: [{ content: "[agent] S1", status: "in_progress" }] }],
+				closedBy: "shutdown",
+				idle: true,
+			};
+			const before = JSON.parse(readFileSync(runPath("sess-0001"), "utf8"));
+			writeFileSync(runPath("sess-0001"), JSON.stringify({ ...before, ...state }));
+			const notes = { S1: { state: "failed" } };
+			writeFileSync(cockpitPath("sess-0001"), JSON.stringify({ key: "K-1", chronicle: [{ at: "10:00", who: "captain", text: "station Skirmish" }], notes, deployed: [] }));
+			const b = setup("sess-0002", a.dir);
+			await b.call({ action: "begin", key: "K-1", booked: 60, takeover: "sess-0001" });
+			const after = JSON.parse(readFileSync(runPath("sess-0002"), "utf8"));
+			const { closedBy: _c, idle: _i, ...runState } = state;
+			expect(after).toMatchObject(runState);
+			expect(after.sid).toBe("sess-0002");
+			expect(after.since).toBe(before.since);
+			// Session state does not travel: the old session's shutdown mark and idle pause.
+			expect(after.closedBy).toBeUndefined();
+			expect(after.idle).toBeUndefined();
+			expect(existsSync(runPath("sess-0001"))).toBe(false);
+			expect(existsSync(cockpitPath("sess-0001"))).toBe(false);
+			expect(JSON.parse(readFileSync(cockpitPath("sess-0002"), "utf8")).notes).toEqual(notes);
+		});
 	});
 });
 
