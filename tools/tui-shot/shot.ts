@@ -880,7 +880,7 @@ export function askRows(rows: string[]): string[] {
 // omp 18.x draws every option; 19.x draws only the current one plus a "1/2" counter.
 export const dialogShowsPick = (rows: string[]) => {
 	const t = rows.join("\n");
-	return t.includes("REPLAY: pick one") && t.includes("Yes") && (t.includes("No") || /\b1\/2\b/.test(t));
+	return t.includes("REPLAY: pick one") && t.includes("Yes") && (t.includes("No") || rows.some(r => r.includes("Yes") && /\b1\/2\b/.test(r)));
 };
 function checksAsk(C: Ctx) {
 	const c = snapOf(C, "cockpit"), d = snapOf(C, "dialog"), a = snapOf(C, "answered");

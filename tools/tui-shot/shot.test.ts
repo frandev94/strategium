@@ -18,9 +18,12 @@ test("askRows: no marker scans every row", () => {
 	expect(cancelled(["Tip: ⎋ cancels", "nothing"])).toBe(true);
 });
 test("dialogShowsPick: omp 18 (both options) and 19 (counter) pass, a screen without Yes fails", () => {
-	expect(dialogShowsPick(["REPLAY: pick one", "❯ Yes", "  No"])).toBe(true);
+	expect(dialogShowsPick(["REPLAY: pick one", "◉ Yes", "○ No"])).toBe(true);
 	expect(dialogShowsPick(["REPLAY: pick one", "❯ ‹ Yes ›  1/2"])).toBe(true);
 	expect(dialogShowsPick(["REPLAY: pick one", "❯ ‹ Maybe ›  1/2"])).toBe(false);
+	expect(dialogShowsPick(["REPLAY: pick one", "❯ Yes"])).toBe(false);
+	expect(dialogShowsPick(["❯ ‹ Yes ›  1/2"])).toBe(false);
+	expect(dialogShowsPick(["REPLAY: pick one", "❯ Yes", "⧗ 1/2 min"])).toBe(false);
 });
 
 const args = (argv: string[]) => {
