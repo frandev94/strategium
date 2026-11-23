@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
 	BADGES,
+	RATINGS,
+	RATING_BADGES,
+	RATING_WORD,
+	type Rating,
 	activePhase,
 	closes,
 	clean,
@@ -3215,5 +3219,100 @@ describe("names: squad rows, badges and record", () => {
 		expect(on.nav).toEqual(off.nav);
 		expect(on.detail!.target).toBe(off.detail!.target);
 		expect(on.detail!.target).toBe("AlphaVet");
+	});
+});
+
+describe("ratings: badges and detail lines", () => {
+	const R = (rating: Rating["rating"], over: Partial<Rating> = {}): Rating => ({ rating, evidence: ["I-3", "acceptance red"], model: "@task", effort: "medium", ...over });
+	const rowOf = (v: View, id: string) => v.boxes.flatMap(b => b.lines).find(l => l.id === id)!.text;
+	const UNSAFE = /[\p{Cc}\u202a-\u202e\u2066-\u2069\u2028\u2029\u200e\u200f\u061c]/u;
+	const WIDTHS = [60, 72, 100, 140];
+
+	test("without ratings the view and every render equal the unrated ones, with ratings undefined or {}", () => {
+		const base = DETAIL({ chronicle: many(6) });
+		for (const extra of [{ ratings: undefined }, { ratings: {} }]) {
+			expect(cockpitView({ ...base, ...extra })).toEqual(cockpitView(base));
+			for (const w of WIDTHS) expect(renderCockpit(cockpitView({ ...base, ...extra }), w, 0, TRUE)).toEqual(renderCockpit(cockpitView(base), w, 0, TRUE));
+		}
+		for (const id of ["squad:alpha", "agent:ApothecaryBeta"]) expect(open(id, { ratings: {} })).toEqual(open(id));
+	});
+
+	test("an agent row ends with the glyph, plain and Nerd Font", () => {
+		const ratings = { ApothecaryBeta: R("proven") };
+		expect(rowOf(cockpitView(DETAIL({ ratings })), "agent:ApothecaryBeta")).toBe("ApothecaryBeta ✦");
+		expect(rowOf(cockpitView(DETAIL({ ratings, glyphs: true })), "agent:ApothecaryBeta")).toBe(`ApothecaryBeta ${RATING_BADGES(true).proven}`);
+		expect(rowOf(cockpitView(DETAIL({ ratings: { ApothecaryBeta: R("proven-regression") } })), "agent:ApothecaryBeta")).toBe("ApothecaryBeta ✧");
+		expect(rowOf(cockpitView(DETAIL({ ratings: { ApothecaryBeta: R("corrupted") } })), "agent:ApothecaryBeta")).toBe("ApothecaryBeta ✕");
+	});
+
+	test("a squad row shows the glyph of its newest deployed agent, not an older one; an unrated newest shows none", () => {
+		const old = { AlphaBrother: R("proven"), AlphaPenance: R("proven-regression") }; // the newest, AlphaVet, is unrated
+		expect(rowOf(cockpitView(DETAIL({ ratings: old })), "squad:alpha")).toBe("‡ squad alpha forging");
+		expect(rowOf(cockpitView(DETAIL({ ratings: { ...old, AlphaVet: R("corrupted") } })), "squad:alpha")).toBe("‡ squad alpha ✕ forging");
+		expect(rowOf(cockpitView(DETAIL({ ratings: { AlphaVet: R("corrupted") }, glyphs: true })), "squad:alpha")).toContain(`squad alpha ${RATING_BADGES(true).corrupted} forging`);
+	});
+
+	test("a named squad row puts the glyph after the honour badges", () => {
+		const names: ViewInput["names"] = { squads: { alpha: { name: "PenitentLorenzo", surname: "Lorenzo", service: { passed: 4, penances: 1, falls: 0, squads: 5, purity: 4, halo: 1, laurel: 1 } } } };
+		expect(rowOf(cockpitView(DETAIL({ names, ratings: { AlphaVet: R("proven") } })), "squad:alpha")).toBe("‡ PenitentLorenzo ✠4 ☉1 ❦1 ✦ · squad alpha forging");
+	});
+
+	test("agent detail: rating then evidence after the squad line; a squad detail lists each agent's rating", () => {
+		const ratings = { AlphaPenance: R("corrupted"), AlphaBrother: R("proven", { model: "@slow", effort: "high", evidence: ["inquisitor PASS"] }) };
+		const d = open("agent:ApothecaryBeta", { ratings: { ApothecaryBeta: R("corrupted") } }).detail!.lines;
+		expect(d.slice(0, 4)).toEqual(["apothecary ApothecaryBeta · running", "station: Skirmish", "rating: corrupted · @task · medium", "evidence: I-3 · acceptance red"]);
+		const s = open("squad:alpha", { ratings }).detail!.lines.join("\n");
+		expect(s).toContain("rating: corrupted · @task · medium");
+		expect(s).toContain("evidence: I-3 · acceptance red");
+		expect(s).toContain("rating: proven · @slow · high");
+		expect(s).toContain("evidence: inquisitor PASS");
+		expect(s.match(/rating:/g)).toHaveLength(2);
+		const p = open("squad:alpha", { ratings }).detail!.lines.map(l => l.trim());
+		expect(p.indexOf("rating: corrupted · @task · medium")).toBe(p.indexOf("squad: alpha", p.indexOf("penance AlphaPenance · returned")) + 1);
+		expect(p.slice(p.indexOf("veteran AlphaVet · failed")).join("\n")).not.toContain("rating:");
+		expect(open("squad:alpha", { ratings: { AlphaPenance: R("proven-regression") } }).detail!.lines.map(l => l.trim())).toContain("rating: proven with a regression · @task · medium");
+	});
+
+	test("ANSI, bidi and newlines are cleaned; an unknown rating value or a bad shape renders nothing", () => {
+		const evil = R("corrupted", { evidence: ["I-\x1b[31m3\u202e\nx", "ok\x07"], model: "@ta\x1bsk\n" });
+		const v = open("agent:ApothecaryBeta", { ratings: { ApothecaryBeta: evil } });
+		for (const l of v.detail!.lines) expect(l).not.toMatch(UNSAFE);
+		expect(v.detail!.lines.join("\n")).toContain("evidence: I-3 x · ok");
+		const bad = [{ rating: "gold", evidence: ["x"], model: "m", effort: "low" }, { rating: "__proto__" }, null, 7] as unknown as Rating[];
+		for (const b of bad) {
+			const view = cockpitView(DETAIL({ ratings: { ApothecaryBeta: b, AlphaVet: b } }));
+			expect(rowOf(view, "agent:ApothecaryBeta")).toBe("ApothecaryBeta");
+			expect(rowOf(view, "squad:alpha")).toBe("‡ squad alpha forging");
+			expect(open("agent:ApothecaryBeta", { ratings: { ApothecaryBeta: b } }).detail!.lines.join("\n")).not.toContain("rating:");
+		}
+		const inherited = cockpitView(DETAIL({ ratings: JSON.parse('{"__proto__":{"rating":"proven"}}') }));
+		expect(rowOf(inherited, "agent:ApothecaryBeta")).toBe("ApothecaryBeta");
+	});
+
+	test("the plain badges are one cell and no emoji; the Nerd Font ones are the checked md glyphs", () => {
+		expect(RATINGS).toEqual(["proven", "proven-regression", "corrupted"]);
+		expect(RATING_WORD).toEqual({ proven: "proven", "proven-regression": "proven with a regression", corrupted: "corrupted" });
+		for (const g of Object.values(RATING_BADGES(false))) {
+			expect(Bun.stringWidth(g)).toBe(1);
+			expect(g).not.toMatch(/\p{Extended_Pictographic}/u);
+		}
+		// md-check_decagram f0791, md-alert_decagram f06bd, md-biohazard f00a7 (Nerd Fonts glyphnames.json)
+		expect(RATING_BADGES(true)).toEqual({ proven: "\u{f0791}", "proven-regression": "\u{f06bd}", corrupted: "\u{f00a7}" });
+	});
+
+	test.each(WIDTHS)("at width %i no line is wider than the width with ratings and long evidence", width => {
+		const long = R("corrupted", { evidence: Array.from({ length: 8 }, () => "finding ".repeat(25).trim()), model: "m".repeat(60) });
+		const ratings = { AlphaBrother: long, AlphaPenance: long, AlphaVet: long, ApothecaryBeta: long };
+		const names: ViewInput["names"] = { squads: { alpha: { name: `Penitent${"A".repeat(20)}`, surname: "A", crux: true, service: { passed: 4, penances: 1, falls: 0, squads: 5, purity: 4, halo: 1, laurel: 1 } } } };
+		for (const glyphs of [false, true]) for (const over of [{}, { names }]) {
+			for (const l of renderCockpit(cockpitView(DETAIL({ ratings, glyphs, ...over })), width, 0, TRUE)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
+			for (const id of ["squad:alpha", "agent:ApothecaryBeta"]) for (const l of renderCockpit(open(id, { ratings, glyphs, ...over }), width, 0, TRUE)) expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
+		}
+	});
+
+	test("a row carries at most one rating glyph", () => {
+		const all = Object.values(RATING_BADGES(false));
+		const ratings = { AlphaBrother: R("proven"), AlphaPenance: R("corrupted"), AlphaVet: R("proven-regression"), ApothecaryBeta: R("proven") };
+		for (const l of cockpitView(DETAIL({ ratings })).boxes.flatMap(b => b.lines)) expect([...l.text].filter(c => all.includes(c)).length).toBeLessThanOrEqual(1);
 	});
 });

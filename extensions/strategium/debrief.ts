@@ -1,5 +1,5 @@
 // The run report: a pure builder from a key's events, squads and notes to markdown. Does no fs itself, no ctx, no index.ts.
-import { isCost, type Live, oneLine, usd } from "./cockpit";
+import { isCost, type Live, oneLine, type Rating, RATING_WORD, RATINGS, usd } from "./cockpit";
 import type { Honour } from "./roster";
 import { bookedMin, type Ev } from "./timer";
 
@@ -18,6 +18,7 @@ export type DebriefInput = {
 	reported?: Reported;
 	agents?: AgentCost[]; // every agent of the run with the usage its live file carried; ids and roles are untrusted
 	honours?: { rows: Honour[]; unsaved?: string }; // names on only: the run's honours and falls; unsaved = why roster.json was not written
+	ratings?: Record<string, Rating>; // untrusted: the Captain's rate action, already cleaned by the caller and cleaned again here
 };
 /** One agent's usage as its live file carried it: a missing or invalid field is unknown, never 0. */
 export type AgentCost = { id: string; role: string; squad?: string; calls?: number; model?: string } & Pick<Live, "cost" | "tokens_in" | "tokens_out" | "cache_read" | "cache_write">;
@@ -206,6 +207,14 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 		"",
 	];
 
+	// Only known verdicts count; a record with none left shows no section.
+	const rated = Object.entries(input.ratings ?? {}).filter(([, r]) => r && RATINGS.includes(r.rating));
+	const verdicts = (rs: Rating[]) => RATINGS.map(k => rs.filter(r => r.rating === k).length);
+	const counts3 = verdicts(rated.map(x => x[1]));
+	const tiers = [...Map.groupBy(rated, ([, r]) => `${cell(r.model)}\0${cell(r.effort)}`)].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+	const evidence = (r: Rating) => (Array.isArray(r.evidence) ? [...oneLine(r.evidence.map(oneLine).join(", "))].slice(0, 200).join("").replace(/[\\|]/g, "\\$&") || "—" : "—");
+	const agentOf = new Map(agents.map(a => [a.id, a]));
+
 	const md = [
 		`# Debrief ${cell(key)}`,
 		"",
@@ -240,6 +249,27 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 						: ["None."]),
 					...(hs.rows.some(r => honourLine(r).length) ? ["", ...hs.rows.flatMap(honourLine).map(l => `- ${l}`)] : []),
 					...(hs.unsaved === undefined ? [] : ["", `Roster not written (${oneLine(hs.unsaved)}): this record was not saved.`]),
+					"",
+				]
+			: []),
+		...(rated.length
+			? [
+					"## Ratings",
+					"",
+					"From the Captain's rate action (the reviewers' verdicts).",
+					"",
+					...table(
+						["Agent", "Role", "Squad", "Rating", "Model", "Effort", "Evidence"],
+						rated.map(([id, r]) => [cell(id), cell(agentOf.get(id)?.role), cell(agentOf.get(id)?.squad), RATING_WORD[r.rating], cell(r.model), cell(r.effort), evidence(r)]),
+					),
+					"",
+					...table(
+						["Model", "Effort", "Proven", "Proven with a regression", "Corrupted", "Agents"],
+						[
+							...tiers.map(([k, g]) => [...k.split("\0"), ...verdicts(g.map(x => x[1])).map(String), String(g.length)]),
+							["Total", "—", ...counts3.map(String), String(rated.length)],
+						],
+					),
 					"",
 				]
 			: []),
@@ -285,6 +315,7 @@ export function debrief(input: DebriefInput): { markdown: string; summary: strin
 				? `COST (${who}, list price) ${spend.text} · ${byRole.map(r => `${roleName(r.role) || "—"} ${r.text}`).join(", ")}${rate ? ` · ${rate}/booked h` : ""}`
 				: "COST none",
 			...(hs ? [`HONOURS ${hs.rows.flatMap(honourLine).join(", ") || "none"}`] : []),
+			...(rated.length ? [`RATINGS ${rated.length}: ${RATINGS.map((k, i) => [k, counts3[i]] as const).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(", ")}`] : []),
 		],
 	};
 }

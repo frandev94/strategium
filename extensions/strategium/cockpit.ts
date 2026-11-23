@@ -35,7 +35,11 @@ export type ViewInput = {
 	caster?: { station: string; text: string; dim: boolean; at?: number }; // the caster's summary box; absent when the caster is off. text: the summary or an empty-state row (dim: true); at: the summary time in ms. Untrusted: the view cleans it again
 	transcript?: { id: string; lines: string[] }; // the rows index.ts read for that agent's transcript (transcriptLines, or one reason line); shown while nav.detail.transcript is that id. Untrusted: the view cleans and caps them again
 	names?: { squads: Record<string, Brother>; unreadable?: true }; // present only with names on (index.ts reads roster.json; this view does no I/O): squad id → its builder and his record; unreadable: roster.json could not be read. Untrusted: the view cleans every string
+	ratings?: Record<string, Rating>; // agent id → the Captain's rating of it, from the run file (index.ts reads it; this view does no I/O). Untrusted: the view cleans every string and shows nothing for a value outside RATINGS
 };
+export type Rating = { rating: "proven" | "proven-regression" | "corrupted"; evidence: string[]; model: string; effort: string };
+export const RATINGS: Rating["rating"][] = ["proven", "proven-regression", "corrupted"];
+export const RATING_WORD: Record<Rating["rating"], string> = { proven: "proven", "proven-regression": "proven with a regression", corrupted: "corrupted" };
 export type View = ReturnType<typeof cockpitView>;
 
 type Kind = "active" | "done" | "failed" | "idle";
@@ -54,11 +58,16 @@ const has = (n: number | undefined, max: number): n is number => Number.isIntege
 const STATE_WORD = { active: "running", done: "returned", failed: "failed" };
 
 /** The facts of one agent as plain lines, for its detail: role, id, state, station, squad, elapsed (to `ended`, else `now`), the live row's progress, eta (active only), text fields, blocked and stalled (active only), cost and tokens. Live text is untrusted: every field goes through oneLine. */
-function agentFacts(id: string, d: Deployed, live: Live | undefined, now: number | undefined): string[] {
+function agentFacts(id: string, d: Deployed, live: Live | undefined, now: number | undefined, rating?: Rating): string[] {
 	const from = d.at ?? live?.since;
 	const end = d.state === "active" ? now : d.ended; // a finished agent with no `ended` has no known end
 	const out = [`${oneLine(d.role)} ${oneLine(id)} · ${STATE_WORD[d.state]}`, `station: ${oneLine(d.station) || "—"}`];
 	if (d.squad) out.push(`squad: ${oneLine(d.squad)}`);
+	if (rating) {
+		out.push(`rating: ${[RATING_WORD[rating.rating], oneLine(rating.model), oneLine(rating.effort)].filter(Boolean).join(" · ")}`);
+		const evidence = (Array.isArray(rating.evidence) ? rating.evidence : []).map(oneLine).filter(Boolean);
+		if (evidence.length) out.push(`evidence: ${evidence.join(" · ")}`);
+	}
 	out.push(from !== undefined && end !== undefined ? `ran ${span(minutes(end - from))}` : "elapsed unknown");
 	if (live) {
 		const { done = 0, total = 0, pct, eta_min } = live;
@@ -352,6 +361,10 @@ export const icons = (nf: boolean) =>
 export const BADGES = (nf: boolean) =>
 	nf ? { purity: "\u{f0fd9}", halo: "\u{f0e95}", laurel: "\u{f01a5}", crux: "\u{f0cf5}" } : { purity: "✠", halo: "☉", laurel: "❦", crux: "✚" };
 
+/** Rating badges next to an agent or a squad: plain glyphs one cell wide, never emoji. Nerd Font: md-check_decagram f0791 (proven), md-alert_decagram f06bd (proven with a regression), md-biohazard f00a7 (corrupted; not the skull, which is sonic's icon); codepoints checked in the Nerd Fonts glyphnames.json. */
+export const RATING_BADGES = (nf: boolean): Record<Rating["rating"], string> =>
+	nf ? { proven: "\u{f0791}", "proven-regression": "\u{f06bd}", corrupted: "\u{f00a7}" } : { proven: "✦", "proven-regression": "✧", corrupted: "✕" };
+
 /** `icon` then `text`, one gap between them. No icon: just the text. */
 const label = (icon: string, text: string) => (icon ? `${icon} ${text}` : text);
 
@@ -424,10 +437,21 @@ export function cockpitView(input: ViewInput) {
 			...(b.corrupted ? ["corrupted: kept in reserve"] : []),
 		];
 	};
+	const rb = RATING_BADGES(!!input.glyphs);
+	/** The rating of agent `id`, only when it is an own key with a value in RATINGS. */
+	const ratingOf = (id: string | undefined): Rating | undefined => {
+		const r = id !== undefined && input.ratings && Object.hasOwn(input.ratings, id) ? input.ratings[id] : undefined;
+		return r && RATINGS.includes(r.rating) ? r : undefined;
+	};
+	const mark = (id: string | undefined) => {
+		const r = ratingOf(id);
+		return r ? ` ${rb[r.rating]}` : "";
+	};
 	const squads = ids.map(id => {
 		const [kind, state] = squadState(id);
 		const b = named(id);
-		const who = b ? `${oneLine(b.name)}${badges(b)} · squad ${id} ${state}` : `squad ${id} ${state}`;
+		const glyph = mark([...(input.deployed ?? [])].findLast(([, d]) => d.squad === id)?.[0]); // the newest deployed agent, the one Enter opens
+		const who = b ? `${oneLine(b.name)}${badges(b)}${glyph} · squad ${id} ${state}` : `squad ${id}${glyph} ${state}`;
 		return { id, key: `squad:${id}`, kind, mark: MARK[kind], text: label(input.notes[id]?.veteran ? ic.veteran : ic.brother, who) };
 	});
 
@@ -456,7 +480,7 @@ export function cockpitView(input: ViewInput) {
 						return hit ? { ...line, id: key, ...row(...hit) } : { ...line, id: key };
 					})
 				: []),
-			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ id: `agent:${id}`, kind: d.state, mark: MARK[d.state], text: who(d.role, id), ...row(id, d) })),
+			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ id: `agent:${id}`, kind: d.state, mark: MARK[d.state], text: who(d.role, `${id}${mark(id)}`), ...row(id, d) })),
 		].sort((a, b) => RANK[a.kind] - RANK[b.kind]);
 		const tone = def.tone ?? (lines.some(l => l.kind === "failed") ? "red" : lines.some(l => l.kind !== "idle") ? "green" : "iron");
 		return [{ title: label(ic[def.icon], def.title), tone, lines }];
@@ -503,7 +527,7 @@ export function cockpitView(input: ViewInput) {
 
 	// The second brother of a squad is its penance (the skill names it after the squad).
 	const roleOf = (id: string, d: Deployed) => (d.role === "battle-brother" && d.squad && [...(input.deployed ?? [])].find(([, x]) => x.role === d.role && x.squad === d.squad)?.[0] !== id ? "penance" : d.role);
-	const facts = (id: string, d: Deployed) => agentFacts(id, { ...d, role: roleOf(id, d) }, input.live?.get(id), input.now);
+	const facts = (id: string, d: Deployed) => agentFacts(id, { ...d, role: roleOf(id, d) }, input.live?.get(id), input.now, ratingOf(id));
 	const detailOf = (id: string): { title: string; lines: string[] } | undefined => {
 		const rest = id.slice(id.indexOf(":") + 1);
 		if (id.startsWith("squad:")) {
