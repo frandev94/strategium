@@ -162,6 +162,10 @@ describe("heredoc gaps (#191)", () => {
 		"refuses write in %j", cmd => expect(bashBlock(cmd)).toContain(WRITE_MSG));
 	test.each(['echo "<<Z"', "echo '<<Z'", "cat <<EOF\nEOF", 'echo "a\\"" <<Z\nbun test > a\nZ'])(
 		"allows %j", cmd => expect(bashBlock(cmd)).toBeUndefined());
+	// the quote tracker cannot read $'\'' or "$(echo "'")": the quote-blind reading of main is checked too
+	test.each(["echo $'\\'' <<Z\n\"\nZ\nbun test\n\"x\"", 'echo "$(echo "\'")" <<Z\n"\nZ\nbun test\n"x"'])(
+		"still refuses runner in %j", cmd => expect(bashBlock(cmd)).toContain(RUNNER_MSG));
+	test("still refuses write in an ANSI-C quote case", () => expect(bashBlock("echo $'\\'' <<Z\n\"\nZ\nrm f\n\"x\"")).toContain(WRITE_MSG));
 });
 
 describe("checkSlices", () => {
