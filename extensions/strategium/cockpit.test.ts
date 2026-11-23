@@ -3336,5 +3336,7 @@ describe("control characters in model text", () => {
 		];
 		const view = cockpitView(input({ phases: phs, slices: [slice], chronicle: [{ at: `1${evil}`, who: "X", text: "t" }], nav: { shown: { phase: 0, from: 1 } } }));
 		for (const l of renderCockpit(view, 100, 0, TRUE)) expect(plain(l)).not.toMatch(bad);
+		const named = cockpitView(input({ phases: phs, slices: [slice], names: { squads: { [slice.id]: { name: "N" } as never } } as never }));
+		for (const l of renderCockpit(named, 100, 0, TRUE)) expect(plain(l)).not.toMatch(bad);
 	});
 });
