@@ -67,12 +67,17 @@ function fakePi() {
 	};
 }
 
+// Every notify text that starts with the "Strategium:" label; there must be none (omp adds its own Warning:/Error: prefix).
+const labelled: string[] = [];
+// Every notify call with its level, cleared after each test.
+const levels: { text: string; level?: string }[] = [];
+
 // The host's view of the session, mutable per test. It starts busy (streaming), so no test but the idle ones can pause by idleness.
 const fakeCtx = (sid: string, cwd: string, notes: string[] = [], footer: string[] = []) => {
 	const host = { idle: false, pending: false, jobs: undefined as { running: unknown[] } | undefined, review: undefined as unknown };
 	return {
 		sessionManager: { getSessionId: () => sid },
-		ui: { notify: (m: string) => void notes.push(m), setStatus: (_k: string, v?: string) => footer.push(v ?? "") },
+		ui: { notify: (m: string, level?: string) => void (m.startsWith("Strategium:") && labelled.push(m), levels.push({ text: m, level }), notes.push(m)), setStatus: (_k: string, v?: string) => footer.push(v ?? "") },
 		cwd,
 		setInterval: (_fn: () => void, _ms: number) => 0,
 		agent: { kind: "main" },
@@ -97,6 +102,8 @@ delete process.env.STRATEGIUM_VAULT;
 
 const dirs: string[] = [];
 afterEach(() => {
+	levels.length = 0;
+	expect(labelled.splice(0)).toEqual([]);
 	vi.useRealTimers();
 	setSystemTime();
 	delete process.env.STRATEGIUM_STATE_DIR;
@@ -170,9 +177,9 @@ function setup(sid = "sess-0001", shared?: string, deps: Record<string, unknown>
 	const footer: string[] = [];
 	const ctx = fakeCtx(sid, dir, notes, footer);
 	const notify = ctx.ui.notify;
-	ctx.ui.notify = (m: string) => {
+	ctx.ui.notify = (m: string, level?: string) => {
 		seen.push({ via: "notify", footer: footer.at(-1) ?? "", events: alertEvents(dir).length });
-		notify(m);
+		notify(m, level);
 	};
 	const call = async (params: Record<string, unknown>) => (await tool.execute("id", params, undefined, undefined, ctx)).content[0].text;
 	const command = (args: string) => commands.strategium.handler(args, ctx);
@@ -509,6 +516,8 @@ describe("the /strategium command", () => {
 		const b = setup("sess-0002", a.dir);
 		await b.command("K-1");
 		expect(b.notes.join("\n")).toContain("is held by omp session");
+		expect(b.notes.join("\n")).toMatch(/Strategium could not begin run K-1: .*\. Fix that, then run \/strategium <ticket> again\.$/);
+		expect(b.notes.join("\n")).not.toContain("..");
 		expect(b.sent[0]).toContain("could not begin run K-1");
 		expect(await b.call({ action: "status" })).not.toContain("(this session)");
 		expect(await a.call({ action: "status" })).toContain("RUN K-1");
@@ -529,9 +538,9 @@ describe("the /strategium command", () => {
 });
 
 // Sounds and desktop notifications: off unless STRATEGIUM_NOTIFY or the session turns them on.
-// A missing alarm binary makes the call fail at once, so a note "the alarm failed" proves the alarm ran, with no waiting.
+// A missing alarm binary makes the call fail at once, so a note "alarm failed" proves the alarm ran, with no waiting.
 describe("notifications", () => {
-	const ran = (notes: string[]) => notes.some(n => n.includes("the alarm failed"));
+	const ran = (notes: string[]) => notes.some(n => n.includes("alarm failed"));
 
 	test("off by default: an unset STRATEGIUM_NOTIFY runs no alarm and says attention was silent", async () => {
 		const s = setup();
@@ -619,6 +628,7 @@ describe("notifications", () => {
 		await s.sub("config", "volume 35 preview");
 		await Bun.sleep(20);
 		expect(s.notes.filter(n => n.includes("exited with code 1"))).toHaveLength(1);
+		expect(s.notes.find(n => n.includes("exited with code 1"))).toEndWith("silence it with /strategium-config notify off.");
 	});
 
 	test("config volume refuses more than 100 and shows the default 20 when unset", async () => {
@@ -935,7 +945,7 @@ describe("the booking alert in the footer", () => {
 		start();
 		expect(footer.at(-1)!.startsWith("\x1b[32m●\x1b[39m ")).toBe(true);
 		expect(shown()).toContain("K-1 · 🌠 2/4 min (50%)");
-		expect(notes).toEqual(["Strategium: 50% of the booking for K-1"]);
+		expect(notes).toEqual(["50% of the Strategium booking for K-1 is used."]);
 		expect(calls).toEqual([
 			[
 				{ customType: "strategium-timer", content: "TIMER 50% K-1 2/4 min", display: true, attribution: "agent" },
@@ -948,7 +958,7 @@ describe("the booking alert in the footer", () => {
 		await call({ action: "status" });
 		expect(alertEvents(dir)).toHaveLength(1);
 		expect(calls).toHaveLength(1);
-		expect(notes).toEqual(["Strategium: 50% of the booking for K-1"]);
+		expect(notes).toEqual(["50% of the Strategium booking for K-1 is used."]);
 		// Both notifications went out after the footer showed 50% and the alert event was recorded.
 		expect(seen).toEqual([
 			{ via: "notify", footer: expect.stringContaining("2/4 min (50%)"), events: 1 },
@@ -1653,7 +1663,7 @@ describe("the run follows an approved plan", () => {
 		await todoResult(s, ctx, "start", planStations());
 		await approve(s, sm, ctx);
 		await todoResult(s, ctx, "init", handOff());
-		const warned = (a: string[]) => a.filter(n => n.startsWith("Strategium: vault ") && n.includes("daily missing"));
+		const warned = (a: string[]) => a.filter(n => n.startsWith("Strategium cannot write to the vault ") && n.includes("daily missing"));
 		expect([...warned(s.notes), ...warned(notes)]).toHaveLength(1);
 		expect(movedRun(s.dir).recorded).toEqual(["begin", "seal:Plan"]);
 	});
@@ -2131,7 +2141,7 @@ describe("the midnight rollover", () => {
 		expect(s.shown().startsWith("●")).toBe(true);
 		expect(dayEvents(s.dir, 17).some(e => e.event === "alert")).toBe(false);
 		await s.sub("resume", "90");
-		expect(s.notes.at(-1)).toBe("Strategium: new shift for K-1 today, booked 90 min");
+		expect(s.notes.at(-1)).toBe("New shift for K-1 today, booked 90 min.");
 		expect(await s.call({ action: "status" })).toContain("K-1 3/90 min (3%) running");
 		await reports(s, "K-1 00:00-now (3 min)");
 	});
@@ -2220,7 +2230,7 @@ describe("resume after a reload", () => {
 		await s.call({ action: "begin", key: "K-1", booked: 120 });
 		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 		await s.handlers.session_start[0]({}, s.ctx);
-		expect(s.notes).toContain("Strategium: K-1 needs today's booking; /strategium-resume <min>");
+		expect(s.notes).toContain("Strategium run K-1 needs today's booking. Book it with /strategium-resume <min>.");
 		expect(s.shown()).toContain("new day: /strategium-resume");
 	});
 
@@ -2254,7 +2264,7 @@ describe("resume after a reload", () => {
 		await s.handlers.session_shutdown[0]({}, s.ctx);
 		setSystemTime(new Date(2026, 10, 16, 9, 0, 0));
 		await s.handlers.session_start[0]({}, s.ctx);
-		expect(s.notes).toContain("Strategium: K-1 needs today's booking; /strategium-resume <min>");
+		expect(s.notes).toContain("Strategium run K-1 needs today's booking. Book it with /strategium-resume <min>.");
 		expect(s.shown()).toContain("new day: /strategium-resume");
 	});
 
@@ -2365,7 +2375,7 @@ describe("tools, begin and end", () => {
 		await s.call({ action: "begin", key: "K-1" });
 		failAlarm();
 		expect((await s.call({ action: "end" })).split("\n").slice(0, 2)).toEqual(["ENDED K-1", expect.stringMatching(/^DEBRIEF /)]);
-		expect(s.notes).toEqual([expect.stringMatching(/^Strategium: the alarm failed: /)]);
+		expect(s.notes).toEqual([expect.stringMatching(/^The Strategium alarm failed: .*\. Silence it with \/strategium-config notify off\.$/)]);
 	});
 
 	describe("a second begin on the same key", () => {
@@ -3065,7 +3075,7 @@ describe("the idle pause", () => {
 		setSystemTime(T(h, m, sec));
 		await s.sub("status");
 	};
-	const ran = (notes: string[]) => notes.some(n => n.includes("the alarm failed"));
+	const ran = (notes: string[]) => notes.some(n => n.includes("alarm failed"));
 
 	test("idle for the threshold pauses the clock with reason idle and marks the run", async () => {
 		const s = await idler();
@@ -3195,7 +3205,7 @@ describe("the idle pause", () => {
 		s.ctx.host.idle = false;
 		await s.handlers.agent_start[0]({}, s.ctx);
 		expect(starts(s.dir)).toBe(2);
-		expect(s.notes.at(-1)).toContain("resumed K-1");
+		expect(s.notes.at(-1)).toContain("Resumed K-1.");
 		expect(runMark(s.dir)).toBeUndefined();
 		await s.handlers.agent_start[0]({}, s.ctx);
 		expect(starts(s.dir)).toBe(2);
@@ -3320,7 +3330,7 @@ describe("the idle pause", () => {
 		timed.ctx.host.idle = false;
 		await timed.handlers.agent_start[0]({}, timed.ctx);
 		expect(starts(timed.dir, 17)).toBe(0);
-		expect(timed.notes.at(-1)).toContain("needs today's booking; /strategium-resume <min>");
+		expect(timed.notes.at(-1)).toContain("needs today's booking. Book it with /strategium-resume <min>.");
 		expect(runMark(timed.dir)).toBeUndefined();
 
 		const untimed = await idler();
@@ -3527,14 +3537,14 @@ describe("the cockpit key", () => {
 		s.conflicts.f8 = { kind: "extension", extensionPath: "/x/other" };
 		await s.sub("config", "cockpit-key f8");
 		expect(readFileSync(join(s.dir, "cockpit-key"), "utf8")).toBe("f8");
-		expect(s.notes.at(-1)).toBe("Strategium: f8 is also a shortcut of /x/other, and only one of them runs; set another key with /strategium-config cockpit-key <key> or use /strategium-cockpit");
+		expect(s.notes.at(-1)).toBe("f8 is also a shortcut of /x/other, and only one of them runs. Set another key with /strategium-config cockpit-key <key> or use /strategium-cockpit.");
 	});
 
 	test("session_start warns when the cockpit key is taken", async () => {
 		const s = setup();
 		s.conflicts["alt+c"] = { kind: "keybinding", keybindings: ["app.foo"] };
 		await start(s);
-		expect(s.notes.some(n => n.includes("Strategium: alt+c is also omp's app.foo"))).toBe(true);
+		expect(s.notes.some(n => n.includes("alt+c is also omp's app.foo"))).toBe(true);
 	});
 
 	test("an invalid STRATEGIUM_COCKPIT_KEY falls back to alt+c and is reported", async () => {
@@ -3542,7 +3552,7 @@ describe("the cockpit key", () => {
 		const s = setup();
 		expect(Object.keys(s.shortcuts)).toEqual(["alt+c"]);
 		await start(s);
-		expect(s.notes).toContain('Strategium: STRATEGIUM_COCKPIT_KEY "Hello" is not a key such as alt+c, ctrl+shift+k or f8; ignored');
+		expect(s.notes).toContain('STRATEGIUM_COCKPIT_KEY "Hello" is not a key such as alt+c, ctrl+shift+k or f8, so Strategium ignores it. Set a valid key or unset it.');
 	});
 
 	test.each(["e", "space", "tab", "up", "1", "/", "shift+a", "shift+tab", "ctrl+ctrl+a", "alt+alt+c"])("config refuses the unusable cockpit key %s and writes no file", async k => {
@@ -3557,7 +3567,7 @@ describe("the cockpit key", () => {
 		const s = setup();
 		expect(Object.keys(s.shortcuts)).toEqual(["alt+c"]);
 		await start(s);
-		expect(s.notes.some(n => n.includes(`"${k}" is not a key such as alt+c, ctrl+shift+k or f8; ignored`))).toBe(true);
+		expect(s.notes.some(n => n.includes(`"${k}" is not a key such as alt+c, ctrl+shift+k or f8, so Strategium ignores it`))).toBe(true);
 	});
 
 	test("a saved file holding a bare key falls back to the next source", () => {
@@ -3605,7 +3615,7 @@ describe("the cockpit key", () => {
 		const s = setup();
 		s.conflicts["alt+c"] = { kind: "reserved" };
 		await start(s);
-		expect(s.notes).toContain("Strategium: alt+c is reserved by omp and never opens the cockpit; set another key with /strategium-config cockpit-key <key> or use /strategium-cockpit");
+		expect(s.notes).toContain("alt+c is reserved by omp and never opens the Strategium cockpit. Set another key with /strategium-config cockpit-key <key> or use /strategium-cockpit.");
 	});
 
 	test("config saves f12 and refuses f13", async () => {
@@ -3747,7 +3757,7 @@ describe("cockpit", () => {
 			process.env.STRATEGIUM_COCKPIT_THEME = "khorne";
 			const s = setup();
 			for (const h of s.handlers.session_start) await h({}, s.ctx);
-			expect(s.notes).toContain('Strategium: STRATEGIUM_COCKPIT_THEME "khorne" is not a theme (blood-angels, ultramarines, dark-angels, cogitator); ignored');
+			expect(s.notes).toContain('STRATEGIUM_COCKPIT_THEME "khorne" is not a theme (blood-angels, ultramarines, dark-angels, cogitator), so Strategium ignores it. Set a valid theme or unset it.');
 			await s.sub("config");
 			expect(s.notes.at(-1)).toContain("cockpit-theme: blood-angels (default)");
 		});
@@ -4454,14 +4464,90 @@ describe("cockpit", () => {
 			const s = setup();
 			const ui = uiCtx(s);
 			await s.sub("cockpit");
-			expect(s.notes).toContain("Strategium: no active run in this session");
+			expect(s.notes).toContain("No Strategium run in this session. Start one with /strategium <ticket>.");
 			expect(ui.opened).toEqual([]);
+		});
+
+		test("the no-run warning names the start command", async () => {
+			const s = setup();
+			uiCtx(s);
+			await s.sub("cockpit");
+			expect(s.notes).toEqual(["No Strategium run in this session. Start one with /strategium <ticket>."]);
+		});
+
+		test("three cockpit opens in a row with no run show the warning once, and again after 2 s", async () => {
+			const s = setup();
+			uiCtx(s);
+			setSystemTime(new Date(2026, 10, 16, 12, 0, 0));
+			for (let i = 0; i < 3; i++) await s.sub("cockpit");
+			expect(s.notes).toHaveLength(1);
+			setSystemTime(new Date(2026, 10, 16, 12, 0, 3));
+			await s.sub("cockpit");
+			expect(s.notes).toHaveLength(2);
+		});
+
+		test("a warning repeated 1999 ms later is dropped and 2001 ms later is shown", async () => {
+			const s = setup();
+			uiCtx(s);
+			const t0 = new Date(2026, 10, 16, 12, 0, 0).getTime();
+			setSystemTime(t0);
+			await s.sub("cockpit");
+			setSystemTime(t0 + 1999);
+			await s.sub("cockpit");
+			expect(s.notes).toHaveLength(1);
+			setSystemTime(t0 + 2001);
+			await s.sub("cockpit");
+			expect(s.notes).toHaveLength(2);
+		});
+
+		test("the level is passed on, and an info answer repeated at once is not dropped", async () => {
+			const s = setup();
+			uiCtx(s);
+			await s.sub("cockpit");
+			await s.sub("config");
+			await s.sub("config");
+			expect(levels.map(n => n.level)).toEqual(["warning", "info", "info"]);
+		});
+
+		test("a failing subcommand says which command failed, in one sentence", async () => {
+			const s = setup();
+			await s.sub("config", "volume 101");
+			expect(s.notes.at(-1)).toStartWith("Strategium could not run /strategium-config: ");
+			expect(s.notes.at(-1)).toEndWith("volume takes 0 to 100.");
+			s.conflicts["ctrl+c"] = { kind: "reserved" };
+			await s.sub("config", "cockpit-key ctrl+c");
+			expect(s.notes.at(-1)).toBe("Strategium could not run /strategium-config: ctrl+c is reserved by omp and never opens the cockpit; pick another key.");
+		});
+
+		test("a message that already ends in a period gets no second one", async () => {
+			const s = setup();
+			await s.sub("resume", "0");
+			expect(s.notes.at(-1)).not.toMatch(/\.\.$/);
+			expect(s.notes.at(-1)).toMatch(/\.$/);
+		});
+
+		test("command answers are full sentences with a capital and a final period", async () => {
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1", booked: 60 });
+			await s.sub("pause");
+			expect(s.notes.at(-1)).toBe("Strategium paused (K-1).");
+			await s.sub("resume");
+			expect(s.notes.at(-1)).toMatch(/^[A-Z].*\.$/);
+		});
+
+		test("a changed text between two warnings shows both", async () => {
+			const s = setup();
+			uiCtx(s);
+			await s.sub("cockpit");
+			await s.sub("config", "bogus");
+			await s.sub("cockpit");
+			expect(s.notes).toHaveLength(3);
 		});
 
 		test("without a UI it warns", async () => {
 			const { s, ui } = await running(false);
 			await s.sub("cockpit");
-			expect(s.notes).toContain("Strategium: the cockpit needs the interactive UI");
+			expect(s.notes).toContain("The Strategium cockpit needs the interactive UI. Open it from the omp terminal with /strategium-cockpit.");
 			expect(ui.opened).toEqual([]);
 		});
 
@@ -4838,7 +4924,7 @@ describe("cockpit", () => {
 			s.todo(sealTodo("in_progress"));
 			failAlarm();
 			s.todo(sealTodo("completed"));
-			expect(s.notes.some(n => n.includes("the alarm failed"))).toBe(true);
+			expect(s.notes.some(n => n.includes("alarm failed"))).toBe(true);
 		});
 
 		test("without a UI a granted seal still sounds and nothing is drawn", async () => {
@@ -10129,10 +10215,10 @@ describe("vault records (#151)", () => {
 				if (!clock) setSystemTime();
 				if (label === "held vault.lock") writeFileSync(join(s.dir, "vault.lock"), `${process.pid}-held`);
 				expect(await script(s, clock)).toEqual(base);
-				const notices = s.notes.filter(n => n.startsWith("Strategium: vault "));
+				const notices = s.notes.filter(n => n.startsWith("Strategium cannot write to the vault "));
 				expect(notices).toHaveLength(1);
 				expect(notices[0]).toMatch(why);
-				expect(notices[0]).toEndWith("; the run goes on and this event is not in the vault");
+				expect(notices[0]).toEndWith("The run goes on, but this event is not in the vault; fix the folder or run /strategium-config vault off.");
 				expect(existsSync(join(v, "Daily"))).toBe(false);
 			}, 15000);
 		}
@@ -10293,7 +10379,7 @@ describe("vault records (#151)", () => {
 
 	describe("a daily that is missing (the vault does not create it unless the contract says createDaily)", () => {
 		const { createDaily: _, ...NO_CREATE } = { ...CONTRACT, createDaily: true };
-		const notices = (s: S) => s.notes.filter(n => n.startsWith("Strategium: vault "));
+		const notices = (s: S) => s.notes.filter(n => n.startsWith("Strategium cannot write to the vault "));
 
 		test("CN4: default skips every line and warns once with daily missing", async () => {
 			const v = vaultDir(NO_CREATE);
@@ -10759,7 +10845,7 @@ describe("via on begin and switch", () => {
 		setSystemTime(T(9, 2));
 		a.start();
 		expect(a.calls.map(c => (c[0] as { content: string }).content)).toEqual(["TIMER 50% K-1 2/4 min via P (shared K-1+K-2)"]);
-		expect(a.notes).toEqual(["Strategium: 50% of the booking for K-1 (shared via P: K-1+K-2)"]);
+		expect(a.notes).toEqual(["50% of the Strategium booking for K-1 is used (shared via P: K-1+K-2)."]);
 		expect(alertEvents(a.dir)).toEqual([expect.objectContaining({ key: "K-1", p: 50, pool: "P" })]);
 		b.start();
 		expect(b.calls).toHaveLength(0);

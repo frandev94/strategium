@@ -805,7 +805,7 @@ function signal(spawn: Spawn, level: string, msg: string | undefined, sound: boo
 		void child.exited.then(code => code && onFail?.(code)).catch(() => {});
 		return undefined;
 	} catch (err) {
-		return `the alarm failed: ${err instanceof Error ? err.message : String(err)}`;
+		return `alarm failed: ${err instanceof Error ? err.message : String(err)}`;
 	}
 }
 
@@ -1476,6 +1476,22 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	// The session that asked for the open plan review, while it is open.
 	let reviewSid: string | undefined;
 	let timerSet = false;
+	// Every message to the user goes through here: plain sentences (omp adds its own Warning:/Error: prefix), and the same warning or error again within 2 s in one session is dropped (a command's own answer always shows).
+	const NO_RUN = "No Strategium run in this session. Start one with /strategium <ticket>.";
+	const up = (t: string) => t[0].toUpperCase() + t.slice(1);
+	/** `t` as one sentence: a final period is added only when it has no terminal punctuation. */
+	const end = (t: string) => (/[.!?]$/.test(t) ? t : `${t}.`);
+	const lastNote = new Map<string, { text: string; at: number }>();
+	const notify = (ctx: SessionCtx, text: string, level: "info" | "warning" | "error" = "info") => {
+		const sid = sidOf(ctx);
+		const now = Date.now();
+		const last = lastNote.get(sid);
+		if (level !== "info" && last?.text === text && now - last.at < 2000) return;
+		lastNote.set(sid, { text, at: now });
+		ctx.ui.notify(text, level);
+	};
+	/** The alarm could not start: `err` is signal()'s reason ("alarm failed: …"). */
+	const alarmWarn = (ctx: SessionCtx, err: string) => notify(ctx, `The Strategium ${end(err)} Silence it with /strategium-config notify off.`, "warning");
 	// /strategium-config notify on|off per session id; it wins over STRATEGIUM_NOTIFY (1, true, on, yes), which is off when unset.
 	const notifyBySession = new Map<string, boolean>();
 	const notifyOn = (sid: string) =>
@@ -1536,8 +1552,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			beat(sid);
 			return resumed;
 		} catch (err) {
-			ctx.ui.notify(
-				err instanceof NewShift ? `Strategium: ${run.key} needs today's booking; /strategium-resume <min>` : `Strategium: ${err instanceof Error ? err.message : String(err)}`,
+			notify(
+				ctx,
+				err instanceof NewShift ? `Strategium run ${run.key} needs today's booking. Book it with /strategium-resume <min>.` : `Strategium could not resume the run: ${end(err instanceof Error ? err.message : String(err))} Try /strategium-resume again.`,
 				"warning",
 			);
 		}
@@ -1547,7 +1564,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	const alarmExit = (sid: string, ctx: SessionCtx) => (code: number) => {
 		if (alarmWarned.has(sid)) return;
 		alarmWarned.add(sid);
-		ctx.ui.notify(`Strategium: the alarm exited with code ${code}; vox could not play (check the audio player)`, "warning");
+		notify(ctx, `The Strategium alarm exited with code ${code}, so vox could not play. Check the audio player or silence it with /strategium-config notify off.`, "warning");
 	};
 	/** The alarm, only when notifications are on and sound or toast is: the message goes only with toasts, the sound flag always. */
 	const alert = (sid: string, level: string, msg: string, ctx: SessionCtx) => {
@@ -1657,7 +1674,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const id = `${run.key} ${run.since}`;
 		if (!why || vaultNoticed.has(id)) return;
 		vaultNoticed.add(id);
-		ctx.ui.notify(`Strategium: vault ${vault.dir}: ${why}; the run goes on and this event is not in the vault`, "warning");
+		notify(ctx, `Strategium cannot write to the vault ${vault.dir}: ${why}. The run goes on, but this event is not in the vault; fix the folder or run /strategium-config vault off.`, "warning");
 	}
 	/** Record event `id` once per run: the id goes into the run file first, so a crash loses the line and never doubles it. Returns the run to carry on with. */
 	function vaultEvent(ctx: SessionCtx, run: Run, id: string, text: string): Run {
@@ -1839,7 +1856,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					const line = cap(oneLine(row.line));
 					log(run.key, job.who, line ? `blocked: ${line}` : "blocked", "warn");
 					const err = alert(run.sid, "attention", `${run.key}: ${job.who} is blocked${line ? `: ${line}` : ""}`, ctx);
-					if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+					if (err) alarmWarn(ctx, err);
 				}
 			}
 			// The idle period starts at the last tool call; an agent with no live row has nothing to count from (it may be an eval spawn or another process), so it is never stalled.
@@ -1972,8 +1989,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	const openCockpit = (ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
 		const run = ownRun(sidOf(ctx));
-		if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
-		if (!ctx.hasUI || typeof ctx.ui.custom !== "function") return ctx.ui.notify("Strategium: the cockpit needs the interactive UI", "warning");
+		if (!run) return notify(ctx, NO_RUN, "warning");
+		if (!ctx.hasUI || typeof ctx.ui.custom !== "function") return notify(ctx, "The Strategium cockpit needs the interactive UI. Open it from the omp terminal with /strategium-cockpit.", "warning");
 		if (cockpit.close) return;
 		cockpit.status = agentStatus(ctx);
 		cockpit.nav = {}; // a reopened cockpit starts clean
@@ -2093,7 +2110,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		if (mine && result.split("\n", 1)[0] === `ENDED ${mine.key}`) {
 			await restoreTools(mine.hidden);
 			const err = alert(sid, "theme", `${mine.key}: run ended`, ctx);
-			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+			if (err) alarmWarn(ctx, err);
 		}
 		return result;
 	}
@@ -2106,9 +2123,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const shared = pool ? `shared via ${pool.parent}: ${pool.keys.join("+")}` : "";
 		// shortcut: two sessions ticking within the same milliseconds can both read "not alerted yet" and both alert; upgrade to an exclusive marker file if doubles are ever seen.
 		append(file, { ts: nowIso(), event: "alert", key, p, ...(pool ? { pool: pool.parent } : {}) });
-		ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}${pool ? ` (${shared})` : ""}`, p === 100 ? "warning" : "info");
+		notify(ctx, `${p}% of the Strategium booking for ${key} is used${pool ? ` (${shared})` : ""}.${p === 100 ? " Add time with /strategium-add <min> or wrap up the run." : ""}`, p === 100 ? "warning" : "info");
 		const alarmError = alert(sid, String(p), `${key}: ${p}% of the booking (${el}/${bk} min${pool ? `, ${shared}` : ""})`, ctx);
-		if (alarmError) ctx.ui.notify(`Strategium: ${alarmError}`, "warning");
+		if (alarmError) alarmWarn(ctx, alarmError);
 		log(key, "TIMER", `⧗ ${p}% of the booking`);
 		pi.sendMessage(
 			{ customType: "strategium-timer", content: `TIMER ${p}% ${key} ${el}/${bk} min${pool ? ` via ${pool.parent} (shared ${pool.keys.join("+")})` : ""}`, display: true, attribution: "agent" },
@@ -2132,12 +2149,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			if (gap) {
 				if (counting) writeRun({ ...found, idle: true });
 				const at = gap.slice(11, 16);
-				ctx.ui.notify(
-					`Strategium: ${found.key} paused at ${at}; this session was silent since then (sleep or freeze). ${counting ? "Your next prompt resumes it." : "/strategium-resume to continue."}`,
+				notify(
+					ctx,
+					`Strategium run ${found.key} paused at ${at} because this session was silent since then (sleep or freeze). ${counting ? "Your next prompt resumes it." : "Continue with /strategium-resume."}`,
 					"warning",
 				);
 				const alarmErr = alert(sid, "attention", `${found.key}: paused at ${at} after a silent gap; resume when you are back`, ctx);
-				if (alarmErr) ctx.ui.notify(`Strategium: ${alarmErr}`, "warning");
+				if (alarmErr) alarmWarn(ctx, alarmErr);
 			}
 			beat(sid);
 			// Busy: the model is streaming (an `ask` waits for the user inside a stream), messages are queued, a background
@@ -2159,9 +2177,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				idleSince = undefined;
 				running = false;
 				// No message into the session: a triggered turn would resume the clock at once.
-				ctx.ui.notify(`Strategium: ${found.key} paused after ${limitMin} min idle; your next prompt resumes it`, "info");
+				notify(ctx, `Strategium run ${found.key} paused after ${limitMin} min idle. Your next prompt resumes it.`, "info");
 				const err = alert(sid, "idle", `${found.key}: paused, idle ${limitMin} min`, ctx);
-				if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+				if (err) alarmWarn(ctx, err);
 			}
 			// A block still open at midnight goes on in the new day: yesterday's ends at 00:00 and today's starts there. Without a
 			// booking, so a timed run counts with no alerts until /strategium-resume <min> gives today's. After the idle check: an idle stop
@@ -2185,7 +2203,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			cockpit.clock = { running, el, ...(bk ? { bk } : {}) };
 			drawCockpit(found, ctx);
 		} catch (err) {
-			ctx.ui.notify(`Strategium timer: ${err instanceof Error ? err.message : String(err)}`, "warning");
+			notify(ctx, `The Strategium timer failed: ${err instanceof Error ? err.message : String(err)}. Check the state folder, or end the run with /strategium-end.`, "warning");
 		}
 	};
 	pi.setLabel("Strategium");
@@ -2394,7 +2412,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const key = ownRun(sid)?.key;
 						const msg = params.message?.trim() || "Your attention is needed";
 						const err = alert(sid, "attention", key ? `${key}: ${msg}` : msg, ctx);
-						if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+						if (err) alarmWarn(ctx, err);
 						// A silent call makes no sound; say so, so the Captain does not count on it.
 						const ch = channels(sid);
 						const silent = !notifyOn(sid)
@@ -2534,7 +2552,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			// The command begins the run itself (the clock counts from here) and hands the Captain the objective.
 			const parsed = raw.match(/^"([^"]+)"(?:\s+(\S+))?$/) ?? raw.match(/^(\S+)(?:\s+(\S+))?$/);
 			if (!parsed) {
-				ctx.ui.notify(
+				notify(
+					ctx,
 					'Usage: /strategium <ticket | @file | "free text"> [theatre]; also /strategium-pause, -resume, -add, -status, -config, -cockpit, -end',
 					"warning",
 				);
@@ -2553,7 +2572,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					await beginRun(sid, key, theatre, undefined, undefined, undefined, undefined, ctx);
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
-					ctx.ui.notify(`Strategium: ${message}`, "warning");
+					notify(ctx, `Strategium could not begin run ${key}: ${end(message)} Fix that, then run /strategium <ticket> again.`, "warning");
 					note = `Strategium could not begin run ${key}: ${message}`;
 				}
 			}
@@ -2576,7 +2595,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				try {
 					await run((args ?? "").trim() || undefined, ctx, sidOf(ctx));
 				} catch (err) {
-					ctx.ui.notify(`Strategium: ${err instanceof Error ? err.message : String(err)}`, "warning");
+					notify(ctx, `Strategium could not run /strategium-${name}: ${end(err instanceof Error ? err.message : String(err))}`, "warning");
 				} finally {
 					refreshFooter?.();
 				}
@@ -2586,18 +2605,18 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	subcommand("pause", "Stop this session's Strategium clock", (_arg, ctx, sid) => {
 		const run = ownRun(sid);
 		if (run) spendIdle(run);
-		ctx.ui.notify(`Strategium: paused (${run && stopKey(run.key) ? run.key : "idle"})`, "info");
+		notify(ctx, `Strategium paused (${run && stopKey(run.key) ? run.key : "idle"}).`, "info");
 	});
 
 	subcommand("resume", "Continue this session's Strategium run; on a new day pass today's booked minutes", (arg, ctx, sid) => {
 		const run = ownRun(sid);
-		if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
+		if (!run) return notify(ctx, NO_RUN, "warning");
 		spendIdle(run);
 		const bk = arg === undefined ? undefined : Number(arg);
 		if (bk !== undefined && !(Number.isInteger(bk) && bk > 0))
 			throw new Error("resume takes the booked minutes as a whole number, e.g. /strategium-resume 240");
 		try {
-			ctx.ui.notify(`Strategium: ${shift(run, bk)}`, "info");
+			notify(ctx, end(up(shift(run, bk))));
 		} catch (err) {
 			if (!(err instanceof NewShift)) throw err;
 			const skill = run.theatre.startsWith("strategium-") ? run.theatre : `strategium-${run.theatre}`;
@@ -2611,11 +2630,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 
 	subcommand("add", "Correct today's time of this session's run in minutes (negative to subtract)", (arg, ctx, sid) => {
 		const run = ownRun(sid);
-		if (!run) return ctx.ui.notify("Strategium: no active run in this session", "warning");
-		ctx.ui.notify(`Strategium: ${addMin(run, Number(arg))}`, "info");
+		if (!run) return notify(ctx, NO_RUN, "warning");
+		notify(ctx, addMin(run, Number(arg)));
 	});
 
-	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
+	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => notify(ctx, fullStatus(sid)));
 
 	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look; caster on|off|default sets the cockpit's model commentator; names on|off|default sets whether the plugin hands out and checks agent names; vault <absolute folder>|off|default sets the vault whose daily note records run events", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
@@ -2706,7 +2725,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		}
 		const env = (k: string) => process.env[k]?.trim() || "not set";
 		const next = keySetting();
-		ctx.ui.notify(
+		notify(
+			ctx,
 			[
 				"Strategium config",
 				`notify: ${notifyState(sid)}`,
@@ -2728,16 +2748,16 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			].join("\n"),
 			"info",
 		);
-		if (conflict) ctx.ui.notify(keyConflict(conflict.key, conflict.c), "warning");
+		if (conflict) notify(ctx, keyConflict(conflict.key, conflict.c), "warning");
 		// The preview plays the alarm at this volume even with notify or sound off: the user asked to hear it.
 		if (preview) {
 			const err = signal(spawn, "done", undefined, true, volumeOf(sid), alarmExit(sid, ctx));
-			if (err) ctx.ui.notify(`Strategium: no preview: ${err}`, "warning");
+			if (err) notify(ctx, `Strategium could not play the alarm preview: ${end(err)} Check the audio player.`, "warning");
 		}
 	});
 
 	subcommand("end", "Close this session's Strategium run", async (_arg, ctx, sid) => {
-		ctx.ui.notify(await finish(sid, ctx), "info");
+		notify(ctx, await finish(sid, ctx));
 		// undefined removes the line; "" would leave an empty one under the other plugins' lines.
 		ctx.ui.setStatus("strategium", undefined);
 	});
@@ -2759,10 +2779,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	// Read once: omp binds shortcuts before session_start, so a new key applies on the next omp start.
 	const cockpitKey = keySetting();
 	const keyConflict = (key: string, c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>>) => {
-		const fix = "set another key with /strategium-config cockpit-key <key> or use /strategium-cockpit";
-		if (c.kind === "reserved") return `Strategium: ${key} is reserved by omp and never opens the cockpit; ${fix}`;
-		if (c.kind === "keybinding") return `Strategium: ${key} is also omp's ${c.keybindings.join(", ")}, which may take it first; ${fix}`;
-		return `Strategium: ${key} is also a shortcut of ${c.extensionPath}, and only one of them runs; ${fix}`;
+		const fix = "Set another key with /strategium-config cockpit-key <key> or use /strategium-cockpit";
+		if (c.kind === "reserved") return `${key} is reserved by omp and never opens the Strategium cockpit. ${fix}.`;
+		if (c.kind === "keybinding") return `${key} is also omp's ${c.keybindings.join(", ")}, which may take it first. ${fix}.`;
+		return `${key} is also a shortcut of ${c.extensionPath}, and only one of them runs. ${fix}.`;
 	};
 	pi.registerShortcut(cockpitKey.key as KeyId, { description: "Open the Strategium cockpit", handler: ctx => openCockpit(ctx) });
 
@@ -2868,7 +2888,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		// The user is called now: the review keeps the clock counting (it is busy), so the attention alarm replaces the idle one.
 		if (!run) return;
 		const err = alert(e.sessionId, "attention", `${run.key}: your plan review is waiting`, ctx);
-		if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+		if (err) alarmWarn(ctx, err);
 	});
 	pi.on("tool_approval_requested", (_e, ctx) => {
 		if (ctx?.agent?.kind === "sub") return;
@@ -2886,7 +2906,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			writeRun({ ...run, idle: undefined });
 			if (!isOpen(run.key)) {
 				const resumed = resumeOrWarn(run, sidOf(ctx), ctx);
-				if (resumed) ctx.ui.notify(`Strategium: ${resumed}`, "info");
+				if (resumed) notify(ctx, end(up(resumed)));
 			}
 		}
 		refreshFooter?.();
@@ -2920,13 +2940,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	pi.on("session_start", (_e: unknown, ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
 		const theatre = process.env.STRATEGIUM_THEATRE?.trim().replace(/^strategium-/, "") || "none";
-		ctx.ui.notify(`Strategium loaded: theatre ${theatre}, notifications ${notifyOn(sidOf(ctx)) ? "on" : "off"}`, "info");
+		notify(ctx, `Strategium loaded with theatre ${theatre}, notifications ${notifyOn(sidOf(ctx)) ? "on" : "off"}.`);
 		const c = pi.getShortcutConflict(cockpitKey.key as KeyId);
-		if (c) ctx.ui.notify(keyConflict(cockpitKey.key, c), "warning");
+		if (c) notify(ctx, keyConflict(cockpitKey.key, c), "warning");
 		const rawKey = process.env.STRATEGIUM_COCKPIT_KEY?.trim();
-		if (rawKey && !usableKey(rawKey.toLowerCase())) ctx.ui.notify(`Strategium: STRATEGIUM_COCKPIT_KEY "${rawKey}" is not a key such as alt+c, ctrl+shift+k or f8; ignored`, "warning");
+		if (rawKey && !usableKey(rawKey.toLowerCase())) notify(ctx, `STRATEGIUM_COCKPIT_KEY "${rawKey}" is not a key such as alt+c, ctrl+shift+k or f8, so Strategium ignores it. Set a valid key or unset it.`, "warning");
 		const rawTheme = process.env.STRATEGIUM_COCKPIT_THEME?.trim();
-		if (rawTheme && !isTheme(rawTheme.toLowerCase())) ctx.ui.notify(`Strategium: STRATEGIUM_COCKPIT_THEME "${rawTheme}" is not a theme (${Object.keys(THEMES).join(", ")}); ignored`, "warning");
+		if (rawTheme && !isTheme(rawTheme.toLowerCase())) notify(ctx, `STRATEGIUM_COCKPIT_THEME "${rawTheme}" is not a theme (${Object.keys(THEMES).join(", ")}), so Strategium ignores it. Set a valid theme or unset it.`, "warning");
 	});
 
 	// Closing the session pauses its ticket and releases the claim; the run file stays so a resumed session
@@ -3123,7 +3143,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		// A question to the user during a run needs them at the keyboard, wherever they are.
 		if (name === "ask" && run) {
 			const err = alert(sidOf(ctx), "attention", `${run.key}: your answer is needed`, ctx);
-			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+			if (err) alarmWarn(ctx, err);
 		}
 		// With names on, every roster item of a task call must carry a name the plugin handed out. Before the repo check: it holds with or without a repo.
 		if (naming.on && run && name === "task") {
@@ -3256,7 +3276,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			record({ event: "seal", key: run.key, seal: seal.id.slice(0, 200), state: "granted" });
 			sealed = vaultEvent(ctx, sealed, `seal:${seal.id.slice(0, 200)}`, `seal ${seal.id} granted`);
 			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.id} granted`, ctx);
-			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
+			if (err) alarmWarn(ctx, err);
 		}
 		// Prepared lines live only while their seal waits: any other state of the todo drops them.
 		if (cockpit.seal && cockpit.seal.id !== waitingSeal(phases)?.id) {
