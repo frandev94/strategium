@@ -1081,7 +1081,7 @@ function corruptedSource(run: Run, id: string, named: boolean): boolean {
 function reuseSources(text: string): string[] {
 	const out: string[] = [];
 	for (const line of text.split("\n")) {
-		const m = /^[-*>_`\t ]*reuse[ \t]*:[ \t*_`<>]*(?:agent:\/\/)?(\w[\w.-]*)/i.exec(line);
+		const m = /^[-*>_`#"'(\t ]*(?:\d{1,9}[.)][-*>_`#"'(\t ]*)?reuse[ \t]*:[ \t*_`<>"'[]*(?:agent:\/\/)?(\w[\w.-]*)(?![\w/])/i.exec(line);
 		if (!m) continue;
 		let id = m[1];
 		while (/[.-]$/.test(id)) id = id.slice(0, -1);
@@ -1102,7 +1102,7 @@ const areaOf = (f: string) => {
  * shared files first, then the fewest session tokens, then id; the best three.
  * shortcut: cumulative session tokens stand in for context headroom, since omp exposes no context fill to extensions; upgrade if getUsageStatistics or the live row gains the current context size.
  */
-function reuseCandidates(run: Run, target: Slice, roles: Map<string, { role: string; squad?: string }>) {
+function reuseCandidates(run: Run, target: Slice, roles: Map<string, { role: string; squad?: string }>, named: boolean) {
 	const squadOfId = new Map<string, string>();
 	for (const [id, r] of roles) if (isBuilderRole(r.role) && r.squad) squadOfId.set(id, r.squad);
 	for (const n of run.names ?? []) if (n.spawned && !n.old && isBuilderRole(n.agent) && n.squad) squadOfId.set(n.name, n.squad);
@@ -1112,7 +1112,9 @@ function reuseCandidates(run: Run, target: Slice, roles: Map<string, { role: str
 	const out: { id: string; squad: string; shared: boolean; tokens: number }[] = [];
 	for (const [id, squad] of squadOfId) {
 		const src = known.find(s => s.id === squad);
-		if (!src || run.agents?.[id] || !run.ratings || !Object.hasOwn(run.ratings, id) || run.ratings[id].rating !== "proven") continue;
+		const running = named ? Object.keys(run.agents ?? {}).some(k => baseId(k) === baseId(id)) : Boolean(run.agents?.[id]);
+		const retired = named && (run.names ?? []).some(n => n.old && n.name === baseId(id));
+		if (!src || running || retired || corruptedSource(run, id, named) || !run.ratings || !Object.hasOwn(run.ratings, id) || run.ratings[id].rating !== "proven") continue;
 		const shared = sharedFiles(src, target).length > 0;
 		if (!shared && !src.files.some(f => areaOf(f) && targetAreas.has(areaOf(f)))) continue;
 		const row = rows.get(id);
@@ -1128,15 +1130,18 @@ function reuseCandidates(run: Run, target: Slice, roles: Map<string, { role: str
  * one its brief builds ("build squad <id>"). Undefined for any other agent.
  */
 function builtSlice(item: Record<string, unknown>, run: Run): Slice | undefined {
-	if (!["battle-brother", "veteran"].includes(agentName(String(item.agent ?? "task")))) return undefined;
+	if (!isBuilderRole(agentName(String(item.agent ?? "task")))) return undefined;
 	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
 	// The recorded name first; names off (or a name the plugin did not hand out) falls back to the rules below.
 	const given = typeof item.name === "string" ? item.name.trim() : undefined;
 	const byName = given ? recordedSquad(run, given) : undefined;
 	if (byName) return byName;
 	const name = typeof item.name === "string" ? fold(item.name) : undefined;
-	const built = [...String(item.task ?? "").matchAll(/\b(?:squad|slice)\s+([\w.-]*\w)/gi)].map(m => m[1]);
-	return known.find(s => fold(s.id) === name) ?? known.find(s => built.includes(s.id));
+	const task = String(item.task ?? "");
+	const built = [...task.matchAll(/\b(?:squad|slice)\s+([\w.-]*\w)/gi)].map(m => m[1]);
+	// A reuse brief also names the source's squad: the one right after `build` is the squad being built.
+	const after = /\bbuild\s+(?:squad|slice)\s+([\w.-]*\w)/i.exec(task)?.[1];
+	return known.find(s => fold(s.id) === name) ?? (after ? known.find(s => s.id === after) : undefined) ?? known.find(s => built.includes(s.id));
 }
 
 /**
@@ -2010,7 +2015,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						if (!params.agent) throw new Error("name needs agent");
 						const { squad, source } = params;
 						const agent = agentName(params.agent);
-						if (squad !== undefined && ["battle-brother", "veteran"].includes(agent) && ![...(run.slices ?? []), ...(run.stopped ?? [])].some(s => s.id === squad))
+						if (squad !== undefined && isBuilderRole(agent) && ![...(run.slices ?? []), ...(run.stopped ?? [])].some(s => s.id === squad))
 							return text(`ERROR squad ${squad} is not declared: call strategium action slices first`);
 						// D5: the reused brother's surname comes from a builder of this run that has spawned and is not corrupted.
 						let surname: string | undefined;
@@ -2033,7 +2038,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 							return `NAME ${got.entry.name}`;
 						};
 						// A new builder surname comes from the roster, under its lock with the run write inside; every other name needs no roster.
-						if (!["battle-brother", "veteran"].includes(agent) || surname || run.names?.some(n => n.squad === squad && !n.old)) return text(place());
+						if (!isBuilderRole(agent) || run.names?.some(n => n.squad === squad && !n.old)) return text(place());
 						const placed = withPicks(sid, place);
 						return text(placed.warn ? `${placed.warn}\n${placed.value}` : placed.value);
 					}
@@ -2045,7 +2050,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						if (!target) return text(`ERROR squad ${params.squad} is not declared: call strategium action slices first`);
 						// The same registry the debrief reads: the live cockpit, else the one saved beside the run.
 						const roles = cockpit.key === run.key ? new Map([...cockpit.deployed].map(([id, d]) => [id, { role: d.role, squad: d.squad }])) : savedRoles(run.sid);
-						const found = reuseCandidates(run, target, roles);
+						const found = reuseCandidates(run, target, roles, naming.on);
 						if (!found.length) return text(`REUSE squad ${target.id}: none (no proven builder of this run that has ended shares its files or area); spawn a fresh builder`);
 						const list = found.map(c => `${c.id} (squad ${c.squad}, ${c.shared ? "shared files" : "same area"}, ${Number.isFinite(c.tokens) ? `${c.tokens} tokens` : "usage unknown"})`).join("; ");
 						const best = found[0].id;
