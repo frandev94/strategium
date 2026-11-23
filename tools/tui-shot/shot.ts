@@ -872,6 +872,11 @@ async function stepsAsk(R: Run) {
 	await R.key("right"); await R.sleep(0.5); await R.key("enter"); await R.sleep(0.5); await R.key("enter"); await R.sleep(0.5);
 	await R.waitFor(Buffer.from("REPLAY-ANSWER"), 10); await R.waitQuiet(1.0, 3.0); await R.snap("answered", true);
 }
+// omp's startup tip ends "⎋ cancels"; only rows from the ask line (or the answer row) down can show a cancelled ask. No marker: every row.
+export function askRows(rows: string[]): string[] {
+	const i = rows.findIndex(r => /^\W*ask\b/i.test(r) || r.includes("REPLAY-ANSWER"));
+	return i < 0 ? rows : rows.slice(i);
+}
 function checksAsk(C: Ctx) {
 	const c = snapOf(C, "cockpit"), d = snapOf(C, "dialog"), a = snapOf(C, "answered");
 	C.ck("cockpit: rows 0 and last are the frame", c.row(0).startsWith("╔═") && c.row(c.rows - 1).startsWith("╚═"), [cut(c.row(0), 0, 20), cut(c.row(c.rows - 1), 0, 20)], null, c);
@@ -881,7 +886,7 @@ function checksAsk(C: Ctx) {
 	C.ck("dialog: REPLAY: pick one, Yes and No on screen", d.has("REPLAY: pick one") && d.has("Yes") && d.has("No"), null, null, d);
 	y = a.where("REPLAY-ANSWER"); // the answer prints as a JSON block under it
 	C.ck("answered: REPLAY-ANSWER with No", y >= 0 && range(y, y + 5).map(i => a.row(i)).join(" ").includes('"pick": "No"'), null, null, a);
-	C.ck("answered: no cancel on screen", !a.rowsText.some(r => r.toLowerCase().includes("cancel")), null, null, a);
+	C.ck("answered: no cancel on screen", !askRows(a.rowsText).some(r => r.toLowerCase().includes("cancel")), null, null, a);
 	C.ck("replay.log: tool_call ask", C.logHas("tool_call", { name: "ask" }), C.R.logEvents().filter(e => e.ev === "tool_call" || e.ev === "tool_result"));
 	C.ck("replay.log: tool_result ask isError false with No",
 		C.R.logEvents().some(e => e.ev === "tool_result" && e.name === "ask" && e.isError === false && (e.text ?? "").includes("No")), C.R.logEvents().filter(e => e.ev === "tool_result"));
