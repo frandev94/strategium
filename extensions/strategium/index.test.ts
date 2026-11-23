@@ -10042,3 +10042,140 @@ describe("vault records (#151)", () => {
 		});
 	});
 });
+
+// The Captain's own entries in the vault (#152): one `record` call, the plugin does the writing.
+describe("vault record (#152)", () => {
+	type S = ReturnType<typeof setup>;
+	const CONTRACT = { daily: "Daily/{date}.md", heading: "## 📝 Log", line: "- {time} - Strategium {key}: {text}", createDaily: true, notes: ["Projects/*.md"] };
+	const vaultDir = (contract: unknown = CONTRACT) => {
+		const v = mkdtempSync(join(tmpdir(), "st-vault-"));
+		dirs.push(v);
+		if (contract !== null) writeFileSync(join(v, ".strategium.json"), typeof contract === "string" ? contract : JSON.stringify(contract));
+		return v;
+	};
+	const dailyFile = (v: string) => join(v, "Daily", "2026-11-16.md");
+	const noteFile = (v: string, rel = "Projects/K.md") => join(v, ...rel.split("/"));
+	const at = (h: number, m: number) => setSystemTime(new Date(2026, 10, 16, h, m, 0));
+	const withNote = (contract: unknown = CONTRACT, body: string | Buffer = "# K\n") => {
+		const v = vaultDir(contract);
+		mkdirSync(join(v, "Projects"));
+		writeFileSync(noteFile(v), body);
+		return v;
+	};
+	// A run with a vault: begin at 09:00 (one "run begun" line in the daily), then the clock moves to 09:12.
+	const begun = async (v: string) => {
+		process.env.STRATEGIUM_VAULT = v;
+		at(9, 0);
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		at(9, 12);
+		return s;
+	};
+	const bytes = (v: string) => ({ daily: readFileSync(dailyFile(v)), note: existsSync(noteFile(v)) ? readFileSync(noteFile(v)) : undefined });
+	const runOf = (s: S) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")) as { recorded?: unknown };
+	// Built at run time so the file holds no token-shaped literal.
+	const GH = `ghp_${"a1B2".repeat(6)}`;
+
+	test("the tool description and schema name record, text and note", async () => {
+		const s = setup();
+		expect(s.tool.description).toContain("record (text, note?; Captain only)");
+	});
+
+	test("R1: record adds the line under the heading in the daily, and in an allowed note", async () => {
+		const v = withNote();
+		const s = await begun(v);
+		expect(await s.call({ action: "record", text: "chose X over Y" })).toBe("RECORDED daily");
+		expect(readFileSync(dailyFile(v), "utf8").split("\n").filter(l => l.startsWith("- "))).toEqual(["- 09:00 - Strategium K-1: run begun", "- 09:12 - Strategium K-1: chose X over Y"]);
+		expect(readFileSync(noteFile(v), "utf8")).toBe("# K\n");
+		at(9, 13);
+		expect(await s.call({ action: "record", text: "installed svc", note: "Projects/K.md" })).toBe("RECORDED daily\nRECORDED note Projects/K.md");
+		expect(readFileSync(noteFile(v), "utf8")).toBe("# K\n- 09:13 - Strategium K-1: installed svc\n");
+		expect(readFileSync(dailyFile(v), "utf8").trimEnd().split("\n").at(-1)).toBe("- 09:13 - Strategium K-1: installed svc");
+	});
+
+	test("R2: a refused note writes nothing, not even the daily", async () => {
+		const noNotes = { ...CONTRACT, notes: undefined };
+		for (const [label, contract, note, why] of [
+			["outside notes", CONTRACT, "Other/x.md", "not allowed by the contract's notes"],
+			["no notes in the contract", noNotes, "Projects/K.md", "the contract lists no notes"],
+			["parent segment", CONTRACT, "../x.md", "not a relative .md path inside the vault"],
+			["the daily itself", { ...CONTRACT, notes: ["Daily/*.md"] }, "Daily/2026-11-16.md", "is today's daily"],
+			["missing", CONTRACT, "Projects/Nope.md", "missing"],
+		] as const) {
+			const v = withNote(contract);
+			const s = await begun(v);
+			const before = bytes(v);
+			expect(await s.call({ action: "record", text: "x", note }), label).toBe(`ERROR record refused: note ${note}: ${why}; nothing was written`);
+			expect(bytes(v), label).toEqual(before);
+		}
+	});
+
+	test("R3: a secret text is refused with its kind, before the vault and the note are looked at", async () => {
+		const v = withNote();
+		const s = await begun(v);
+		const before = bytes(v);
+		for (const [text, kind] of [[`token ${GH}`, "token"], ["API_KEY=x", "NAME=value"]] as const) {
+			for (const note of [undefined, "Projects/K.md", "Other/x.md"]) {
+				const out = await s.call({ action: "record", text, note });
+				expect(out).toBe(`ERROR record refused: the text looks like a secret (${kind}); nothing was written`);
+				expect(out).not.toContain(GH);
+			}
+		}
+		expect(bytes(v)).toEqual(before);
+	});
+
+	test("R4: a subagent gets the main-session refusal and nothing is written", async () => {
+		const v = withNote();
+		const s = await begun(v);
+		const before = bytes(v);
+		s.ctx.agent = { kind: "sub" };
+		expect(await s.call({ action: "record", text: "x", note: "Projects/K.md" })).toBe("ERROR strategium tool is for the main session only");
+		expect(bytes(v)).toEqual(before);
+	});
+
+	test("R5: no run, vault off, invalid contract and blank text each get their line", async () => {
+		process.env.STRATEGIUM_VAULT = withNote();
+		expect(await setup().call({ action: "record", text: "x" })).toBe("ERROR no active run in this session");
+
+		const off = await begun(withNote());
+		await off.sub("config", "vault off");
+		expect(await off.call({ action: "record", text: "x" })).toBe("ERROR no vault set (/strategium-config vault <absolute folder>)");
+
+		const bad = vaultDir({ ...CONTRACT, notes: [] });
+		const s = await begun(bad);
+		const out = await s.call({ action: "record", text: "x" });
+		expect(out).toBe(`ERROR vault ${bad}: contract invalid: notes must be a list of 1 to 32 relative .md globs (* within a segment, ** as a whole segment)`);
+
+		const ok = await begun(withNote());
+		for (const text of [undefined, "", "  \t "]) expect(await ok.call({ action: "record", text })).toBe("ERROR record needs text");
+	});
+
+	test("R6: two identical calls add two lines, no run.recorded entry and no notice", async () => {
+		const v = withNote();
+		const s = await begun(v);
+		const recorded = runOf(s).recorded;
+		const notes = s.notes.length;
+		await s.call({ action: "record", text: "same" });
+		await s.call({ action: "record", text: "same" });
+		expect(readFileSync(dailyFile(v), "utf8").split("\n").filter(l => l.endsWith(": same"))).toHaveLength(2);
+		expect(runOf(s).recorded).toEqual(recorded);
+		expect(s.notes).toHaveLength(notes);
+	});
+
+	test("R7: a note that fails at write time leaves the daily line and says so", async () => {
+		const bin = Buffer.from([0x23, 0x20, 0xff, 0xfe, 0x0a]);
+		const v = withNote(CONTRACT, bin);
+		const s = await begun(v);
+		expect(await s.call({ action: "record", text: "x", note: "Projects/K.md" })).toBe("RECORDED daily\nERROR note Projects/K.md: note not UTF-8; the daily line stays");
+		expect(readFileSync(noteFile(v)).equals(bin)).toBe(true);
+		expect(readFileSync(dailyFile(v), "utf8")).toContain("- 09:12 - Strategium K-1: x");
+	});
+
+	test("a daily failure writes no note line and reports the vault reason", async () => {
+		const v = withNote({ ...CONTRACT, createDaily: undefined });
+		const s = await begun(v);
+		const out = await s.call({ action: "record", text: "x", note: "Projects/K.md" });
+		expect(out).toStartWith(`ERROR vault ${v}: daily `);
+		expect(readFileSync(noteFile(v), "utf8")).toBe("# K\n");
+	});
+});

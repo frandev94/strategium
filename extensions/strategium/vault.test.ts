@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONTRACT_FILE, type Contract, type ContractResult, formatLine, insertUnder, loadContract, recordLine } from "./vault";
+import { CONTRACT_FILE, type Contract, type ContractResult, formatLine, insertUnder, loadContract, matchNote, noteTarget, recordLine, recordNote, secretKind } from "./vault";
 
 // Seeded LCG so draws are reproducible.
 const seeded = (seed: number) => () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
@@ -27,7 +27,7 @@ const LINE_BAD = "contract invalid: line must be one line with {text}, only {tim
 
 describe("loadContract", () => {
 	test("accepts the documented example and ignores unknown keys", () => {
-		put({ ...GOOD, notes: ["x"] });
+		put({ ...GOOD, extra: ["x"] });
 		expect(loadContract(vault)).toEqual({ contract: GOOD });
 	});
 
@@ -463,5 +463,300 @@ describe("recordLine", () => {
 		const copy = () => void copies++;
 		expect(recordLine(vault, contract, state, now, "1", "x", () => void hook++, copy)).toBeUndefined();
 		expect([hook, copies, tmps()]).toEqual([0, 0, []]);
+	});
+});
+
+describe("loadContract notes and noteHeading (#152)", () => {
+	const NOTES_BAD = "contract invalid: notes must be a list of 1 to 32 relative .md globs (* within a segment, ** as a whole segment)";
+	const NH_BAD = "contract invalid: noteHeading must be one markdown heading line (# to ######)";
+
+	test("keeps a valid notes list and noteHeading, omits them when absent", () => {
+		put({ ...GOOD, notes: ["Projects/*.md", "Hosts/**/*.md", "a\\b.md"], noteHeading: "## Registro de trabajo" });
+		expect(loadContract(vault)).toEqual({ contract: { ...GOOD, notes: ["Projects/*.md", "Hosts/**/*.md", "a\\b.md"], noteHeading: "## Registro de trabajo" } });
+		put(GOOD);
+		expect(loadContract(vault)).toEqual({ contract: GOOD });
+	});
+
+	test("refuses each bad glob and the whole contract with it", () => {
+		const bad: unknown[] = ["/x.md", "C:\\x.md", "../x.md", ".obsidian/*.md", "a/**b/c.md", "a/***/c.md", "a/?.md", "x.txt", "a//b.md", "a/b /c.md", "a/" + "x".repeat(198) + ".md", 5, null, {}];
+		for (const g of bad) {
+			put({ ...GOOD, notes: [g] });
+			expect(err(loadContract(vault))).toBe(NOTES_BAD);
+		}
+		for (const notes of [[], "x.md", null, 7, Array.from({ length: 33 }, (_, i) => `n${i}.md`)]) {
+			put({ ...GOOD, notes });
+			expect(err(loadContract(vault))).toBe(NOTES_BAD);
+		}
+		put({ ...GOOD, notes: Array.from({ length: 32 }, (_, i) => `n${i}.md`) });
+		expect(err(loadContract(vault))).toBeUndefined();
+	});
+
+	test("refuses a bad noteHeading", () => {
+		for (const noteHeading of ["Log", "##", "## a\nb", 3, null, "#".repeat(7) + " x"]) {
+			put({ ...GOOD, noteHeading });
+			expect(err(loadContract(vault))).toBe(NH_BAD);
+		}
+	});
+});
+
+describe("matchNote (#152)", () => {
+	const yes = (g: string, n: string) => expect(matchNote(g, n)).toBe(true);
+	const no = (g: string, n: string) => expect(matchNote(g, n)).toBe(false);
+
+	test("* stays inside one segment", () => {
+		yes("Projects/*.md", "Projects/Strategium.md");
+		no("Projects/*.md", "Projects/a/b.md");
+		no("Projects/*.md", "Other/a.md");
+		yes("Hosts/*-server.md", "Hosts/web-server.md");
+		no("Hosts/*-server.md", "Hosts/web-servers.md");
+		yes("a*b*c.md", "aXbYc.md");
+		no("a*b*c.md", "acb.md");
+		no("ab*ba.md", "aba.md"); // the parts must not overlap
+		yes("*.md", "x.md");
+	});
+
+	test("** is zero or more whole segments", () => {
+		yes("**/*.md", "a.md");
+		yes("**/*.md", "a/b/c.md");
+		yes("Hosts/**/*.md", "Hosts/x.md");
+		yes("Hosts/**/*.md", "Hosts/a/b/x.md");
+		no("Hosts/**/*.md", "Other/x.md");
+		no("Hosts/**/x.md", "Hosts/a/y.md");
+		yes("a/**/b/**/c.md", "a/b/x/y/b/c.md");
+	});
+
+	test("\\ and / are alike", () => {
+		yes("Projects\\*.md", "Projects/a.md");
+		yes("Projects/*.md", "Projects\\a.md");
+	});
+
+	test("a glob without * matches iff the segment lists are equal; case folds only on win32/darwin", () => {
+		yes("A/b.md", "A/b.md");
+		no("A/b.md", "A/b/c.md");
+		no("A/b.md", "A.md");
+		const real = process.platform;
+		const as = (p: string) => Object.defineProperty(process, "platform", { value: p, configurable: true });
+		try {
+			as("linux");
+			no("Projects/*.md", "projects/a.md");
+			as("win32");
+			yes("Projects/*.md", "projects/A.md");
+			as("darwin");
+			yes("Projects/*.md", "projects/A.md");
+		} finally {
+			as(real);
+		}
+	});
+
+	test("a 32-glob x 100-segment worst case stays under 100 ms", () => {
+		const note = Array.from({ length: 100 }, () => "a".repeat(189) + "b").join("/");
+		const globs = Array.from({ length: 32 }, () => Array.from({ length: 100 }, () => "**/a*b*b").join("/") + ".md");
+		const t = performance.now();
+		for (const g of globs) matchNote(g, note);
+		expect(performance.now() - t).toBeLessThan(100);
+	});
+});
+
+describe("recordNote (#152)", () => {
+	const now = new Date(2026, 10, 21, 5, 12, 33);
+	const LINE = "- 05:12 - Strategium 152: did x";
+	const contract: Contract = { ...GOOD, notes: ["Projects/*.md", "Hosts/**/*.md", "Daily/*.md"] };
+	const note = (n = "Projects/K.md") => join(vault, ...n.split("/"));
+	const seed = (content: string | Buffer, n = "Projects/K.md") => {
+		mkdirSync(join(note(n), ".."), { recursive: true });
+		writeFileSync(note(n), content);
+	};
+	const rec = (n = "Projects/K.md", c: Contract = contract, text = "did x") => recordNote(vault, c, state, now, "152", text, n);
+	const read = (n = "Projects/K.md") => readFileSync(note(n), "utf8");
+
+	test("with noteHeading: adds the line under an existing section, keeping every other byte", () => {
+		const c = { ...contract, noteHeading: "## Registro" };
+		const head = "\uFEFF# K\r\n\r\n## Registro\r\n- old\r\n";
+		const tail = "\r\n## Next\r\n- keep\r\n";
+		seed(head + tail);
+		expect(rec("Projects/K.md", c)).toBeUndefined();
+		expect(read()).toBe(head + LINE + "\r\n" + tail);
+	});
+
+	test("with noteHeading: a missing heading is added at the end", () => {
+		seed("# K\ntext");
+		expect(rec("Projects/K.md", { ...contract, noteHeading: "## Registro" })).toBeUndefined();
+		expect(read()).toBe(`# K\ntext\n\n## Registro\n${LINE}\n`);
+	});
+
+	test("without noteHeading: the line goes after the last line, with and without a final EOL", () => {
+		seed("# K\ntext\n");
+		expect(rec()).toBeUndefined();
+		expect(read()).toBe(`# K\ntext\n${LINE}\n`);
+		seed("# K\ntext");
+		expect(rec()).toBeUndefined();
+		expect(read()).toBe(`# K\ntext\n${LINE}\n`);
+		expect(rec()).toBeUndefined();
+		expect(read()).toBe(`# K\ntext\n${LINE}\n${LINE}\n`);
+	});
+
+	test("without noteHeading: CRLF and a BOM are kept; an empty or BOM-only note gets just the line", () => {
+		seed("\uFEFF# K\r\ntext");
+		expect(rec()).toBeUndefined();
+		expect(read()).toBe(`\uFEFF# K\r\ntext\r\n${LINE}\r\n`);
+		seed("");
+		expect(rec()).toBeUndefined();
+		expect(read()).toBe(`${LINE}\n`);
+		seed("\uFEFF");
+		expect(rec()).toBeUndefined();
+		expect(read()).toBe(`\uFEFF${LINE}\n`);
+	});
+
+	test("refuses a contract without notes, a path outside the globs and a bad path; nothing is created", () => {
+		seed("x");
+		const no = (n: string, c: Contract = contract) => noteTarget(vault, c, now, n);
+		expect(no("Projects/K.md", GOOD)).toEqual({ error: "the contract lists no notes" });
+		expect(no("Other/K.md")).toEqual({ error: "not allowed by the contract's notes" });
+		for (const n of ["../x.md", "/x.md", "C:\\x.md", "Projects/*.md", "Projects/K.txt", ".git/x.md", "Projects//K.md"]) {
+			expect(no(n)).toEqual({ error: "not a relative .md path inside the vault" });
+		}
+		expect(rec("Other/K.md")).toBe("note not allowed by the contract's notes");
+		expect(existsSync(note("Other/K.md"))).toBe(false);
+		expect(read()).toBe("x");
+	});
+
+	test("refuses today's daily (any case on win32) and a missing note, which is not created", () => {
+		mkdirSync(join(vault, "Daily"));
+		writeFileSync(join(vault, "Daily", "2026-11-21.md"), "d");
+		expect(rec("Daily/2026-11-21.md")).toBe("note is today's daily");
+		expect(readFileSync(join(vault, "Daily", "2026-11-21.md"), "utf8")).toBe("d");
+		expect(rec("Projects/New.md")).toBe("note missing");
+		expect(existsSync(note("Projects/New.md"))).toBe(false);
+		expect(existsSync(join(vault, "Projects"))).toBe(false);
+	});
+
+	test("another day's daily matching a glob is a normal note", () => {
+		seed("old\n", "Daily/2026-11-20.md");
+		expect(rec("Daily/2026-11-20.md")).toBeUndefined();
+		expect(read("Daily/2026-11-20.md")).toBe(`old\n${LINE}\n`);
+	});
+
+	test("refuses a folder, and a symlink or junction that leaves the vault", () => {
+		mkdirSync(note("Projects/K.md"), { recursive: true });
+		expect(rec()).toBe("note not a regular file");
+		const outside = join(root, "outside");
+		mkdirSync(outside);
+		writeFileSync(join(outside, "K.md"), "out");
+		symlinkSync(outside, join(vault, "Hosts"), "junction");
+		expect(rec("Hosts/K.md")).toBe("note outside the vault");
+		expect(readFileSync(join(outside, "K.md"), "utf8")).toBe("out");
+	});
+
+	test("refuses a note over 4 MiB and one that is not UTF-8, leaving both byte-equal", () => {
+		const big = "a".repeat(4 * 1024 * 1024 + 1);
+		seed(big);
+		expect(rec()).toBe("note larger than 4 MiB");
+		expect(read()).toBe(big);
+		const bytes = Buffer.from([0x23, 0x20, 0xff, 0xfe, 0x0a]);
+		seed(bytes);
+		expect(rec()).toBe("note not UTF-8");
+		expect(readFileSync(note()).equals(bytes)).toBe(true);
+	});
+
+	test("reports note busy while vault.lock is held", () => {
+		seed("x\n");
+		mkdirSync(state, { recursive: true });
+		writeFileSync(join(state, "vault.lock"), `${process.pid}-held`);
+		expect(rec()).toBe("note busy");
+		expect(read()).toBe("x\n");
+	});
+
+	test("a failed copy restores the note and says so", () => {
+		seed("# K\n## Registro\n- a\n## N\n");
+		const boom = () => {
+			throw Object.assign(new Error("x"), { code: "EIO" });
+		};
+		const r = recordNote(vault, { ...contract, noteHeading: "## Registro" }, state, now, "152", "x", "Projects/K.md", undefined, boom);
+		expect(r).toBe("note write failed (EIO), restored");
+		expect(read()).toBe("# K\n## Registro\n- a\n## N\n");
+	});
+});
+
+describe("secretKind (#152)", () => {
+	const A = "a".repeat(36);
+	const refuse: [string, string][] = [
+		["token", "ghp_" + "A1b2".repeat(9)],
+		["token", "github_pat_" + "A1b2C3d4E5f6G7h8I9j0K1"],
+		["token", "sk-ant-api03-" + "Ab1_-".repeat(5)],
+		["token", "AKIAIOSFODNN7EXAMPLE"],
+		["token", "AIza" + "a".repeat(35)],
+		["token", "xoxb-1234567890-abcdef"],
+		["token", "glpat-" + "a".repeat(20)],
+		["token", "npm_" + A],
+		["token", "Authorization: Bearer abcdef0123456789abcdef"],
+		["token", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig"],
+		["private key", "-----BEGIN OPENSSH PRIVATE KEY-----"],
+		["private key", "-----BEGIN PRIVATE KEY-----"],
+		["NAME=value", "GITHUB_TOKEN=abc"],
+		["NAME=value", "export API_KEY=xyz"],
+		["NAME=value", "(DB_PASS=hunter2)"],
+		["credential", "password=hunter2"],
+		["credential", "client_secret = x"],
+		["credential", "api_key: AbCdEf0123456789xyz"],
+		["key-like string", "key " + "aB3dEf6hIj9lMn2pQr5tUv8xYz1BcD4F".repeat(2).slice(0, 40)],
+	];
+	test.each(refuse)("refuses %s: %s", (kind, text) => {
+		expect(secretKind(text)).toBe(kind);
+	});
+
+	test("never echoes: the kind is one of the five names", () => {
+		for (const [, t] of refuse) expect(["token", "private key", "NAME=value", "credential", "key-like string"]).toContain(secretKind(t) ?? "");
+	});
+
+	const pass = [
+		"seal Plan granted; PR #153 opened: https://github.com/frandev94/strategium/pull/153",
+		"installed caddy on host openclaw, port 8080, config in /etc/caddy/Caddyfile",
+		"decided: notes go under ## Log",
+		"bug: a stray \\r in agents/*.md broke the YAML frontmatter",
+		"commit 9837527a1b2c3d4e5f60718293a4b5c6d7e8f901",
+		"id 123e4567-e89b-12d3-a456-426614174000",
+		"the token expired, rotated the API key",
+		"x = 1 and a=b",
+		"set NODE_ENV to production",
+		"GET /api/v1/users?id=7",
+		"sk-learn installed",
+		"skill://strategium-github",
+		"",
+	];
+	test.each(pass)("passes prose: %s", (text) => {
+		expect(secretKind(text)).toBeUndefined();
+	});
+
+	test("NODE_ENV=production is the accepted false positive", () => {
+		expect(secretKind("NODE_ENV=production")).toBe("NAME=value");
+	});
+
+	test("hostile 200k inputs stay under 200 ms each", () => {
+		const inputs = ["A".repeat(200_000), " A".repeat(100_000), "ghp_".repeat(50_000), "-----BEGIN ".repeat(20_000), "eyJ".repeat(66_000), "Bearer" + " ".repeat(200_000), "password" + " ".repeat(200_000), "export" + " ".repeat(200_000), ";A".repeat(100_000), "a".repeat(31) + " ", ("a".repeat(31) + " ").repeat(6_000)];
+		for (const s of inputs) {
+			const t = performance.now();
+			secretKind(s);
+			expect(performance.now() - t).toBeLessThan(200);
+		}
+	});
+
+	test("property: a secret stays one inside any surrounding text; plain lower-case words never are", () => {
+		const rnd = seeded(5);
+		const word = () => "abcdefghijklmnopqrstuvwxyz".slice(0, 1 + Math.floor(rnd() * 12)).split("").sort(() => rnd() - 0.5).join("");
+		const words = (n: number) => Array.from({ length: n }, word).join(" ");
+		for (const [, s] of refuse) for (let i = 0; i < 20; i++) expect(secretKind(`${words(i % 4)} ${s} ${words(i % 3)}`)).toBeDefined();
+		for (let i = 0; i < 300; i++) expect(secretKind(words(1 + Math.floor(rnd() * 20)))).toBeUndefined();
+	});
+
+	test("property: a glob without * matches iff the segment lists are equal", () => {
+		const rnd = seeded(9);
+		const seg = () => ["a", "b", "Ab", "x.y"][Math.floor(rnd() * 4)];
+		const path = () => Array.from({ length: 1 + Math.floor(rnd() * 3) }, seg).join(rnd() < 0.5 ? "/" : "\\") + ".md";
+		for (let i = 0; i < 300; i++) {
+			const g = path();
+			const n = rnd() < 0.5 ? g.replaceAll("\\", "/") : path();
+			const eq = g.split(/[\\/]/).join("/") === n.split(/[\\/]/).join("/");
+			expect(matchNote(g, n)).toBe(process.platform === "linux" ? eq : g.toLowerCase().split(/[\\/]/).join("/") === n.toLowerCase().split(/[\\/]/).join("/"));
+		}
 	});
 });
