@@ -2458,6 +2458,7 @@ describe("tools, begin and end", () => {
 				phases: [{ name: "Skirmish", tasks: [{ content: "[agent] S1", status: "in_progress" }] }],
 				closedBy: "shutdown",
 				idle: true,
+				hidden: ["ast_edit"],
 			};
 			const before = JSON.parse(readFileSync(runPath("sess-0001"), "utf8"));
 			writeFileSync(runPath("sess-0001"), JSON.stringify({ ...before, ...state }));
@@ -2466,16 +2467,35 @@ describe("tools, begin and end", () => {
 			const b = setup("sess-0002", a.dir);
 			await b.call({ action: "begin", key: "K-1", booked: 60, takeover: "sess-0001" });
 			const after = JSON.parse(readFileSync(runPath("sess-0002"), "utf8"));
-			const { closedBy: _c, idle: _i, ...runState } = state;
+			const { closedBy: _c, idle: _i, hidden: _h, agents: _a, ...runState } = state;
 			expect(after).toMatchObject(runState);
 			expect(after.sid).toBe("sess-0002");
 			expect(after.since).toBe(before.since);
-			// Session state does not travel: the old session's shutdown mark and idle pause.
+			// The taken run's builders are settled: none runs here.
+			expect(after.agents).toEqual({});
+			// Session state does not travel: the old session's shutdown mark, idle pause and hidden tools.
 			expect(after.closedBy).toBeUndefined();
 			expect(after.idle).toBeUndefined();
+			expect(after.hidden ?? []).not.toContain("ast_edit");
 			expect(existsSync(runPath("sess-0001"))).toBe(false);
 			expect(existsSync(cockpitPath("sess-0001"))).toBe(false);
 			expect(JSON.parse(readFileSync(cockpitPath("sess-0002"), "utf8")).notes).toEqual(notes);
+		});
+
+		test("a takeover moves the live rows one by one, also into a live folder that already exists", async () => {
+			const a = setup("sess-0001");
+			await a.call({ action: "begin", key: "K-1" });
+			const live = (sid: string, f: string) => join(a.dir, "runs", `${sid}.live`, f);
+			mkdirSync(join(a.dir, "runs", "sess-0001.live"), { recursive: true });
+			mkdirSync(join(a.dir, "runs", "sess-0002.live"), { recursive: true });
+			writeFileSync(live("sess-0001", "P.json"), "{}");
+			writeFileSync(live("sess-0001", "Q.json"), '{"from":"old"}');
+			writeFileSync(live("sess-0002", "Q.json"), '{"from":"new"}');
+			const b = setup("sess-0002", a.dir);
+			await b.call({ action: "begin", key: "K-1", takeover: "sess-0001" });
+			expect(existsSync(live("sess-0002", "P.json"))).toBe(true);
+			expect(readFileSync(live("sess-0002", "Q.json"), "utf8")).toBe('{"from":"new"}');
+			expect(existsSync(join(a.dir, "runs", "sess-0001.live"))).toBe(false);
 		});
 	});
 });
@@ -7931,6 +7951,43 @@ describe("the debrief at end", () => {
 		launched(b, "bb9");
 		ended(b, "bb9", "completed");
 		expect(mdOf(await b.call({ action: "end", key: "K-1", takeover: "sess-0001" }))).toContain("| S1 | light | 1 | 0 | 0 | failed | stopped |");
+	});
+
+	test("a takeover keeps the moved cockpit through the first todo draw, and the debrief still reports the failed squad", async () => {
+		const a = setup("sess-0001");
+		await begun(a);
+		await a.call({ action: "slices", slices: squads });
+		spawn(a, { agent: "battle-brother", spawnKey: "S1" });
+		launched(a, "bb1");
+		at(9, 10);
+		ended(a, "bb1", "failed");
+		a.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases: [{ name: "Skirmish", tasks: [{ content: "[captain] Skirmish", status: "in_progress" }] }] } }, a.ctx));
+		const cockpitPath = (sid: string) => join(a.dir, "runs", `${sid}.cockpit`);
+		const before = JSON.parse(readFileSync(cockpitPath("sess-0001"), "utf8"));
+		expect(before.notes.S1).toBeDefined();
+		const b = setup("sess-0002", a.dir);
+		await b.start();
+		await b.call({ action: "begin", key: "K-1", theatre: "github", takeover: "sess-0001" });
+		for (const h of b.handlers.tool_result) await h({ toolName: "todo", isError: false, details: { phases: [{ name: "Skirmish", tasks: [{ content: "[captain] Skirmish", status: "in_progress" }] }] } }, b.ctx);
+		const after = JSON.parse(readFileSync(cockpitPath("sess-0002"), "utf8"));
+		expect(after.notes).toEqual(before.notes);
+		expect(mdOf(await b.call({ action: "end" }))).toContain("| S1 | light | 1 | 0 | 0 | failed | stopped |");
+	});
+
+	test("a takeover settles the taken run's builders: none runs, its squad is stopped, relaunch and switch are free", async () => {
+		const a = setup("sess-0001");
+		await begun(a);
+		await a.call({ action: "slices", slices: squads });
+		spawn(a, { agent: "battle-brother", spawnKey: "S1" });
+		launched(a, "bb1");
+		const b = setup("sess-0002", a.dir);
+		await b.call({ action: "begin", key: "K-1", theatre: "github", takeover: "sess-0001" });
+		const run = JSON.parse(readFileSync(join(a.dir, "runs", "sess-0002.json"), "utf8"));
+		expect(run.agents).toEqual({});
+		expect(run.stopped.map((x: { id: string }) => x.id)).toEqual(["S1"]);
+		expect(run.slices.map((x: { id: string }) => x.id)).toEqual(["S1"]);
+		expect(spawn(b, { agent: "battle-brother", spawnKey: "S1" })?.block).toBeUndefined();
+		expect(await b.call({ action: "switch", key: "K-2" })).not.toContain("ERROR");
 	});
 });
 

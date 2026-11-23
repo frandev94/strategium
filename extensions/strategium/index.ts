@@ -557,9 +557,11 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 			// No saved cockpit.
 		}
 		try {
-			renameSync(liveDir(other.sid), liveDir(sid));
+			const from = readdirSync(liveDir(other.sid));
+			mkdirSync(liveDir(sid), { recursive: true, mode: 0o700 });
+			for (const f of from) if (!existsSync(path.join(liveDir(sid), f))) renameSync(path.join(liveDir(other.sid), f), path.join(liveDir(sid), f));
 		} catch {
-			// No live rows, or the new session already has some: dropFiles leaves the rest inert.
+			// No live rows, or one that would not move: dropFiles leaves the rest inert.
 		}
 		dropFiles(other.sid);
 	}
@@ -574,7 +576,8 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	// Begun again on the same key, every stored field stays except the booking mode. A takeover keeps the run's state too, but not the old session's hidden tools, shutdown mark or idle pause.
 	const { untimed: _u, ...own }: Partial<Run> = keep ?? other ?? {};
 	const { hidden: _h, closedBy: _c, idle: _i, ...taken } = own;
-	const kept = keep ? own : taken;
+	// The taken run's builders ran in the other session: none runs here, so its squads are stopped, as in the plan-approve hand-off.
+	const kept = keep ? own : other?.agents ? settle({ ...taken } as Run, {}, Object.values(other.agents)) : taken;
 	// A run begun under another key still hands its hidden tools on, or end could never restore them.
 	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: ownRepo ? ownRepo.repo : keep ? keep.repo : other?.repo, since: keep?.since ?? other?.since ?? nowIso(), ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
@@ -2060,6 +2063,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		// A session that lost its ticket drops its files here; its in-memory cockpit goes too, or a begin of the same key would bring it back.
 		if (!ownRun(sid)) resetCockpit();
 		begin(sid, key, theatre, booked, spent, takeover, ownRepo, via);
+		// A takeover moved the saved cockpit to this session: load it, or the first draw saves an empty one over it.
+		if (cockpit.key !== key) loadCockpit(sid, key);
 		// A block start always restarts the idle count.
 		idleSince = undefined;
 		const run = ownRun(sid)!;
