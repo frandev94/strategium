@@ -31,6 +31,11 @@ describe("loadContract", () => {
 		expect(loadContract(vault)).toEqual({ contract: GOOD });
 	});
 
+	test("N1: a UTF-8 BOM before the JSON is accepted", () => {
+		put("\uFEFF" + JSON.stringify(GOOD));
+		expect(loadContract(vault)).toEqual({ contract: GOOD });
+	});
+
 	test("createDaily: true is carried, anything else is dropped", () => {
 		put({ ...GOOD, createDaily: true });
 		expect(loadContract(vault)).toEqual({ contract: { ...GOOD, createDaily: true } });
@@ -208,6 +213,20 @@ describe("insertUnder", () => {
 		expect(insertUnder("## Log\n- a\n```\n## Next\n```\n- b\n## Next\n", H, L)).toBe("## Log\n- a\n```\n## Next\n```\n- b\n- NEW\n## Next\n");
 		// a different fence mark inside a block does not close it
 		expect(insertUnder("```\n~~~\n## Log\n```\n", H, L)).toBe("```\n~~~\n## Log\n```\n\n## Log\n- NEW\n");
+	});
+
+	test("CN2: a fence that never closes is ignored, so repeated events do not duplicate the heading", () => {
+		let c = "# Day\n```\n## Log\n- a\n";
+		for (let i = 0; i < 3; i++) c = insertUnder(c, H, `- E${i}`);
+		expect(c).toBe("# Day\n```\n## Log\n- a\n- E0\n- E1\n- E2\n");
+		expect(c.match(/## Log/g)).toHaveLength(1);
+	});
+
+	test("CN3: <!-- --> spans are masked like fences; an unclosed one is ignored", () => {
+		expect(insertUnder("<!--\n## Log\n-->\n", H, L)).toBe("<!--\n## Log\n-->\n\n## Log\n- NEW\n");
+		expect(insertUnder("## Log\n- a\n<!--\n## Next\n-->\n- b\n## Next\n", H, L)).toBe("## Log\n- a\n<!--\n## Next\n-->\n- b\n- NEW\n## Next\n");
+		expect(insertUnder("<!-- x -->\n## Log\n- a\n", H, L)).toBe("<!-- x -->\n## Log\n- a\n- NEW\n");
+		expect(insertUnder("<!--\n## Log\n- a\n", H, L)).toBe("<!--\n## Log\n- a\n- NEW\n");
 	});
 
 	test("CRLF files keep CRLF, including a file without final EOL", () => {
@@ -411,5 +430,38 @@ describe("recordLine", () => {
 		} finally {
 			chmodSync(daily(), 0o666);
 		}
+	});
+
+	const MID = "## 📝 Log\n- a\n## Next\n- keep\n";
+	const tmps = () => (existsSync(state) ? readdirSync(state).filter((f) => f.endsWith(".tmp")) : []);
+
+	test("N2: when only the copy fails the old bytes come back and the reason says restored", () => {
+		mkdirSync(join(vault, "Daily"));
+		writeFileSync(daily(), MID);
+		const boom = () => {
+			throw Object.assign(new Error("x"), { code: "EIO" });
+		};
+		expect(recordLine(vault, contract, state, now, "1", "x", undefined, boom)).toBe("daily write failed (EIO), restored");
+		expect(readFileSync(daily(), "utf8")).toBe(MID);
+		expect(tmps()).toEqual([]);
+	});
+
+	test("CN4: the temp file is gone after a successful mid-file insert", () => {
+		mkdirSync(join(vault, "Daily"));
+		writeFileSync(daily(), MID);
+		let seen: string[] = [];
+		expect(recordLine(vault, contract, state, now, "1", "x", () => (seen = tmps()))).toBeUndefined();
+		expect(seen).toHaveLength(1); // staged before the last size/mtime check, so only the copy is left in the window
+		expect(tmps()).toEqual([]);
+	});
+
+	test("N4: the append fast path stages no temp file and never reaches the write hook", () => {
+		mkdirSync(join(vault, "Daily"));
+		writeFileSync(daily(), "# Day\nnotes");
+		let hook = 0;
+		let copies = 0;
+		const copy = () => void copies++;
+		expect(recordLine(vault, contract, state, now, "1", "x", () => void hook++, copy)).toBeUndefined();
+		expect([hook, copies, tmps()]).toEqual([0, 0, []]);
 	});
 });

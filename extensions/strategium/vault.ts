@@ -43,7 +43,7 @@ export function loadContract(vault: string): ContractResult {
 		const st = lstatSync(file);
 		if (!st.isFile()) return { error: "contract invalid: not a regular file" };
 		if (st.size > MAX_CONTRACT) return { error: "contract invalid: larger than 16 KiB" };
-		text = readFileSync(file, "utf8");
+		text = readFileSync(file, "utf8").replace(/^\uFEFF/, "");
 	} catch (e) {
 		return { error: code(e) === "ENOENT" ? `no contract (${CONTRACT_FILE})` : `unreachable (${code(e)})` };
 	}
@@ -86,15 +86,22 @@ export function insertUnder(content: string, heading: string, line: string): str
 	// Pieces split on "\n" only, so joining them with "\n" restores every original byte; a trailing "" means a final EOL.
 	const lines = body.split("\n");
 	const want = heading.trimEnd();
-	// Lines inside a fenced code block (``` or ~~~, closed by the same mark) are never headings.
+	// Lines inside a fenced code block (``` or ~~~, closed by the same mark) or an HTML comment are never headings.
+	// A fence or comment that never closes masks nothing: the daily is then read as if it had none.
 	const fenced: boolean[] = [];
 	let fence = "";
+	let comment = false;
 	for (const l of lines) {
 		const m = /^ {0,3}(`{3,}|~{3,})/.exec(l);
-		fenced.push(fence !== "" || m !== null);
+		const inComment = comment;
+		if (fence === "" && !comment && l.includes("<!--") && !l.includes("-->", l.indexOf("<!--") + 4)) comment = true;
+		else if (comment && l.includes("-->")) comment = false;
+		fenced.push(fence !== "" || m !== null || inComment || comment);
+		if (comment || inComment) continue;
 		if (m && fence === "") fence = m[1][0];
 		else if (m && m[1][0] === fence) fence = "";
 	}
+	if (fence !== "" || comment) fenced.fill(false);
 	const h = lines.findIndex((l, i) => !fenced[i] && l.trimEnd() === want);
 	if (h >= 0) {
 		const level = /^#+/.exec(want)![0].length;
@@ -152,7 +159,7 @@ const pad = (n: number): string => String(n).padStart(2, "0");
  * Append one formatted line to the contract's daily note under its heading. Returns the reason it did not write, or undefined.
  * Reads the daily as bytes, refuses > 4 MiB and non-UTF-8 untouched, and holds `<lockDir>/vault.lock` for the write.
  */
-export function recordLine(vault: string, contract: Contract, lockDir: string, now: Date, key: string, text: string, beforeWrite?: () => void): string | undefined {
+export function recordLine(vault: string, contract: Contract, lockDir: string, now: Date, key: string, text: string, beforeWrite?: () => void, copy: (from: string, to: string) => void = copyFileSync): string | undefined {
 	try {
 		if (!dailyOk(contract.daily)) return DAILY_BAD;
 		const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
@@ -208,22 +215,21 @@ export function recordLine(vault: string, contract: Contract, lockDir: string, n
 						writeFileSync(target, next);
 						return undefined;
 					}
-					beforeWrite?.();
-					if (sig() !== before) {
-						if (pass > 0) return "daily changed while writing";
-						continue;
-					}
-					// Mid-file insert: stage the new content in the state dir, then copy it over; a failed copy restores the old bytes.
+					// Mid-file insert: stage the new content in the state dir first, so the last size/mtime check leaves only the copy in the window.
 					const tmp = join(lockDir, `vault-${process.pid}.tmp`);
 					try {
 						writeFileSync(tmp, next);
+						beforeWrite?.();
+						if (sig() !== before) {
+							if (pass > 0) return "daily changed while writing";
+							continue;
+						}
 						try {
-							copyFileSync(tmp, target);
+							copy(tmp, target);
 						} catch (e) {
 							try {
 								writeFileSync(target, bytes);
 							} catch {
-								// the restore failed too: the error below says so
 								return `daily write failed (${code(e)}) and could not be restored`;
 							}
 							return `daily write failed (${code(e)}), restored`;

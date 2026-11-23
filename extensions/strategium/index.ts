@@ -920,44 +920,87 @@ function ownCommand(command: string, verb: string): boolean {
 
 const isMerge = (command: string): boolean => ownCommand(command, "merge") && !/\s--auto\b/.test(command);
 
+const HEREDOC = /(?<!<)<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/;
+
 /**
- * A PR create is judged by the command head only: the first line, after optional `cd … &&` steps, starts `gh pr create` / `glab mr create`.
- * One pass over that line: quoted text (titles) is skipped, an unquoted `|`, `;` or lone `&` refuses it (they hide the exit code), and
- * an unquoted --web/-w/--dry-run/--help/-h refuses it. Later lines (a heredoc body) are never read.
+ * The words of one shell line, quotes removed and backslashes resolved; undefined when a quote is left open or an unquoted `|`, `;` or lone `&` appears
+ * (they hide the exit code). One linear pass.
  */
-function isPrCreate(command: string): boolean {
-	let rest = command.split("\n", 1)[0].trim();
-	for (let m = /^cd(?:\s[^&;|]*)?&&\s*/.exec(rest); m; m = /^cd(?:\s[^&;|]*)?&&\s*/.exec(rest)) rest = rest.slice(m[0].length);
-	if (!/^(?:gh\s+pr|glab\s+mr)\s+create(?:\s|$)/.test(rest)) return false;
+function shellWords(line: string): string[] | undefined {
 	const words: string[] = [];
 	let word = "";
-	for (let i = 0; i < rest.length; i++) {
-		const c = rest[i];
+	let live = false;
+	for (let i = 0; i < line.length; i++) {
+		const c = line[i];
 		if (c === "'" || c === '"') {
-			const close = c === "'" ? rest.indexOf(c, i + 1) : closingDouble(rest, i + 1);
-			if (close < 0) return false;
+			let close = -1;
+			for (let j = i + 1; j < line.length && close < 0; j++) {
+				if (c === '"' && line[j] === "\\") j++;
+				else if (line[j] === c) close = j;
+			}
+			if (close < 0) return undefined;
+			word += line.slice(i + 1, close);
+			live = true;
 			i = close;
-		} else if (c === "\\") i++;
-		else if (/\s/.test(c)) {
-			if (word) words.push(word);
+		} else if (c === "\\") {
+			if (i + 1 < line.length) word += line[++i];
+			live = true;
+		} else if (/\s/.test(c)) {
+			if (live) words.push(word);
 			word = "";
-		} else if (c === "|" || c === ";") return false;
-		else if (c === "&") {
-			if (rest[i + 1] !== "&" && rest[i + 1] !== ">" && rest[i - 1] !== ">" && rest[i - 1] !== "&") return false;
+			live = false;
+		} else if (c === "|" || c === ";") return undefined;
+		else if (c === "&" && line[i + 1] !== "&" && line[i + 1] !== ">" && line[i - 1] !== ">" && line[i - 1] !== "&") return undefined;
+		else {
 			word += c;
-		} else word += c;
+			live = true;
+		}
 	}
-	if (word) words.push(word);
-	return !words.some(w => ["--web", "-w", "--dry-run", "--help", "-h"].includes(w));
+	if (live) words.push(word);
+	return words;
 }
 
-/** Index of the `"` closing a double-quoted span that starts at `from`, honouring `\"`; -1 when unterminated. */
-function closingDouble(s: string, from: number): number {
-	for (let i = from; i < s.length; i++) {
-		if (s[i] === "\\") i++;
-		else if (s[i] === '"') return i;
+/** Index just past the heredoc body a line opens (its terminator included), or `from` when the line opens none. */
+function afterHeredoc(lines: string[], from: number, line: string): { next: number; opened: boolean } {
+	const m = HEREDOC.exec(line);
+	if (!m) return { next: from, opened: false };
+	let i = from;
+	while (i < lines.length && lines[i].trim() !== m[2]) i++;
+	return { next: Math.min(i + 1, lines.length), opened: true };
+}
+
+/**
+ * A PR create is the command whose first real line, after optional `cd … &&` steps, starts `gh pr create` / `glab mr create`.
+ * Lines before it may only be shell assignments (`title=$(cat <<'X'` with its body, terminator and `)`); after it only its own heredoc body.
+ * The create line is refused with an unquoted `|`, `;` or lone `&`, an open quote, or --web/--dry-run/--help (also `=value`) or a short cluster with w or h.
+ */
+function isPrCreate(command: string): boolean {
+	const lines = command.split("\n").map(l => l.replace(/\r$/, ""));
+	let afterAssign = false;
+	for (let i = 0; i < lines.length; ) {
+		const raw = lines[i].trim();
+		if (raw === "" || (raw === ")" && afterAssign)) {
+			afterAssign = false;
+			i++;
+			continue;
+		}
+		afterAssign = false;
+		let rest = raw;
+		for (let m = /^cd(?:\s[^&;|]*)?&&\s*/.exec(rest); m; m = /^cd(?:\s[^&;|]*)?&&\s*/.exec(rest)) rest = rest.slice(m[0].length);
+		const create = /^(?:gh\s+pr|glab\s+mr)\s+create(?:\s|$)/.test(rest);
+		if (!create && !/^[A-Za-z_]\w*=/.test(raw)) return false;
+		const words = shellWords(create ? rest : raw);
+		if (!words) return false;
+		const { next, opened } = afterHeredoc(lines, i + 1, create ? rest : raw);
+		if (!create) {
+			afterAssign = opened;
+			i = next;
+			continue;
+		}
+		if (words.some(w => /^--(?:web|dry-run|help)(?:=|$)/.test(w) || /^-[A-Za-z]*[wh][A-Za-z]*$/.test(w))) return false;
+		return lines.slice(next).every(l => l.trim() === "");
 	}
-	return -1;
+	return false;
 }
 
 /** Fold the run's outcomes into the shared roster at `end`: the line to print, undefined with nothing to record. A roster failure never stops the end. */

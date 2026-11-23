@@ -461,8 +461,9 @@ describe("a requested surname (#143)", () => {
 		spawn(give(entries, { agent: "battle-brother", squad: "b" }));
 		const p = give(entries, { agent: "battle-brother", squad: "b" });
 		expect(allocateName(entries, { agent: "battle-brother", squad: "b" })).toEqual({ entry: p, fresh: false });
-		const other = allocateName(entries, { agent: "battle-brother", squad: "b", surname: "Lorenzo" });
-		expect("entry" in other && other.fresh && other.entry.surname).toBe("Lorenzo");
+		const wanted = p.surname === "Lorenzo" ? "Gideon" : "Lorenzo"; // never the surname the unspawned entry already holds
+		const other = allocateName(entries, { agent: "battle-brother", squad: "b", surname: wanted });
+		expect("entry" in other && other.fresh && other.entry.surname).toBe(wanted);
 		expect(allocateName(entries, { agent: "battle-brother", squad: "b", surname: p.surname })).toEqual({ entry: p, fresh: false });
 	});
 

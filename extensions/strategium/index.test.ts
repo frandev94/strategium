@@ -9915,7 +9915,15 @@ describe("vault records (#151)", () => {
 			`gh pr create -t 'x; y & z' --fill`,
 			`gh pr create -t "say \\"-w\\"; ok" --fill`,
 		];
-		const no = ["gh pr create --web", "gh pr create -w", "gh pr create --dry-run", "gh pr create -h", "gh pr create --help", "gh pr create | tee x", "gh pr create; echo hi", "echo gh pr create", "gh pr view 7", "gh pr merge 7", "git log && gh pr create", "gh pr create &", "gh pr create || true"];
+		const CREATE = `gh pr create -R github.com/o/r -d -B main -H feat/151-x -t "$title" -F - -a @me <<'GH_b'\nCloses #151; a & b | c\nGH_b`;
+		const TITLE = `title=$(cat <<'GH_t'\nTitle; R&D\nGH_t\n)`;
+		yes.push(`${TITLE}\n${CREATE}`, `${TITLE}\n${CREATE}\n`, `title="x; y"\ncd C:/p && ${CREATE}`, "gh pr create --title a\\|b --fill", "gh pr create --fill\n\n");
+		const no = [
+			"gh pr create --web", "gh pr create -w", "gh pr create --dry-run", "gh pr create -h", "gh pr create --help", "gh pr create | tee x", "gh pr create; echo hi", "echo gh pr create", "gh pr view 7", "gh pr merge 7", "git log && gh pr create", "gh pr create &", "gh pr create || true",
+			`${CREATE}\necho done`, "gh pr create --fill\necho done", "gh pr create --fill\ngit push", `echo hi\n${CREATE}`, `${TITLE}\nrm -rf x\n${CREATE}`, `${TITLE}\ngit push; ${CREATE}`,
+			"gh pr create -dw", "gh pr create -fw", "gh pr create -hd", "gh pr create --web=true", "gh pr create --dry-run=x", "gh pr create --help=all",
+			'gh pr create -t "unclosed', "gh pr create -t 'unclosed", "gh pr create \\-w", "gh pr create --\\web",
+		];
 
 		test("a Captain's gh pr create or glab mr create adds one line, with or without a URL", async () => {
 			for (const command of yes) {
