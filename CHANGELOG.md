@@ -1,3 +1,18 @@
+## [0.2.58] - 2026-11-23
+
+### 📚 Documentation
+
+- The Servo-skull
+- The booking timer is no longer called the servo-skull
+- *(es)* The Servo-skull, not the locutor
+
+### 🚜 Refactor
+
+- *(cockpit)* The caster is now the Servo-skull
+
+### 🧪 Testing
+
+- *(cockpit)* A takeover end keeps a pre-rename caster spend
 ## [0.2.57] - 2026-11-23
 
 ### 🐛 Bug Fixes
