@@ -258,3 +258,44 @@ describe("checkSlices, a trailing slash", () => {
 		expect(checkSlices([s("A", ["src/"]), s("B", ["src/a.ts"])])).toContain("both change src/a.ts (inside src).");
 	});
 });
+
+// #102: forms that hide a command from the list; each is refused like its bare command.
+describe("bash forms that hide a command", () => {
+	const runners = [
+		"A+=x bun test", "A[0]=x bun test", "A[k]+=x bun test",
+		"{fd}>/dev/null bun test", "<<< x bun test", "2>/dev/null bun test", "0<f bun test", "2>&1 bun test", "x; <<< y bun test",
+		"timeout .5 bun test", "timeout 0.5s bun test", "timeout -k .5 1 bun test",
+		"case x in x) bun test;; esac", "case $x in\n a|b) npm test ;;\n *) : ;;\nesac", "f() { bun test; }; f", "coproc bun test",
+		"b\\un test", "\\bun test",
+		"bun${IFS}test", "bun$IFS test", "npm$IFS$IFS run${IFS}x",
+	];
+	test.each(runners)("blocks the runner %s", cmd => expect(bashBlock(cmd)).toContain(RUNNER_MSG));
+
+	const writes = [
+		"A+=x rm f", "A[0]=x rm f", "A=1 B=2 rm f",
+		"f() { rm f; }; f", "case x in x) rm f;; esac", "case x in\n a) :;;\n b) mv a b;;\nesac",
+		"r\\m f", "\\rm f", "c\\p a b",
+		"rm${IFS}f", "rm$IFS f", "cat <<< x\nrm f\nx",
+	];
+	test.each(writes)("blocks the write %s", cmd => expect(bashBlock(cmd)).toContain(WRITE_MSG));
+
+	test.each([
+		'echo "r\\m"', "grep -n 'bun test' f", "case x in x) echo hi;; esac", "case x in x) : ;; esac", "cat <<< x", 'echo "bun${IFS}test"', "echo '$IFS rm'",
+		"echo $(date) tsc", "echo {rm,x}", "cat C:\\Users\\mark\\x", "echo $IFSrm", "cat <<< x > /dev/null",
+		"timeout 5 sleep 1", "echo a[0]=x", "ls >out://x", "x=1",
+	])("allows %s", cmd => expect(bashBlock(cmd)).toBeUndefined());
+
+	// Linear by construction: tool_call handlers are synchronous, so a hostile command must not freeze omp.
+	test.each([
+		["assignments", "A[0]=x ".repeat(3000)], ["unclosed subscripts", "a[;".repeat(6000)], ["empty assignments", "a=;".repeat(6000)],
+		["fd redirections", "{fd}> ".repeat(3000)], ["here-strings", "<<< ".repeat(5000)], ["digits", "1".repeat(20000)],
+		["backslashes", "\\\\".repeat(10000)], ["backslash words", "\\a".repeat(10000)], ["ifs", "${IFS}".repeat(3000)], ["bare ifs", "$IFS".repeat(5000)],
+		["case arms", ") ".repeat(10000)], ["arms", "x) ".repeat(6000)], ["in words", "in ".repeat(6000)], ["in arms", "in x) ".repeat(3000)],
+		["braces", "{ ".repeat(10000)], ["timeouts", "timeout .5 ".repeat(1800)], ["dots", "timeout .".repeat(2200)],
+		["spaces", `${"; ".repeat(2)}${" ".repeat(20000)}`], ["redirect spaces", `>${" ".repeat(20000)}`], ["lone words", "a".repeat(20000)],
+	])("scans hostile %s in under 100 ms", (_name, cmd) => {
+		const t0 = performance.now();
+		bashBlock(cmd);
+		expect(performance.now() - t0).toBeLessThan(100);
+	});
+});
