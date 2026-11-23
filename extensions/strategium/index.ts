@@ -1982,13 +1982,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						if (!(named || (cockpit.key === run.key && cockpit.deployed.has(id))) || !ratingKey(id)) return text(`ERROR ${id} is not an agent of this run: pass the agent id the task result shows`);
 						const rating = parseRating(params);
 						if (typeof rating === "string") return text(`ERROR ${rating}`);
-						// One agent, one rating: Name and Name-2 share it, so the earlier key is the one that is replaced.
-						const key = Object.keys(run.ratings ?? {}).find(k => baseId(k) === baseId(id)) ?? id;
-						const was = run.ratings?.[key];
+						const was = run.ratings && Object.hasOwn(run.ratings, id) ? run.ratings[id] : undefined;
 						if (was?.rating === "corrupted" && rating.rating !== "corrupted") return text(`ERROR ${id} is corrupted for the rest of the run`);
-						const next = { ...run, ratings: { ...run.ratings, [key]: rating } };
+						const next = { ...run, ratings: { ...run.ratings, [id]: rating } };
 						writeRun(next);
-						drawCockpit(next, ctx);
 						// D6: with names on, a corrupted latest builder makes its squad a fall at end.
 						const squad = named?.squad ?? cockpit.deployed.get(id)?.squad;
 						const brother = naming.on && rating.rating === "corrupted" && squad ? squadBrothers(cleanNames(run.names), undefined)[squad] : undefined;

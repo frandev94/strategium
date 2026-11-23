@@ -8686,12 +8686,14 @@ console.log("FAILED " + failed);`;
 			expect(await rate(s, `${name}-2`, "corrupted")).toBe(`ERROR ${name}-2 is not an agent of this run: pass the agent id the task result shows`);
 		});
 
-		test("a corrupted Name-2 cannot be re-rated proven as Name", async () => {
+		test("Name and Name-2 are two agents: each keeps its own rating", async () => {
 			const s = await open();
 			const name = await running(s, "S1");
 			returned(s, "battle-brother", `${name}-2`, "S1", "running");
-			expect(await rate(s, `${name}-2`, "corrupted")).toStartWith("RATED");
-			expect(await rate(s, name, "proven")).toBe(`ERROR ${name} is corrupted for the rest of the run`);
+			expect(await rate(s, name, "corrupted")).toStartWith("RATED");
+			expect(await rate(s, `${name}-2`, "proven")).toBe(`RATED ${name}-2 proven model=@task effort=medium evidence=1`);
+			const file = JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8"));
+			expect(Object.entries(file.ratings).map(([k, v]) => [k, (v as { rating: string }).rating])).toEqual([[name, "corrupted"], [`${name}-2`, "proven"]]);
 		});
 
 		test("end by takeover over a hand-edited invalid corrupted entry records no fall", async () => {
