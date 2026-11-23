@@ -10199,3 +10199,101 @@ describe("vault record (#152)", () => {
 		expect(readFileSync(noteFile(v), "utf8")).toBe("# K\n");
 	});
 });
+
+// switch (#155): end this session's run and begin another key in one call.
+describe("switch (#155)", () => {
+	const runFile = (dir: string, sid = "sess-0001") => join(dir, "runs", `${sid}.json`);
+	const debriefs = (dir: string) => (existsSync(join(dir, "debriefs")) ? readdirSync(join(dir, "debriefs")) : []);
+
+	test("the tool description lists switch with its parameters", () => {
+		const s = setup();
+		expect(s.tool.description).toContain("switch (key, booked?, takeover?)");
+	});
+
+	test("ends K-1 then begins K-2, keeping theatre and repo, and frees K-1", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1", theatre: "github", booked: 120 });
+		await s.call({ action: "repo", repo: s.dir });
+		const out = await s.call({ action: "switch", key: "K-2" });
+		expect(out).toStartWith("ENDED K-1");
+		expect(out).toContain("DEBRIEF");
+		expect(out).toContain("K-2 0 min (no booking) running");
+		const status = await s.call({ action: "status" });
+		expect(status).toContain(`RUN K-2 theatre=github repo=${s.dir}`);
+		expect(status).not.toContain("RUN K-1");
+		expect(await setup("sess-0002", s.dir).call({ action: "begin", key: "K-1" })).not.toContain("ERROR");
+	});
+
+	test("booked is the new key's own, never carried over", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1", booked: 120 });
+		expect(await s.call({ action: "switch", key: "K-2" })).toContain("K-2 0 min (no booking)");
+		expect(await s.call({ action: "switch", key: "K-3", booked: 60 })).toContain("K-3 0/60 min");
+	});
+
+	test("the run's own state is not carried to the new run", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1", archmagos: true });
+		await s.call({ action: "slices", slices: [{ id: "S1", parallel: true, files: ["a.ts"] }] });
+		await s.call({ action: "switch", key: "K-2" });
+		const run = JSON.parse(readFileSync(runFile(s.dir), "utf8"));
+		expect(run.key).toBe("K-2");
+		for (const f of ["slices", "archmagos", "names", "ratings", "phases"]) expect(run).not.toHaveProperty(f);
+	});
+
+	test("refusals return one ERROR line and change nothing", async () => {
+		const s = setup();
+		expect(await s.call({ action: "switch", key: "K-2" })).toStartWith("ERROR no run to switch from");
+		expect(existsSync(runFile(s.dir))).toBe(false);
+		await s.call({ action: "begin", key: "K-1" });
+		const before = readFileSync(runFile(s.dir), "utf8");
+		expect(await s.call({ action: "switch" })).toBe("ERROR switch needs key");
+		expect(await s.call({ action: "switch", key: "K-1" })).toBe("ERROR K-1 is already this session's run");
+		const other = setup("sess-0002", s.dir);
+		await other.call({ action: "begin", key: "K-2" });
+		expect(await setup("sess-0001", s.dir).call({ action: "switch", key: "K-2" })).toStartWith("ERROR K-2 is held by omp session");
+		expect(readFileSync(runFile(s.dir), "utf8")).toBe(before);
+		expect(debriefs(s.dir)).toEqual([]);
+		expect(readFileSync(lockPath(s.dir, "K-2"), "utf8")).toBe("sess-0002");
+		expect(readFileSync(lockPath(s.dir, "K-1"), "utf8")).toBe("sess-0001");
+	});
+
+	test("takeover names the holder of the new key and the switching session's repo wins", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: s.dir });
+		const other = setup("sess-0002", s.dir);
+		await other.call({ action: "begin", key: "K-2" });
+		await other.call({ action: "repo", repo: join(s.dir, "elsewhere") });
+		const out = await setup("sess-0001", s.dir).call({ action: "switch", key: "K-2", takeover: "sess-0002" });
+		expect(out).toStartWith("ENDED K-1");
+		expect(existsSync(runFile(s.dir, "sess-0002"))).toBe(false);
+		expect(await s.call({ action: "status" })).toContain(`RUN K-2 theatre=none repo=${s.dir}`);
+	});
+
+	test("a failed end releases the new key's claim and begins nothing", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		// The day file becomes a directory: the end cannot stop K-1.
+		const day = readdirSync(s.dir).find(f => f.endsWith(".jsonl"))!;
+		rmSync(join(s.dir, day));
+		mkdirSync(join(s.dir, day));
+		expect(await s.call({ action: "switch", key: "K-2" })).toStartWith("ERROR");
+		expect(existsSync(lockPath(s.dir, "K-2"))).toBe(false);
+	});
+
+	test("a begin that fails after the end says so and the retry begin succeeds", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1", theatre: "github" });
+		await s.call({ action: "repo", repo: s.dir });
+		// A directory where the run file's temp goes: the new run cannot be written.
+		const tmp = `${runFile(s.dir)}.${process.pid}.tmp`;
+		mkdirSync(tmp);
+		const out = await s.call({ action: "switch", key: "K-2" });
+		expect(out).toStartWith("ENDED K-1");
+		expect(out).toContain("ERROR begin K-2 failed after K-1 ended");
+		expect(out).toContain(`call strategium begin key K-2 theatre github, then repo ${s.dir}`);
+		rmSync(tmp, { recursive: true });
+		expect(await s.call({ action: "begin", key: "K-2", theatre: "github" })).toContain("K-2");
+	});
+});
