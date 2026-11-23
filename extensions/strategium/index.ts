@@ -1068,20 +1068,80 @@ const taskItems = (input: unknown) => {
 	return (Array.isArray(o.tasks) ? o.tasks : [o]).map(asObj);
 };
 
+/** True when `id` is rated corrupted; with names on the same name with or without omp's -N suffix counts too, whichever form holds the rating (names are unique in a run). */
+function corruptedSource(run: Run, id: string, named: boolean): boolean {
+	return Object.entries(run.ratings ?? {}).some(([k, r]) => r.rating === "corrupted" && (named ? baseId(k) === baseId(id) : k === id));
+}
+
+/**
+ * The ids a brief names on a `Reuse: <id>` line, one line at a time (no \s across lines, so the scan is linear), with an optional
+ * markdown prefix (- * > ** __) and `code`, <angle> or agent:// around the id.
+ * shortcut: eval `agent()` briefs are never scanned (only the `task` tool call is); spawn builders with `task` for the veto to hold, upgrade if the extension sees eval spawns.
+ */
+function reuseSources(text: string): string[] {
+	const out: string[] = [];
+	for (const line of text.split("\n")) {
+		const m = /^[-*>_`#"'(\t ]*(?:\d{1,9}[.)][-*>_`#"'(\t ]*)?reuse[ \t]*:[ \t*_`<>"'[]*(?:agent:\/\/)?(\w[\w.-]*)(\/?)/i.exec(line);
+		if (!m || m[2]) continue; // an id followed by / is a path, not an agent
+		let id = m[1];
+		while (/[.-]$/.test(id)) id = id.slice(0, -1);
+		out.push(id);
+	}
+	return out;
+}
+
+const isBuilderRole = (agent: string) => agent === "battle-brother" || agent === "veteran";
+// A file's folder; a top-level file has none, so it never makes two squads neighbours.
+const areaOf = (f: string) => {
+	const d = path.posix.dirname(normFile(f));
+	return d === "." ? undefined : d;
+};
+
+/**
+ * D2/D3 (#143): proven builders of this run that have ended and whose squad shares files, else a folder, with `target`;
+ * shared files first, then the fewest session tokens, then id; the best three.
+ * shortcut: cumulative session tokens stand in for context headroom, since omp exposes no context fill to extensions; upgrade if getUsageStatistics or the live row gains the current context size.
+ */
+function reuseCandidates(run: Run, target: Slice, roles: Map<string, { role: string; squad?: string }>, named: boolean) {
+	const squadOfId = new Map<string, string>();
+	for (const [id, r] of roles) if (isBuilderRole(r.role) && r.squad) squadOfId.set(id, r.squad);
+	for (const n of run.names ?? []) if (n.spawned && !n.old && isBuilderRole(n.agent) && n.squad) squadOfId.set(n.name, n.squad);
+	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
+	const rows = liveRows(run);
+	const targetAreas = new Set(target.files.map(areaOf));
+	const out: { id: string; squad: string; shared: boolean; tokens: number }[] = [];
+	for (const [id, squad] of squadOfId) {
+		const src = known.find(s => s.id === squad);
+		const running = named ? Object.keys(run.agents ?? {}).some(k => baseId(k) === baseId(id)) : Boolean(run.agents?.[id]);
+		const retired = named && (run.names ?? []).some(n => n.old && n.name === baseId(id));
+		if (!src || running || retired || corruptedSource(run, id, named) || !run.ratings || !Object.hasOwn(run.ratings, id) || run.ratings[id].rating !== "proven") continue;
+		const shared = sharedFiles(src, target).length > 0;
+		if (!shared && !src.files.some(f => areaOf(f) && targetAreas.has(areaOf(f)))) continue;
+		const row = rows.get(id);
+		const used = [row?.tokens_in, row?.tokens_out, row?.cache_read, row?.cache_write];
+		// Unknown usage sorts last.
+		out.push({ id, squad, shared, tokens: used.some(v => v !== undefined) ? used.reduce<number>((a, v) => a + (v ?? 0), 0) : Number.POSITIVE_INFINITY });
+	}
+	return out.sort((a, b) => Number(b.shared) - Number(a.shared) || (a.tokens < b.tokens ? -1 : a.tokens > b.tokens ? 1 : 0) || (a.id < b.id ? -1 : 1)).slice(0, 3);
+}
+
 /**
  * The squad a battle-brother or veteran item builds: the one its name spells (letters and digits, any case), else the
  * one its brief builds ("build squad <id>"). Undefined for any other agent.
  */
 function builtSlice(item: Record<string, unknown>, run: Run): Slice | undefined {
-	if (!["battle-brother", "veteran"].includes(agentName(String(item.agent ?? "task")))) return undefined;
+	if (!isBuilderRole(agentName(String(item.agent ?? "task")))) return undefined;
 	const known = [...(run.slices ?? []), ...(run.stopped ?? [])];
 	// The recorded name first; names off (or a name the plugin did not hand out) falls back to the rules below.
 	const given = typeof item.name === "string" ? item.name.trim() : undefined;
 	const byName = given ? recordedSquad(run, given) : undefined;
 	if (byName) return byName;
 	const name = typeof item.name === "string" ? fold(item.name) : undefined;
-	const built = [...String(item.task ?? "").matchAll(/\b(?:squad|slice)\s+([\w.-]*\w)/gi)].map(m => m[1]);
-	return known.find(s => fold(s.id) === name) ?? known.find(s => built.includes(s.id));
+	const task = String(item.task ?? "");
+	const built = [...task.matchAll(/\b(?:squad|slice)\s+([\w.-]*\w)/gi)].map(m => m[1]);
+	// A reuse brief also names the source's squad: the one right after `build` is the squad being built.
+	const after = /\bbuild\s+(?:squad|slice)\s+([\w.-]*\w)/i.exec(task)?.[1];
+	return known.find(s => fold(s.id) === name) ?? (after ? known.find(s => s.id === after) : undefined) ?? known.find(s => built.includes(s.id));
 }
 
 /**
@@ -1871,7 +1931,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 
 	const count = z.number().int().nonnegative().optional();
 	const schema = z.object({
-		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft", "name", "rate", "seal", "signal"]),
+		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "attention", "notify", "slices", "redraft", "name", "reuse", "rate", "seal", "signal"]),
 		key: z.string().optional(),
 		booked: z.number().int().positive().optional(),
 		spent: z.number().int().nonnegative().optional(),
@@ -1902,13 +1962,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		effort: z.string().optional(),
 		squad: z.string().optional(),
 		again: z.boolean().optional(),
+		source: z.string().optional(),
 	});
 
 	pi.registerTool({
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?, reported?), attention (message), notify (on?), slices (slices), redraft, name (agent, squad?, again?), rate (agent, rating, evidence, model, effort), seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id (with names on, after the name from the name action); parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>, or when its name came from the name action) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound, toast and names settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex; it makes the run's builder names obsolete. name (agent, squad?, again?) hands out the agent's lore name and answers NAME <name> or ERROR <reason>. It works only with names on (status shows NAMES on|off (<source>); /strategium-config names on|off|default or env STRATEGIUM_NAMES=1; off by default, and then it answers ERROR). agent is a roster agent; squad, a declared squad id, is required for battle-brother and veteran and refused for the other agents; again: true keeps a non-builder agent's persona. With names on, the name of every task item (and the label of an eval agent) must come from this action: a refusal says so, and slices adds a NAMES <squad>=<name>, ... line for the parallel squads. rate (Captain only) stores your verdict on one agent of this run, by the agent id the task result shows: rating is proven, proven-regression (proven, but it added a new BLOCKING finding on the lines a penance touched) or corrupted (a reproduced BLOCKING finding, an apothecary survivor or fuzz crash, a red acceptance check, or a rule breach: a commit, git push, a gh write, or a write outside its worktree); evidence = 1-8 short items (finding IDs, the failing check, the breached rule); model and effort = what the agent ran on (the tier selector @task:medium is model @task, effort medium; effort default when none). Corrupted is final for that agent; with names on it also marks the squad's brother as fallen, provisionally: the squad falls at end unless a later builder replaces it. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned. end writes the run's debrief (time per station, seals, squads, spawns) to <state dir>/debriefs and answers ENDED <key>, DEBRIEF <path> and summary lines; reported = {apothecary: {killed, survived, crashes}, review: {pass, fail, opened, fixed, not_reproduced}}: whole numbers from the agents' reports, shown only in the (reported) sections.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?, reported?), attention (message), notify (on?), slices (slices), redraft, name (agent, squad?, again?, source?), reuse (squad), rate (agent, rating, evidence, model, effort), seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id (with names on, after the name from the name action); parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>, or when its name came from the name action) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound, toast and names settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex; it makes the run's builder names obsolete. name (agent, squad?, again?) hands out the agent's lore name and answers NAME <name> or ERROR <reason>. It works only with names on (status shows NAMES on|off (<source>); /strategium-config names on|off|default or env STRATEGIUM_NAMES=1; off by default, and then it answers ERROR). agent is a roster agent; squad, a declared squad id, is required for battle-brother and veteran and refused for the other agents; again: true keeps a non-builder agent's persona; source (battle-brother and veteran only) is the name of a spawned builder of this run that is not corrupted: the new builder takes its surname. With names on, the name of every task item (and the label of an eval agent) must come from this action: a refusal says so, and slices adds a NAMES <squad>=<name>, ... line for the parallel squads. reuse (squad) lists up to 3 proven builders of this run that have ended and whose squad shares files, or a folder, with the squad (REUSE line, then a SEED line for the brief); it writes nothing. A task item or the call's context with a line Reuse: <agent id> that names a corrupted agent is blocked. rate (Captain only) stores your verdict on one agent of this run, by the agent id the task result shows: rating is proven, proven-regression (proven, but it added a new BLOCKING finding on the lines a penance touched) or corrupted (a reproduced BLOCKING finding, an apothecary survivor or fuzz crash, a red acceptance check, or a rule breach: a commit, git push, a gh write, or a write outside its worktree); evidence = 1-8 short items (finding IDs, the failing check, the breached rule); model and effort = what the agent ran on (the tier selector @task:medium is model @task, effort medium; effort default when none). Corrupted is final for that agent; with names on it also marks the squad's brother as fallen, provisionally: the squad falls at end unless a later builder replaces it. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned. end writes the run's debrief (time per station, seals, squads, spawns) to <state dir>/debriefs and answers ENDED <key>, DEBRIEF <path> and summary lines; reported = {apothecary: {killed, survived, crashes}, review: {pass, fail, opened, fixed, not_reproduced}}: whole numbers from the agents' reports, shown only in the (reported) sections.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub" && input.action !== "signal") return text("ERROR strategium tool is for the main session only");
@@ -1952,14 +2013,23 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const run = ownRun(sid);
 						if (!run) return text("ERROR no active run in this session");
 						if (!params.agent) throw new Error("name needs agent");
-						const { squad } = params;
+						const { squad, source } = params;
 						const agent = agentName(params.agent);
-						if (squad !== undefined && ["battle-brother", "veteran"].includes(agent) && ![...(run.slices ?? []), ...(run.stopped ?? [])].some(s => s.id === squad))
+						if (squad !== undefined && isBuilderRole(agent) && ![...(run.slices ?? []), ...(run.stopped ?? [])].some(s => s.id === squad))
 							return text(`ERROR squad ${squad} is not declared: call strategium action slices first`);
+						// D5: the reused brother's surname comes from a builder of this run that has spawned and is not corrupted.
+						let surname: string | undefined;
+						if (source !== undefined) {
+							if (!isBuilderRole(agent)) return text("ERROR source is only for battle-brother and veteran");
+							const src = run.names?.find(n => n.name === baseId(source));
+							if (!src || !src.spawned || src.old || !isBuilderRole(src.agent)) return text(`ERROR ${source} is not a builder of this run that has spawned`);
+							if (corruptedSource(run, source, true)) return text(`ERROR ${source} is corrupted: a corrupted agent is never reused`);
+							surname = src.surname;
+						}
 						// No await from here to writeRun: parallel calls in one process cannot hand out one name twice.
 						const issued = issuedFor(sid);
 						const place = (pick?: Pick): string => {
-							const got = allocateName(run.names ?? [], { agent, squad, again: params.again }, issued, undefined, pick);
+							const got = allocateName(run.names ?? [], { agent, squad, again: params.again, surname }, issued, undefined, pick);
 							if ("error" in got) return `ERROR ${got.error}`;
 							if (got.fresh) {
 								writeRun({ ...run, names: [...(run.names ?? []), got.entry] });
@@ -1968,9 +2038,27 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 							return `NAME ${got.entry.name}`;
 						};
 						// A new builder surname comes from the roster, under its lock with the run write inside; every other name needs no roster.
-						if (!["battle-brother", "veteran"].includes(agent) || run.names?.some(n => n.squad === squad && !n.old)) return text(place());
+						if (!isBuilderRole(agent) || run.names?.some(n => n.squad === squad && !n.old)) return text(place());
 						const placed = withPicks(sid, place);
 						return text(placed.warn ? `${placed.warn}\n${placed.value}` : placed.value);
+					}
+					case "reuse": {
+						const run = ownRun(sid);
+						if (!run) return text("ERROR no active run in this session");
+						if (!params.squad) throw new Error("reuse needs squad");
+						const target = [...(run.slices ?? []), ...(run.stopped ?? [])].find(s => s.id === params.squad);
+						if (!target) return text(`ERROR squad ${params.squad} is not declared: call strategium action slices first`);
+						// The same registry the debrief reads: the live cockpit, else the one saved beside the run.
+						const roles = cockpit.key === run.key ? new Map([...cockpit.deployed].map(([id, d]) => [id, { role: d.role, squad: d.squad }])) : savedRoles(run.sid);
+						const found = reuseCandidates(run, target, roles, naming.on);
+						if (!found.length) return text(`REUSE squad ${target.id}: none (no proven builder of this run that has ended shares its files or area); spawn a fresh builder`);
+						const list = found.map(c => `${c.id} (squad ${c.squad}, ${c.shared ? "shared files" : "same area"}, ${Number.isFinite(c.tokens) ? `${c.tokens} tokens` : "usage unknown"})`).join("; ");
+						const best = found[0].id;
+						return text(
+							`REUSE squad ${target.id}: ${list}\n` +
+								`SEED brief line "Reuse: ${best}", the line "build squad ${target.id}", the squad's lessons and open finding IDs, its commit(s) to git show, agent://${best} (final report) and history://${best}:-60; spawn the agent the ladder calls for (battle-brother for a penance, veteran for the escalation)` +
+								(naming.on ? `; with names on, strategium action name with source: ${best}` : ""),
+						);
 					}
 					case "rate": {
 						if (!params.agent) throw new Error("rate needs agent");
@@ -1989,10 +2077,12 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						// D6: with names on, a corrupted latest builder makes its squad a fall at end.
 						const squad = named?.squad ?? cockpit.deployed.get(id)?.squad;
 						const brother = naming.on && rating.rating === "corrupted" && squad ? squadBrothers(cleanNames(run.names), undefined)[squad] : undefined;
+						// The roster credits a squad's outcome to its first builder, so the line names that brother, not a reused one.
+						const first = brother && cleanNames(run.names)?.find(e => isBuilderRole(e.agent) && e.squad === squad && !e.old);
 						return text(
 							[
 								`RATED ${id} ${rating.rating}${was ? ` (was ${was.rating})` : ""} model=${rating.model} effort=${rating.effort} evidence=${rating.evidence.length}`,
-								...(brother?.name === baseId(id) ? [`FALL ${brother.surname} squad ${squad} falls at end unless a later builder replaces it`] : []),
+								...(brother?.name === baseId(id) ? [`FALL ${(first ?? brother).surname} squad ${squad} falls at end unless a later builder replaces it`] : []),
 								...(rating.rating === "corrupted" ? [`LESSON write local://${run.key}-lessons.md for ${id}${squad ? ` before the next round of squad ${squad}` : ""}`] : []),
 							].join("\n"),
 						);
@@ -2701,6 +2791,17 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				if (problem) return { block: true, reason: nameReason(agent, "a task item", problem) };
 				seen.add(given);
 			}
+		}
+		// A corrupted agent is never a reuse source; like the names check it holds with or without a repo.
+		if (run && name === "task") {
+			const input = asObj(e.input);
+			const briefs = [...taskItems(e.input).map(i => String(i.task ?? "")), String(input.context ?? "")];
+			const bad = briefs.flatMap(reuseSources).find(id => corruptedSource(run, id, naming.on));
+			if (bad)
+				return {
+					block: true,
+					reason: `Strategium: a task item names ${bad} as its reuse source (Reuse: ${bad}), and ${bad} is rated corrupted: a corrupted agent is never reused. Pick another source with strategium action reuse, or brief a fresh builder without the Reuse line.`,
+				};
 		}
 		if (!run?.repo) return;
 		const repo = run.repo;

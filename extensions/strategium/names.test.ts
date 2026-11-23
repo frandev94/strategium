@@ -426,3 +426,48 @@ describe("properties", () => {
 function draw(rand: () => number, n: number) {
 	return Math.floor(rand() * n);
 }
+
+describe("a requested surname (#143)", () => {
+	test("a builder takes the surname asked for, with the title its squad calls for", () => {
+		const entries: NameEntry[] = [];
+		const g = give(entries, { agent: "battle-brother", squad: "b" });
+		spawn(g);
+		const p = give(entries, { agent: "battle-brother", squad: "b", surname: "Lorenzo" });
+		expect([p.name, p.surname, p.squad]).toEqual(["PenitentLorenzo", "Lorenzo", "b"]);
+		spawn(p);
+		const v = give(entries, { agent: "veteran", squad: "b", surname: "Lorenzo" });
+		expect(v.name).toBe("VeteranLorenzo");
+	});
+
+	test("an epithet keeps the surname when the bare name is taken", () => {
+		const entries: NameEntry[] = [];
+		spawn(give(entries, { agent: "battle-brother", squad: "b" }));
+		spawn(give(entries, { agent: "battle-brother", squad: "b", surname: "Lorenzo" }));
+		const again = give(entries, { agent: "battle-brother", squad: "b", surname: "Lorenzo" });
+		expect(again.name).toBe("PenitentLorenzoUnbroken");
+	});
+
+	test("without a surname the squad's own, the first one's, comes back after a reused builder", () => {
+		const entries: NameEntry[] = [];
+		const g = give(entries, { agent: "battle-brother", squad: "b" });
+		spawn(g);
+		spawn(give(entries, { agent: "battle-brother", squad: "b", surname: "Lorenzo" }));
+		const next = give(entries, { agent: "veteran", squad: "b" });
+		expect(next.surname).toBe(g.surname);
+	});
+
+	test("an unspawned entry is reused only when its surname is the wanted one", () => {
+		const entries: NameEntry[] = [];
+		spawn(give(entries, { agent: "battle-brother", squad: "b" }));
+		const p = give(entries, { agent: "battle-brother", squad: "b" });
+		expect(allocateName(entries, { agent: "battle-brother", squad: "b" })).toEqual({ entry: p, fresh: false });
+		const other = allocateName(entries, { agent: "battle-brother", squad: "b", surname: "Lorenzo" });
+		expect("entry" in other && other.fresh && other.entry.surname).toBe("Lorenzo");
+		expect(allocateName(entries, { agent: "battle-brother", squad: "b", surname: p.surname })).toEqual({ entry: p, fresh: false });
+	});
+
+	test("a surname is refused for anyone but a builder", () => {
+		const r = allocateName([], { agent: "scout", surname: "Lorenzo" });
+		expect("error" in r && r.error).toContain("surname");
+	});
+});

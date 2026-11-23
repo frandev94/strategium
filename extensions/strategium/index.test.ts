@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension, { keyOf, parseTiers, readTranscript, ROSTER, whereFrom } from "./index";
 import { allocateName, NAMED_AGENTS, type NameEntry } from "./names";
+import { runOutcomes } from "./roster";
 import { cockpitView } from "./cockpit";
 import { append, claim, type Ev, load, lockPath, nowIso, openKeys, release } from "./timer";
 
@@ -9019,5 +9020,410 @@ describe("names in the cockpit (#135)", () => {
 		task(s, "battle-brother", name, "completed");
 		expect(texts(s)).toContain("✓ returned");
 		expect(texts(s)).not.toContain(`✓ ${name} returned`);
+	});
+});
+
+describe("reuse a proven builder (#143)", () => {
+	type S = ReturnType<typeof setup>;
+	type Verdict = { block?: true; reason?: string; model?: string; note?: string } | undefined;
+	const DEFAULT = { light: "@smol:medium", standard: "@task:medium", heavy: "@slow:high" };
+	const SQUADS = [
+		{ id: "T", parallel: false, files: ["pkg/t.ts"], tier: "light" },
+		{ id: "A", parallel: false, files: ["pkg/t.ts", "x/q.ts"] },
+		{ id: "A2", parallel: false, files: ["pkg/t.ts"] },
+		{ id: "A3", parallel: false, files: ["pkg/t.ts"] },
+		{ id: "C", parallel: false, files: ["pkg/c.ts"] },
+		{ id: "D", parallel: false, files: ["lib/d.ts"] },
+		{ id: "E", parallel: false, files: ["top.ts"] },
+	];
+	const open = async (names = false, repo = true, squads: object[] = SQUADS) => {
+		if (names) process.env.STRATEGIUM_NAMES = "1";
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		if (repo) await s.call({ action: "repo", repo: s.dir });
+		await s.call({ action: "slices", slices: squads });
+		return s;
+	};
+	const rate = (s: S, agent: string, rating = "proven") => s.call({ action: "rate", agent, rating, evidence: ["I-1"], model: "@task", effort: "medium" });
+	// Names off: an async builder shows in the task result by its id, then its job ends in a message.
+	const launch = (s: S, ids: string[]) =>
+		s.handlers.tool_result.forEach(h =>
+			h({ toolName: "task", input: { tasks: ids.map(id => ({ agent: "battle-brother", name: id, task: `build squad ${id}` })) }, details: { progress: ids.map((id, index) => ({ index, id, status: "running" })) }, isError: false }, s.ctx),
+		);
+	const finish = (s: S, ids: string[]) =>
+		s.handlers.context[0]({ type: "context", messages: [{ role: "custom", details: { jobs: ids.map(label => ({ jobId: `j-${label}`, type: "task", status: "completed", label })) } }] }, s.ctx);
+	const built = async (s: S, ids: string[], rating = "proven") => {
+		launch(s, ids);
+		finish(s, ids);
+		for (const id of ids) await rate(s, id, rating);
+	};
+	const usage = (s: S, id: string, tokens: Record<string, number>) => {
+		mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+		writeFileSync(join(s.dir, "runs", "sess-0001.live", `${id}.json`), JSON.stringify({ since: 4e12, at: 4e12, busy: 0, ...tokens }));
+	};
+	const spawn = (s: S, agent: string, spawnKey?: string) => s.handlers.before_subagent_spawn[0]({ agent, spawnKey }, s.ctx) as Verdict;
+	const task = (s: S, items: object[], context?: string) => s.handlers.tool_call[0]({ toolName: "task", input: { tasks: items, ...(context ? { context } : {}) } }, s.ctx) as Verdict;
+	const item = (task: string, extra: object = {}) => ({ agent: "battle-brother", name: "T", isolated: true, task, ...extra });
+	const nameOf = async (s: S, params: Record<string, unknown>) => {
+		const out = await s.call({ action: "name", ...params });
+		expect(out).toMatch(/^NAME \S+$/);
+		return out.slice(5);
+	};
+	const runFile = (s: S) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8")) as { names?: { name: string; squad?: string }[] };
+
+	describe("the reuse action", () => {
+		test("each refusal", async () => {
+			expect(await setup().call({ action: "reuse", squad: "T" })).toBe("ERROR no active run in this session");
+			const s = await open();
+			expect(await s.call({ action: "reuse" })).toBe("ERROR reuse needs squad");
+			expect(await s.call({ action: "reuse", squad: "Z" })).toBe("ERROR squad Z is not declared: call strategium action slices first");
+		});
+
+		test("shared files beat same area, nothing shared is not offered; the SEED line follows", async () => {
+			const s = await open();
+			await built(s, ["A", "C", "D", "E"]);
+			usage(s, "A", { tokens_in: 300, tokens_out: 100, cache_read: 50, cache_write: 50 });
+			expect(await s.call({ action: "reuse", squad: "T" })).toBe(
+				[
+					"REUSE squad T: A (squad A, shared files, 500 tokens); C (squad C, same area, usage unknown)",
+					"SEED brief line \"Reuse: A\", the line \"build squad T\", the squad's lessons and open finding IDs, its commit(s) to git show, agent://A (final report) and history://A:-60; spawn the agent the ladder calls for (battle-brother for a penance, veteran for the escalation)",
+				].join("\n"),
+			);
+		});
+
+		test("within an affinity the fewest tokens come first, unknown usage last", async () => {
+			const s = await open();
+			await built(s, ["A", "A2", "A3"]);
+			usage(s, "A", { tokens_in: 900 });
+			usage(s, "A2", { tokens_in: 100 });
+			const [line] = (await s.call({ action: "reuse", squad: "T" })).split("\n");
+			expect(line).toBe("REUSE squad T: A2 (squad A2, shared files, 100 tokens); A (squad A, shared files, 900 tokens); A3 (squad A3, shared files, usage unknown)");
+		});
+
+		test("a squad may reuse its own proven builder", async () => {
+			const s = await open();
+			await built(s, ["T"]);
+			expect((await s.call({ action: "reuse", squad: "T" })).split("\n")[0]).toBe("REUSE squad T: T (squad T, shared files, usage unknown)");
+		});
+
+		test("only the three best are listed", async () => {
+			const s = await open();
+			await built(s, ["A", "A2", "A3", "C", "T"]);
+			expect((await s.call({ action: "reuse", squad: "T" })).split("\n")[0].split("; ")).toHaveLength(3);
+		});
+
+		test("corrupted, proven-regression, unrated, running and squadless agents are never offered; a proven control is", async () => {
+			const s = await open();
+			// A, A2 and A3 share pkg/t.ts with T: only their rating keeps them out.
+			await built(s, ["A"], "corrupted");
+			await built(s, ["A2"], "proven-regression");
+			launch(s, ["A3"]);
+			finish(s, ["A3"]); // ended but never rated
+			await built(s, ["C"]); // the control: proven, same area
+			launch(s, ["T"]);
+			await rate(s, "T"); // proven but still running
+			s.handlers.before_subagent_spawn[0]({ invocationKind: "eval", agent: "battle-brother", spawnKey: "Ghost" }, s.ctx);
+			await rate(s, "Ghost"); // proven, no squad on record
+			expect((await s.call({ action: "reuse", squad: "T" })).split("\n")[0]).toBe("REUSE squad T: C (squad C, same area, usage unknown)");
+			expect(await s.call({ action: "reuse", squad: "E" })).toBe("REUSE squad E: none (no proven builder of this run that has ended shares its files or area); spawn a fresh builder");
+		});
+
+		test("shared files beat same area even with more tokens; a squad whose builder ended and left the declared list still counts", async () => {
+			const s = await open();
+			await built(s, ["A", "C"]);
+			usage(s, "A", { tokens_in: 900 });
+			usage(s, "C", { tokens_in: 10 });
+			expect((await s.call({ action: "reuse", squad: "T" })).split("\n")[0]).toBe("REUSE squad T: A (squad A, shared files, 900 tokens); C (squad C, same area, 10 tokens)");
+			// Declared again without A: A lives only in the stopped list.
+			await s.call({ action: "slices", slices: SQUADS.filter(q => q.id !== "A") });
+			expect((await s.call({ action: "reuse", squad: "T" })).split("\n")[0]).toStartWith("REUSE squad T: A (squad A, shared files");
+		});
+
+		test("top-level files never make two squads neighbours", async () => {
+			const s = await open(false, true, [
+				{ id: "E", parallel: false, files: ["top.ts"] },
+				{ id: "F", parallel: false, files: ["top2.ts"] },
+			]);
+			await built(s, ["E"]);
+			expect(await s.call({ action: "reuse", squad: "F" })).toBe("REUSE squad F: none (no proven builder of this run that has ended shares its files or area); spawn a fresh builder");
+		});
+
+		test("the SEED line also tells the Captain to brief the squad and carry its lessons and open findings", async () => {
+			const s = await open();
+			await built(s, ["A"]);
+			const seed = (await s.call({ action: "reuse", squad: "T" })).split("\n")[1];
+			expect(seed).toContain('"build squad T"');
+			expect(seed).toContain("the squad's lessons and open finding IDs");
+		});
+
+		test("names on: spawned builders of this run, by name, and the SEED line points at the name action", async () => {
+			const s = await open(true);
+			const a = await nameOf(s, { agent: "battle-brother", squad: "A" });
+			spawn(s, "battle-brother", a);
+			await rate(s, a);
+			const out = (await s.call({ action: "reuse", squad: "T" })).split("\n");
+			expect(out[0]).toBe(`REUSE squad T: ${a} (squad A, shared files, usage unknown)`);
+			expect(out[1]).toEndWith(`; with names on, strategium action name with source: ${a}`);
+		});
+	});
+
+	describe("the Reuse: guard on a task call", () => {
+		test("a corrupted source blocks the whole call, in a task item or in the shared context, any key case", async () => {
+			const s = await open();
+			await built(s, ["A"], "corrupted");
+			for (const [t, context] of [["build squad T\nReuse: A", undefined], ["build squad T\nreuse: A.", undefined], ["build squad T", "REUSE: A"]] as const) {
+				const v = task(s, [item(t)], context);
+				expect(v?.block).toBe(true);
+				expect(v?.reason).toBe(
+					"Strategium: a task item names A as its reuse source (Reuse: A), and A is rated corrupted: a corrupted agent is never reused. Pick another source with strategium action reuse, or brief a fresh builder without the Reuse line.",
+				);
+			}
+		});
+
+		test("a proven-regression source passes: only corrupted is vetoed", async () => {
+			const s = await open();
+			await built(s, ["A"], "proven-regression");
+			expect(task(s, [item("build squad T\nReuse: A")])).toBeUndefined();
+		});
+
+		describe("every form of the line is read, on its own line only", () => {
+			const blocked = async (brief: string, context?: string) => {
+				const s = await open();
+				await built(s, ["A"], "corrupted");
+				return task(s, [item(brief)], context)?.block === true;
+			};
+			for (const line of ["- Reuse: A", "* Reuse: A", "> Reuse: A", "**Reuse:** A", "__Reuse:__ A", "Reuse : A", "Reuse: `A`", "Reuse: <A>", "Reuse: agent://A", "Reuse: **A**", "  - reuse: A.", "Reuse: A\r"])
+				test(`blocks ${JSON.stringify(line)}`, async () => {
+					expect(await blocked(`build squad T\n${line}\nmore`)).toBe(true);
+				});
+			test("a Reuse: that is not on a line of its own, or whose id is on the next line, does not read", async () => {
+				expect(await blocked("build squad T\nReuse:\nA")).toBe(false);
+				expect(await blocked("build squad T\nPlease Reuse: A")).toBe(false);
+			});
+			test("40k blank lines and a long id run read in linear time", async () => {
+				const s = await open();
+				await built(s, ["A"], "corrupted");
+				const t0 = performance.now();
+				task(s, [item(`build squad T${"\n".repeat(40_000)}`)], `Reuse: A${".".repeat(40_000)}x`);
+				task(s, [item(`${" ".repeat(40_000)}x`)]);
+				task(s, [item(`Reuse:${" ".repeat(40_000)}`)]);
+				expect(performance.now() - t0).toBeLessThan(500);
+			});
+		});
+
+		test("a proven source, an unrated one and a brief without the line pass", async () => {
+			const s = await open();
+			await built(s, ["C"]);
+			expect(task(s, [item("build squad T\nReuse: C")])).toBeUndefined();
+			expect(task(s, [item("build squad T\nReuse: Nobody")])).toBeUndefined();
+			expect(task(s, [item("build squad T")])).toBeUndefined();
+		});
+
+		test("names on: a rating stored under Name-2 blocks Reuse: Name, and the other way round", async () => {
+			const s = await open(true);
+			const a = await nameOf(s, { agent: "battle-brother", squad: "A" });
+			spawn(s, "battle-brother", a);
+			const t = await nameOf(s, { agent: "battle-brother", squad: "T" });
+			// omp shows a reused name as Name-2; a rating stored under it still names the same agent.
+			const file = join(s.dir, "runs", "sess-0001.json");
+			writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), ratings: { [`${a}-2`]: { rating: "corrupted", evidence: ["I-1"], model: "@task", effort: "medium" } } }));
+			expect(task(s, [item(`build squad T\nReuse: ${a}`, { name: t })])?.block).toBe(true);
+			expect(task(s, [item(`build squad T\nReuse: ${a}-2`, { name: t })])?.block).toBe(true);
+		});
+
+		test("names off: S1-2 is another agent than S1; names on: the -N suffix folds", async () => {
+			const off = await open();
+			await built(off, ["A"], "corrupted");
+			expect(task(off, [item("build squad T\nReuse: A-2")])).toBeUndefined();
+			const on = await open(true);
+			const a = await nameOf(on, { agent: "battle-brother", squad: "A" });
+			spawn(on, "battle-brother", a);
+			await rate(on, a, "corrupted");
+			const t = await nameOf(on, { agent: "battle-brother", squad: "T" });
+			expect(task(on, [item(`build squad T\nReuse: ${a}-2`, { name: t })])?.block).toBe(true);
+			expect(task(on, [item(`build squad T\nReuse: ${a}`, { name: t })])?.block).toBe(true);
+		});
+
+		test("it holds without a repo", async () => {
+			const s = await open(false, false);
+			await built(s, ["A"], "corrupted");
+			expect(task(s, [item("build squad T\nReuse: A")])?.block).toBe(true);
+		});
+	});
+
+	describe("name with source", () => {
+		test("the reused brother keeps his surname with the squad's title; a veteran too; the next builder has the squad's own", async () => {
+			const s = await open(true);
+			const l = await nameOf(s, { agent: "battle-brother", squad: "A" });
+			spawn(s, "battle-brother", l);
+			const g = await nameOf(s, { agent: "battle-brother", squad: "T" });
+			spawn(s, "battle-brother", g);
+			const surname = (n: string) => n.replace(/^[A-Z][a-z]+(?=[A-Z])/, "");
+			const p = await nameOf(s, { agent: "battle-brother", squad: "T", source: l });
+			expect(p).toBe(`Penitent${surname(l)}`);
+			spawn(s, "battle-brother", p);
+			const v = await nameOf(s, { agent: "veteran", squad: "T", source: l });
+			expect(v).toBe(`Veteran${surname(l)}`);
+			spawn(s, "veteran", v);
+			const next = await nameOf(s, { agent: "battle-brother", squad: "T" });
+			expect(surname(next)).toBe(surname(g));
+			expect(runFile(s).names?.find(n => n.name === p)?.squad).toBe("T");
+		});
+
+		test("an epithet keeps the surname when that name is taken", async () => {
+			const s = await open(true);
+			const l = await nameOf(s, { agent: "battle-brother", squad: "A" });
+			spawn(s, "battle-brother", l);
+			spawn(s, "battle-brother", await nameOf(s, { agent: "battle-brother", squad: "T" }));
+			spawn(s, "battle-brother", await nameOf(s, { agent: "battle-brother", squad: "T", source: l }));
+			expect(await nameOf(s, { agent: "battle-brother", squad: "T", source: l })).toEndWith("Unbroken");
+		});
+
+		test("a source retired by a redraft or that is not a builder is refused", async () => {
+			const s = await open(true);
+			const l = await nameOf(s, { agent: "battle-brother", squad: "A" });
+			spawn(s, "battle-brother", l);
+			const sc = await nameOf(s, { agent: "scout" });
+			spawn(s, "scout", sc);
+			expect(await s.call({ action: "name", agent: "battle-brother", squad: "T", source: sc })).toBe(`ERROR ${sc} is not a builder of this run that has spawned`);
+			await s.call({ action: "redraft" });
+			await s.call({ action: "slices", slices: SQUADS });
+			expect(await s.call({ action: "name", agent: "battle-brother", squad: "T", source: l })).toBe(`ERROR ${l} is not a builder of this run that has spawned`);
+		});
+
+		test("refusals: another agent, a name that never spawned, a corrupted source", async () => {
+			const s = await open(true);
+			const l = await nameOf(s, { agent: "battle-brother", squad: "A" });
+			expect(await s.call({ action: "name", agent: "scout", source: l })).toBe("ERROR source is only for battle-brother and veteran");
+			expect(await s.call({ action: "name", agent: "battle-brother", squad: "T", source: l })).toBe(`ERROR ${l} is not a builder of this run that has spawned`);
+			expect(await s.call({ action: "name", agent: "battle-brother", squad: "T", source: "Ghost" })).toBe("ERROR Ghost is not a builder of this run that has spawned");
+			spawn(s, "battle-brother", l);
+			await rate(s, l, "corrupted");
+			expect(await s.call({ action: "name", agent: "battle-brother", squad: "T", source: l })).toBe(`ERROR ${l} is corrupted: a corrupted agent is never reused`);
+			expect(runFile(s).names?.filter(n => n.squad === "T")).toEqual([]);
+		});
+	});
+
+	describe("the tier after a corrupted round", () => {
+		const reused = async (agent: string, planned = "light") => {
+			process.env.STRATEGIUM_NAMES = "1";
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			await s.call({ action: "slices", slices: SQUADS.map(q => (q.id === "T" ? { ...q, tier: planned } : q)) });
+			const l = await nameOf(s, { agent: "battle-brother", squad: "A" });
+			spawn(s, "battle-brother", l);
+			await rate(s, l);
+			const g = await nameOf(s, { agent: "battle-brother", squad: "T" });
+			expect(spawn(s, "battle-brother", g)?.model).toBe(DEFAULT[planned as keyof typeof DEFAULT]);
+			await rate(s, g, "corrupted");
+			const r = await nameOf(s, { agent: agent === "veteran" ? "veteran" : "battle-brother", squad: "T", source: l });
+			return { s, l, g, r, spawned: spawn(s, agent, r) };
+		};
+
+		test("a reuse battle-brother of the squad runs one tier up", async () => {
+			const { spawned } = await reused("battle-brother");
+			expect(spawned).toEqual({ model: DEFAULT.standard, note: "Strategium tier standard" });
+		});
+
+		test("a reuse veteran runs heavy", async () => {
+			const { spawned } = await reused("veteran");
+			expect(spawned).toEqual({ model: DEFAULT.heavy, note: "Strategium tier heavy" });
+		});
+
+		test("the FALL line names the squad's first brother, not the reused one, and the roster credit agrees", async () => {
+			const { s, g, r } = await reused("battle-brother");
+			const surname = (n: string) => n.replace(/^[A-Z][a-z]+(?=[A-Z])/, "");
+			const out = await rate(s, r, "corrupted");
+			expect(out).toContain(`FALL ${surname(g)} squad T falls at end`);
+			expect(out).not.toContain(`FALL ${surname(r)} `);
+			// The roster credits the squad's first builder: the same surname the FALL line shows.
+			const file = JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.json"), "utf8"));
+			expect(runOutcomes(file)).toEqual([{ brother: surname(g), squad: "T", kind: "fell", penances: expect.any(Number) }]);
+		});
+
+		test("a corrupted rating before a redraft does not step the re-planned squad up", async () => {
+			const { s } = await reused("battle-brother");
+			await s.call({ action: "redraft" });
+			await s.call({ action: "slices", slices: SQUADS });
+			const g = await nameOf(s, { agent: "battle-brother", squad: "T" });
+			expect(spawn(s, "battle-brother", g)?.model).toBe(DEFAULT.light);
+		});
+	});
+
+	describe("penance 2", () => {
+		const surname = (n: string) => n.replace(/^[A-Z][a-z]+(?=[A-Z])/, "");
+
+		test("a proven builder retired by a redraft is not offered (names on)", async () => {
+			const s = await open(true);
+			const a = await nameOf(s, { agent: "battle-brother", squad: "A" });
+			spawn(s, "battle-brother", a);
+			launch(s, [a]); // an async builder reaches the cockpit registry, which a redraft does not clear
+			finish(s, [a]);
+			await rate(s, a);
+			expect((await s.call({ action: "reuse", squad: "T" })).split("\n")[0]).toStartWith(`REUSE squad T: ${a} `);
+			await s.call({ action: "redraft" });
+			await s.call({ action: "slices", slices: SQUADS });
+			expect((await s.call({ action: "reuse", squad: "T" })).split("\n")[0]).toStartWith("REUSE squad T: none");
+		});
+
+		test("names on: a candidate rated corrupted under Name-2, or running as Name-2, is dropped", async () => {
+			const s = await open(true);
+			const a = await nameOf(s, { agent: "battle-brother", squad: "A" });
+			spawn(s, "battle-brother", a);
+			await rate(s, a);
+			const file = join(s.dir, "runs", "sess-0001.json");
+			const was = JSON.parse(readFileSync(file, "utf8"));
+			const edit = (patch: object) => writeFileSync(file, JSON.stringify({ ...was, ...patch }));
+			edit({ ratings: { ...was.ratings, [`${a}-2`]: { rating: "corrupted", evidence: ["I-1"], model: "@task", effort: "medium" } } });
+			expect((await s.call({ action: "reuse", squad: "T" })).split("\n")[0]).toStartWith("REUSE squad T: none");
+			edit({ agents: { [`${a}-2`]: { id: "A", parallel: false, files: ["pkg/t.ts"] } } });
+			expect((await s.call({ action: "reuse", squad: "T" })).split("\n")[0]).toStartWith("REUSE squad T: none");
+		});
+
+		test("the FALL line after a redraft names the new live brother", async () => {
+			const s = await open(true);
+			const old = await nameOf(s, { agent: "battle-brother", squad: "T" });
+			spawn(s, "battle-brother", old);
+			await s.call({ action: "redraft" });
+			await s.call({ action: "slices", slices: SQUADS });
+			const fresh = await nameOf(s, { agent: "battle-brother", squad: "T" });
+			spawn(s, "battle-brother", fresh);
+			const out = await rate(s, fresh, "corrupted");
+			expect(out).toContain(`FALL ${surname(fresh)} squad T falls at end`);
+			if (surname(old) !== surname(fresh)) expect(out).not.toContain(`FALL ${surname(old)} `);
+		});
+
+		test("names off: a reuse brief that mentions the source's squad is counted for the squad after `build`", async () => {
+			const s = await open(false, true, [
+				{ id: "A", parallel: false, files: ["a/a.ts"], tier: "heavy" },
+				{ id: "T", parallel: false, files: ["t/t.ts"], tier: "light" },
+			]);
+			expect(task(s, [{ agent: "battle-brother", name: "X", isolated: true, task: "Reuse: A\nbuild squad T\nA built squad A before" }])).toBeUndefined();
+			expect(spawn(s, "battle-brother", "X")?.model).toBe(DEFAULT.light);
+		});
+
+		describe("the guard reads more forms", () => {
+			const blocked = async (brief: string) => {
+				const s = await open();
+				await built(s, ["A"], "corrupted");
+				return task(s, [item(`build squad T\n${brief}`)])?.block === true;
+			};
+			for (const line of ["1. Reuse: A", "2) Reuse: A", "# Reuse: A", "## Reuse: A", "(Reuse: A)", '"Reuse: A"', "'Reuse: A'", 'Reuse: "A"', "Reuse: [A](x)", "- 3. Reuse: A"])
+				test(`blocks ${JSON.stringify(line)}`, async () => {
+					expect(await blocked(line)).toBe(true);
+				});
+			test("an id that continues as a path is not the agent", async () => {
+				expect(await blocked("Reuse: A/names.ts")).toBe(false);
+				expect(await blocked("Reuse: Ax")).toBe(false);
+			});
+			test("hostile prefixes stay linear", async () => {
+				const s = await open();
+				await built(s, ["A"], "corrupted");
+				const t0 = performance.now();
+				for (const t of [`${"1.".repeat(20_000)}x`, `${"- ".repeat(20_000)}x`, `${"# ".repeat(20_000)}Reuse`, `Reuse:${'" '.repeat(20_000)}`, `Reuse:${"_".repeat(40_000)}/`]) task(s, [item(t)]);
+				expect(performance.now() - t0).toBeLessThan(500);
+			});
+		});
 	});
 });
