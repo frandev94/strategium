@@ -13,16 +13,20 @@ import {
 	dayFile,
 	dueAlert,
 	elapsedMin,
+	isVia,
 	load,
 	nowIso,
 	openKeys,
 	overlapMin,
 	overlaps as overlapIntervals,
+	poolOf,
 	splitMin,
 	release,
 	safeName,
+	viaOf,
 	writeAtomic,
 	type Ev,
+	type Via,
 } from "./timer";
 import { debrief, type AgentCost, type Reported } from "./debrief";
 import { casterFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete } from "./caster";
@@ -436,7 +440,18 @@ function openFile(key: string): string | undefined {
 
 const isOpen = (key: string) => openFile(key) !== undefined;
 
-function startKey(key: string, booked?: number, prior?: number, untimed = false): void {
+/** The ERROR line for a `via` that cannot be recorded, or undefined. Runs before any claim or file write. */
+function viaError(via: unknown, booked?: number): string | undefined {
+	if (via === undefined) return undefined;
+	if (booked === undefined) return "ERROR via needs booked: the minutes of the booking or estimate it names";
+	if (!isVia(via)) return 'ERROR bad via: key is 1-64 characters on one line, reason is "parent booking" or "estimate"';
+	return undefined;
+}
+
+/** Only `key` and `reason` are ever written. */
+const cleanVia = (via?: Via): Via | undefined => (via ? { key: via.key, reason: via.reason } : undefined);
+
+function startKey(key: string, booked?: number, prior?: number, untimed = false, via?: Via): void {
 	mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
 	const file = today();
 	const evs = load(file);
@@ -445,12 +460,16 @@ function startKey(key: string, booked?: number, prior?: number, untimed = false)
 	if (openKeys(evs).includes(key)) {
 		// Already running: a new booking is a start event (every span reader ignores a start on an open key, so no time is lost);
 		// without one, the minutes already worked are kept as an adjustment, not dropped.
-		if (booked !== undefined && booked !== bookedMin(evs, key)) append(file, { ts: nowIso(), event: "start", key, booked, ...(prior ? { prior } : {}) });
+		const stored = viaOf(evs, key);
+		if (booked !== undefined && (booked !== bookedMin(evs, key) || via?.key !== stored?.key || via?.reason !== stored?.reason))
+			append(file, { ts: nowIso(), event: "start", key, booked, ...(via ? { via } : {}), ...(prior ? { prior } : {}) });
 		else if (prior) append(file, { ts: nowIso(), event: "adjust", key, prior });
 		return;
 	}
 	if (bk === undefined && !untimed) throw new Error(`booked minutes unknown for ${key}; pass booked`);
-	append(file, { ts: nowIso(), event: "start", key, ...(bk === undefined ? {} : { booked: bk }), ...(prior ? { prior } : {}) });
+	// via lives only next to booked: a given booking brings its own via (none = an own booking), a resume keeps the stored one.
+	const v = booked === undefined ? viaOf(evs, key) : via;
+	append(file, { ts: nowIso(), event: "start", key, ...(bk === undefined ? {} : { booked: bk }), ...(bk !== undefined && v ? { via: v } : {}), ...(prior ? { prior } : {}) });
 }
 
 // `reason`: "shutdown" marks the stop of a closing session, so the reopened session knows to resume; "idle" marks the idle pause;
@@ -524,7 +543,7 @@ function closeGap(run: Run, force = false): string | undefined {
 }
 
 /** Claim `key` for session `sid`. A ticket held by a crashed session is taken over by naming its id in `takeover`. */
-function begin(sid: string, key: string, theatre: string, booked?: number, spent?: number, takeover?: string, ownRepo?: { repo?: string }): void {
+function begin(sid: string, key: string, theatre: string, booked?: number, spent?: number, takeover?: string, ownRepo?: { repo?: string }, via?: Via): void {
 	claim(stateDir(), key, sid, takeover);
 	const other = allRuns().find(r => r.key === key && r.sid !== sid);
 	if (other) {
@@ -546,7 +565,7 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: ownRepo ? ownRepo.repo : keep ? keep.repo : other?.repo, since: keep?.since ?? other?.since ?? nowIso(), ...(keep ? {} : { recorded: other?.recorded }), ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
 	sweepPointers();
-	startKey(key, booked, spent, untimed);
+	startKey(key, booked, spent, untimed, via);
 }
 
 function statusLines(): string {
@@ -561,7 +580,10 @@ function statusLines(): string {
 			const bk = bookedMin(evs, k);
 			const state = open.includes(k) ? "running" : "stopped";
 			if (bk === undefined) return `${k} ${el} min (no booking) ${state}`;
-			return `${k} ${el}/${bk} min (${Math.floor((el / bk) * 100)}%) ${state}`;
+			const via = viaOf(evs, k);
+			const pool = poolOf(evs, k, now);
+			const shared = pool ? ` · shared ${pool.parent} ${Math.floor(pool.el)}/${pool.booked} min (${Math.floor((pool.el / pool.booked) * 100)}%)` : "";
+			return `${k} ${el}/${bk} min (${Math.floor((el / bk) * 100)}%) ${state}${via ? ` via ${via.key} (${via.reason})` : ""}${shared}`;
 		})
 		.join("\n");
 }
@@ -719,6 +741,10 @@ function report(date?: string): string {
 		...keys.flatMap(k => (sum(k, "start") ? [`PRIOR ${k} ${sum(k, "start")} min (estimate, before tracking)`] : [])),
 		...keys.flatMap(k => (sum(k, "adjust") ? [`ADJUST ${k} ${sum(k, "adjust")} min (added by hand)`] : [])),
 		...bl.map(b => `${b.key} ${b.start}-${b.end} (${b.min} min)`),
+		...keys.flatMap(k => {
+			const via = viaOf(evs, k);
+			return via ? [`VIA ${k} ${via.key} (${via.reason})`] : [];
+		}),
 		...keys.map(k => {
 			const measured = bl.filter(b => b.key === k).reduce((n, b) => n + b.min, 0);
 			const worked = Math.floor(elapsedMin(evs, k, now));
@@ -2012,10 +2038,10 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	}
 
 	/** Begin `key` for the session: the tool's `begin` and the /strategium command both come here, so the edit guard is armed the same way. */
-	async function beginRun(sid: string, key: string, theatre: string, booked: number | undefined, spent: number | undefined, takeover: string | undefined, archmagos: boolean | undefined, ctx: SessionCtx, ownRepo?: { repo?: string }): Promise<string> {
+	async function beginRun(sid: string, key: string, theatre: string, booked: number | undefined, spent: number | undefined, takeover: string | undefined, archmagos: boolean | undefined, ctx: SessionCtx, ownRepo?: { repo?: string }, via?: Via): Promise<string> {
 		// A session that lost its ticket drops its files here; its in-memory cockpit goes too, or a begin of the same key would bring it back.
 		if (!ownRun(sid)) resetCockpit();
-		begin(sid, key, theatre, booked, spent, takeover, ownRepo);
+		begin(sid, key, theatre, booked, spent, takeover, ownRepo, via);
 		// A block start always restarts the idle count.
 		idleSince = undefined;
 		const run = ownRun(sid)!;
@@ -2053,13 +2079,16 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	const maybeAlert = (ctx: SessionCtx, sid: string, file: string, evs: Ev[], key: string, now: Date, el: number, bk: number) => {
 		const p = dueAlert(evs, key, now);
 		if (p === undefined) return;
-		append(file, { ts: nowIso(), event: "alert", key, p });
-		ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}`, p === 100 ? "warning" : "info");
-		const alarmError = alert(sid, String(p), `${key}: ${p}% of the booking (${el}/${bk} min)`, ctx);
+		const pool = poolOf(evs, key, now);
+		const shared = pool ? `shared via ${pool.parent}: ${pool.keys.join("+")}` : "";
+		// shortcut: two sessions ticking within the same milliseconds can both read "not alerted yet" and both alert; upgrade to an exclusive marker file if doubles are ever seen.
+		append(file, { ts: nowIso(), event: "alert", key, p, ...(pool ? { pool: pool.parent } : {}) });
+		ctx.ui.notify(`Strategium: ${p}% of the booking for ${key}${pool ? ` (${shared})` : ""}`, p === 100 ? "warning" : "info");
+		const alarmError = alert(sid, String(p), `${key}: ${p}% of the booking (${el}/${bk} min${pool ? `, ${shared}` : ""})`, ctx);
 		if (alarmError) ctx.ui.notify(`Strategium: ${alarmError}`, "warning");
 		log(key, "TIMER", `⧗ ${p}% of the booking`);
 		pi.sendMessage(
-			{ customType: "strategium-timer", content: `TIMER ${p}% ${key} ${el}/${bk} min`, display: true, attribution: "agent" },
+			{ customType: "strategium-timer", content: `TIMER ${p}% ${key} ${el}/${bk} min${pool ? ` via ${pool.parent} (shared ${pool.keys.join("+")})` : ""}`, display: true, attribution: "agent" },
 			{ deliverAs: "aside", triggerTurn: true },
 		);
 	};
@@ -2123,8 +2152,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const evs = load(file);
 			const key = found.key;
 			const now = new Date();
-			const el = Math.floor(elapsedMin(evs, key, now));
-			const bk = bookedMin(evs, key) ?? 0;
+			const pool = poolOf(evs, key, now);
+			const el = Math.floor(pool ? pool.el : elapsedMin(evs, key, now));
+			const bk = (pool ? pool.booked : bookedMin(evs, key)) ?? 0;
 			ctx.ui.setStatus("strategium", renderFooter(found, evs, running, el, bk, cockpitHint(cockpitKey.key)));
 			// A paused run never alerts. Reset first, so the clock stored below is not wiped by the first draw of a new key.
 			if (cockpit.key !== key) resetCockpit(key);
@@ -2142,6 +2172,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		action: z.enum(["begin", "repo", "start", "stop", "add", "status", "report", "end", "switch", "attention", "notify", "slices", "redraft", "name", "reuse", "rate", "seal", "signal", "record"]),
 		key: z.string().optional(),
 		booked: z.number().int().positive().optional(),
+		via: z.object({ key: z.string(), reason: z.enum(["parent booking", "estimate"]) }).optional(),
 		spent: z.number().int().nonnegative().optional(),
 		theatre: z.string().optional(),
 		repo: z.string().optional(),
@@ -2179,7 +2210,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		name: "strategium",
 		label: "Strategium",
 		description:
-			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?, reported?), switch (key, booked?, takeover?), attention (message), notify (on?), slices (slices), redraft, name (agent, squad?, again?, source?), reuse (squad), rate (agent, rating, evidence, model, effort), seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row), record (text, note?; Captain only). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. switch ends this session's run (a normal end) and begins key in one call, keeping theatre and repo; booked is the new key's own (none = untimed), never the old one's; takeover names the holder of key. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id (with names on, after the name from the name action); parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>, or when its name came from the name action) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound, toast and names settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex; it makes the run's builder names obsolete. name (agent, squad?, again?) hands out the agent's lore name and answers NAME <name> or ERROR <reason>. It works only with names on (status shows NAMES on|off (<source>); /strategium-config names on|off|default or env STRATEGIUM_NAMES=1; off by default, and then it answers ERROR). agent is a roster agent; squad, a declared squad id, is required for battle-brother and veteran and refused for the other agents; again: true keeps a non-builder agent's persona; source (battle-brother and veteran only) is the name of a spawned builder of this run that is not corrupted: the new builder takes its surname. With names on, the name of every task item (and the label of an eval agent) must come from this action: a refusal says so, and slices adds a NAMES <squad>=<name>, ... line for the parallel squads. reuse (squad) lists up to 3 proven builders of this run that have ended and whose squad shares files, or a folder, with the squad (REUSE line, then a SEED line for the brief); it writes nothing. A task item or the call's context with a line Reuse: <agent id> that names a corrupted agent is blocked. rate (Captain only) stores your verdict on one agent of this run, by the agent id the task result shows: rating is proven, proven-regression (proven, but it added a new BLOCKING finding on the lines a penance touched) or corrupted (a reproduced BLOCKING finding, an apothecary survivor or fuzz crash, a red acceptance check, or a rule breach: a commit, git push, a gh write, or a write outside its worktree); evidence = 1-8 short items (finding IDs, the failing check, the breached rule); model and effort = what the agent ran on (the tier selector @task:medium is model @task, effort medium; effort default when none). Corrupted is final for that agent; with names on it also marks the squad's brother as fallen, provisionally: the squad falls at end unless a later builder replaces it. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned. end writes the run's debrief (time per station, seals, squads, spawns) to <state dir>/debriefs and answers ENDED <key>, DEBRIEF <path> and summary lines; reported = {apothecary: {killed, survived, crashes}, review: {pass, fail, opened, fixed, not_reproduced}}: whole numbers from the agents' reports, shown only in the (reported) sections. report (date?) also ends with the TALLY and PROPOSE lines of <state dir>/tally.json (per model, effort and squad kind: proven, proven-regression, corrupted; PROPOSE names a heavier default tier for a kind whose tier keeps failing), or a WARN line when that file is unreadable; a report with a date shows none. end also adds the run's rated builders to <state dir>/tally.json and answers TALLY recorded <n> rating(s), or WARN TALLY not written: <reason>; nothing when no builder of a declared squad was rated.",
+			"Strategium run state and booking timer, one run per omp session (other sessions may run other tickets in parallel). Actions: begin (key, booked?, via?, spent?, theatre?, takeover?, archmagos?), repo (repo), start (booked?), stop, add (minutes), status, report (date?), end (key?, takeover?, reported?), switch (key, booked?, via?, takeover?), attention (message), notify (on?), slices (slices), redraft, name (agent, squad?, again?, source?), reuse (squad), rate (agent, rating, evidence, model, effort), seal (lines), signal (pct?, eta_min?, line?, blocked?; subagents only, your own cockpit row), record (text, note?; Captain only). booked is optional: without it the run is untimed, its time is counted but there are no 50/80/100 % alerts and no new shifts. via = {key, reason: parent booking|estimate}, only with booked, when the booking is not the key's own (the theatre's lookup); keys booked through the same parent share that booking's alerts; a booked without via drops it; a new day drops it. spent = minutes already worked on the key today that strategium has not tracked; they count toward the 50/80/100 % alerts. start resumes the run; start (or begin again) with booked makes an untimed run timed, and its minutes so far count toward the booking; on a new day it opens a new shift that counts from 0 (pass today's booked minutes; else the last booking is reused). add = a manual correction of today's time in whole minutes, negative to subtract. switch ends this session's run (a normal end) and begins key in one call, keeping theatre and repo; booked is the new key's own (none = untimed), never the old one's; takeover names the holder of key. takeover = the id of a crashed session that holds the ticket, as given in the refusal; only the user decides that session is gone. attention plays the attention sound and shows a desktop notification with the message: use it whenever the user must act (a seal, a question, a blocker, a finished run). notify turns this session's sounds and desktop notifications on or off (on: true/false; without on it only reports the state); it wins over env STRATEGIUM_NOTIFY, which is off by default; set it only when the user asks. The user picks the alarm's channels with /strategium-config sound|toast on|off; attention reports the channels that fired. slices (slices: [{id, parallel, files, tier?}]: the plan's squads; tier is light, standard (default) or heavy, and the plugin runs that squad's battle-brothers on that tier's model, so name each task item after its squad id (with names on, after the name from the name action); parallel squads must not share a file; required before any battle-brother). A squad whose battle-brothers and veterans have all stopped (known when the task item's name is the squad id or its brief says build squad <id>, or when its name came from the name action) no longer counts: listing it again gives WARN lines before the result instead of an ERROR. No builder may start on files another running builder is changing. begin with archmagos: true marks the run for the Archmagos Dominus (false clears the mark; omitted keeps it); the plugin spawns one only when the setting is on, the run is marked and 2 librarians finished. status ends with the archmagos, tiers, notify, sound, toast and names settings. redraft (no params) records the run's one redraft (in both plan paths; a second is refused) and sends the run back to Auspex; it makes the run's builder names obsolete. name (agent, squad?, again?) hands out the agent's lore name and answers NAME <name> or ERROR <reason>. It works only with names on (status shows NAMES on|off (<source>); /strategium-config names on|off|default or env STRATEGIUM_NAMES=1; off by default, and then it answers ERROR). agent is a roster agent; squad, a declared squad id, is required for battle-brother and veteran and refused for the other agents; again: true keeps a non-builder agent's persona; source (battle-brother and veteran only) is the name of a spawned builder of this run that is not corrupted: the new builder takes its surname. With names on, the name of every task item (and the label of an eval agent) must come from this action: a refusal says so, and slices adds a NAMES <squad>=<name>, ... line for the parallel squads. reuse (squad) lists up to 3 proven builders of this run that have ended and whose squad shares files, or a folder, with the squad (REUSE line, then a SEED line for the brief); it writes nothing. A task item or the call's context with a line Reuse: <agent id> that names a corrupted agent is blocked. rate (Captain only) stores your verdict on one agent of this run, by the agent id the task result shows: rating is proven, proven-regression (proven, but it added a new BLOCKING finding on the lines a penance touched) or corrupted (a reproduced BLOCKING finding, an apothecary survivor or fuzz crash, a red acceptance check, or a rule breach: a commit, git push, a gh write, or a write outside its worktree); evidence = 1-8 short items (finding IDs, the failing check, the breached rule); model and effort = what the agent ran on (the tier selector @task:medium is model @task, effort medium; effort default when none). Corrupted is final for that agent; with names on it also marks the squad's brother as fallen, provisionally: the squad falls at end unless a later builder replaces it. seal (lines: string[]) fills the cockpit's seal panel with the lines you are about to show for the seal that waits (its [seal] task in progress); the panel clears when that seal is granted. The plugin refuses librarian and archmagos spawns until a scout spawned after it has finished. On a run that spawned its archmagos, one more archmagos may be spawned. end writes the run's debrief (time per station, seals, squads, spawns) to <state dir>/debriefs and answers ENDED <key>, DEBRIEF <path> and summary lines; reported = {apothecary: {killed, survived, crashes}, review: {pass, fail, opened, fixed, not_reproduced}}: whole numbers from the agents' reports, shown only in the (reported) sections. report (date?) also ends with the TALLY and PROPOSE lines of <state dir>/tally.json (per model, effort and squad kind: proven, proven-regression, corrupted; PROPOSE names a heavier default tier for a kind whose tier keeps failing), or a WARN line when that file is unreadable; a report with a date shows none. end also adds the run's rated builders to <state dir>/tally.json and answers TALLY recorded <n> rating(s), or WARN TALLY not written: <reason>; nothing when no builder of a declared squad was rated.",
 		parameters: schema,
 		async execute(_id, input, _signal, _onUpdate, ctx) {
 			if (ctx?.agent?.kind === "sub" && input.action !== "signal") return text("ERROR strategium tool is for the main session only");
@@ -2190,7 +2221,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				switch (params.action) {
 					case "begin": {
 						if (!params.key) throw new Error("begin needs key");
-						return text(await beginRun(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover, params.archmagos, ctx));
+						const bad = viaError(params.via, params.booked);
+						if (bad) return text(bad);
+						return text(await beginRun(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover, params.archmagos, ctx, undefined, cleanVia(params.via)));
 					}
 					case "repo": {
 						const run = ownRun(sid);
@@ -2306,13 +2339,16 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					case "switch": {
 						if (!params.key) throw new Error("switch needs key");
 						const key = params.key;
+						const bad = viaError(params.via, params.booked);
+						if (bad) return text(bad);
+						const via = cleanVia(params.via);
 						const old = ownRun(sid);
 						if (!old) return text("ERROR no run to switch from in this session");
 						if (key === old.key) return text(`ERROR ${key} is already this session's run`);
 						if (Object.keys(old.agents ?? {}).length) return text(`ERROR ${old.key} still has builders (battle-brothers, veterans) running: wait for them or end the run first`);
 						// Claim first: a refused key leaves the old run running, and no session can take it between the two halves.
 						claim(stateDir(), key, sid, params.takeover);
-						const retry = `call strategium begin key ${key} theatre ${old.theatre}${params.booked !== undefined ? ` booked ${params.booked}` : ""}${old.repo ? `, then repo ${old.repo}` : ""}`;
+						const retry = `call strategium begin key ${key} theatre ${old.theatre}${params.booked !== undefined ? ` booked ${params.booked}` : ""}${via ? ` via key ${via.key} reason ${via.reason}` : ""}${old.repo ? `, then repo ${old.repo}` : ""}`;
 						let ended: string;
 						try {
 							ended = await finish(sid, ctx);
@@ -2324,7 +2360,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						}
 						try {
 							// ownRepo is passed even when undefined: that means "this session has no repo", unlike not passing it (keep or take the holder's).
-							const begun = await beginRun(sid, key, old.theatre, params.booked, undefined, undefined, undefined, ctx, { repo: old.repo });
+							const begun = await beginRun(sid, key, old.theatre, params.booked, undefined, undefined, undefined, ctx, { repo: old.repo }, via);
 							return text(`${ended}\n${begun}`);
 						} catch (err) {
 							// The end cannot be undone and the claim on key stays ours, so the retry begin succeeds.

@@ -10287,7 +10287,7 @@ describe("switch (#155)", () => {
 
 	test("the tool description lists switch with its parameters", () => {
 		const s = setup();
-		expect(s.tool.description).toContain("switch (key, booked?, takeover?)");
+		expect(s.tool.description).toContain("switch (key, booked?, via?, takeover?)");
 	});
 
 	test("ends K-1 then begins K-2, keeping theatre and repo, and frees K-1", async () => {
@@ -10416,5 +10416,163 @@ describe("switch (#155)", () => {
 		expect(readFileSync(lockPath(s.dir, "K-2"), "utf8")).toBe("sess-0001");
 		rmSync(tmp, { recursive: true });
 		expect(await s.call({ action: "begin", key: "K-2", theatre: "github" })).toContain("K-2");
+	});
+});
+
+// `via`: the booking a key counts against when it is not its own (the theatre's lookup), shared by the keys of one parent.
+describe("via on begin and switch", () => {
+	const T = (h: number, m: number, day = 16) => new Date(2026, 10, day, h, m, 0);
+	const day = (dir: string, d = 16) => join(dir, `2026-11-${d}.jsonl`);
+	const starts = (dir: string, d = 16) => load(day(dir, d)).filter(e => e.event === "start");
+	const pb = { key: "P", reason: "parent booking" } as const;
+
+	test("begin with booked and via shows it in status and report, and the TOTAL line keeps its form", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		const begun = await s.call({ action: "begin", key: "K-1", booked: 60, via: pb });
+		expect(begun).toContain("K-1 0/60 min (0%) running via P (parent booking)");
+		expect(await s.call({ action: "status" })).toContain("via P (parent booking) · shared P 0/60 min (0%)");
+		setSystemTime(T(9, 30));
+		const report = await s.call({ action: "report" });
+		expect(report).toContain("VIA K-1 P (parent booking)");
+		expect(report).toContain("TOTAL K-1 measured 30 min, worked 30 min with prior and adjustments (~30 min)");
+		expect(starts(s.dir)[0].via).toEqual(pb);
+	});
+
+	test("an estimate via is shown but never shared", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 60, via: { key: "K-1", reason: "estimate", extra: 1 } });
+		const status = await s.call({ action: "status" });
+		expect(status).toContain("via K-1 (estimate)");
+		expect(status).not.toContain("shared");
+		expect(starts(s.dir)[0].via).toEqual({ key: "K-1", reason: "estimate" });
+	});
+
+	test("via without booked answers an ERROR and changes nothing", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		expect(await s.call({ action: "begin", key: "K-1", via: pb })).toContain("ERROR via needs booked");
+		expect(await s.call({ action: "status" })).toStartWith("IDLE\nARCHMAGOS");
+		expect(existsSync(day(s.dir))).toBe(false);
+		expect(existsSync(lockPath(s.dir, "K-1"))).toBe(false);
+	});
+
+	test.each([
+		{ key: "", reason: "estimate" },
+		{ key: "x".repeat(65), reason: "estimate" },
+		{ key: "a\nb", reason: "estimate" },
+		{ key: " A", reason: "estimate" },
+		{ key: "A", reason: "guess" },
+		"P",
+		null,
+	])("a bad via %p answers an ERROR and changes nothing", async via => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		expect(await s.call({ action: "begin", key: "K-1", booked: 60, via })).toContain("ERROR bad via");
+		expect(await s.call({ action: "status" })).toStartWith("IDLE\nARCHMAGOS");
+		expect(existsSync(day(s.dir))).toBe(false);
+		expect(existsSync(join(s.dir, "runs"))).toBe(false);
+		expect(existsSync(lockPath(s.dir, "K-1"))).toBe(false);
+	});
+
+	test("switch with booked and via records the via on the new key", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 60 });
+		const out = await s.call({ action: "switch", key: "K-2", booked: 30, via: pb });
+		expect(out).toContain("K-2 0/30 min (0%) running via P (parent booking)");
+		expect(starts(s.dir).find(e => e.key === "K-2")!.via).toEqual(pb);
+	});
+
+	test("switch with a bad via answers an ERROR: the old run runs on and no claim is taken", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 60 });
+		const before = load(day(s.dir)).length;
+		expect(await s.call({ action: "switch", key: "K-2", booked: 30, via: { key: "A", reason: "guess" } })).toContain("ERROR bad via");
+		expect(await s.call({ action: "switch", key: "K-2", via: pb })).toContain("ERROR via needs booked");
+		expect(await s.call({ action: "status" })).toContain("RUN K-1");
+		expect(load(day(s.dir)).length).toBe(before);
+		expect(existsSync(lockPath(s.dir, "K-1"))).toBe(true);
+		expect(existsSync(lockPath(s.dir, "K-2"))).toBe(false);
+	});
+
+	test("a resume the same day carries the via; a changed via, or a booking without via, writes a new start", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 60, via: pb });
+		await s.call({ action: "stop" });
+		await s.call({ action: "start" });
+		expect(starts(s.dir).map(e => e.via)).toEqual([pb, pb]);
+		await s.call({ action: "begin", key: "K-1", booked: 60, via: pb });
+		expect(starts(s.dir)).toHaveLength(2);
+		const other = { key: "Q", reason: "parent booking" } as const;
+		await s.call({ action: "begin", key: "K-1", booked: 60, via: other });
+		expect(starts(s.dir).at(-1)!.via).toEqual(other);
+		await s.call({ action: "begin", key: "K-1", booked: 60 });
+		expect(starts(s.dir).at(-1)).toMatchObject({ key: "K-1", booked: 60 });
+		expect(starts(s.dir).at(-1)!.via).toBeUndefined();
+		expect(await s.call({ action: "status" })).not.toContain("via");
+	});
+
+	test("two keys booked through one parent alert once for the group across two sessions", async () => {
+		const a = setup("sess-0001");
+		const b = setup("sess-0002", a.dir);
+		setSystemTime(T(9, 0));
+		await a.call({ action: "begin", key: "K-1", booked: 4, via: pb });
+		await b.call({ action: "begin", key: "K-2", booked: 4, via: pb });
+		setSystemTime(T(9, 1));
+		a.start();
+		expect(a.calls.map(c => (c[0] as { content: string }).content)).toEqual(["TIMER 50% K-1 2/4 min via P (shared K-1+K-2)"]);
+		expect(a.notes).toEqual(["Strategium: 50% of the booking for K-1 (shared via P: K-1+K-2)"]);
+		expect(alertEvents(a.dir)).toEqual([expect.objectContaining({ key: "K-1", p: 50, pool: "P" })]);
+		b.start();
+		expect(b.calls).toHaveLength(0);
+		expect(alertEvents(a.dir)).toHaveLength(1);
+		setSystemTime(T(9, 2));
+		b.start();
+		a.start();
+		expect(b.calls.map(c => (c[0] as { content: string }).content)).toEqual(["TIMER 100% K-2 4/4 min via P (shared K-1+K-2)"]);
+		expect(a.calls).toHaveLength(1);
+		expect(alertEvents(a.dir).map(e => e.p)).toEqual([50, 100]);
+		expect(b.shown()).toContain("4/4 min");
+	});
+
+	test("a key without via alerts exactly as before", async () => {
+		const s = setup();
+		setSystemTime(T(9, 0));
+		await s.call({ action: "begin", key: "K-1", booked: 4 });
+		setSystemTime(T(9, 2));
+		s.start();
+		expect(s.calls.map(c => (c[0] as { content: string }).content)).toEqual(["TIMER 50% K-1 2/4 min"]);
+		expect(alertEvents(s.dir)[0].pool).toBeUndefined();
+	});
+
+	test("a new day drops the via: a new shift with booked starts without it", async () => {
+		const s = setup();
+		setSystemTime(T(17, 0, 15));
+		await s.call({ action: "begin", key: "K-1", booked: 60, via: pb });
+		await s.call({ action: "stop" });
+		setSystemTime(T(9, 0));
+		await s.call({ action: "start", booked: 60 });
+		expect(starts(s.dir)).toEqual([{ ts: expect.any(String), event: "start", key: "K-1", booked: 60 }]);
+		expect(await s.call({ action: "status" })).not.toContain("via");
+		expect(await s.call({ action: "report" })).not.toContain("VIA");
+	});
+
+	test("a run left running over midnight starts the new day without via", async () => {
+		const s = setup();
+		setSystemTime(T(23, 30));
+		await s.call({ action: "begin", key: "K-1", booked: 120, via: pb });
+		await s.start();
+		for (let m = 31; m < 60; m += 2) {
+			setSystemTime(T(23, m));
+			await s.sub("status");
+		}
+		setSystemTime(T(0, 1, 17));
+		await s.sub("status");
+		expect(starts(s.dir, 17)).toEqual([{ ts: nowIso(T(0, 0, 17)), event: "start", key: "K-1" }]);
+		expect(await s.call({ action: "status" })).not.toContain("via");
 	});
 });
