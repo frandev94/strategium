@@ -401,9 +401,9 @@ export function cockpitView(input: ViewInput) {
 					const done = phase.tasks.length > 0 && phase.tasks.every(t => t.status === "completed");
 					const run = phase.tasks.some(t => t.status === "in_progress");
 					const kind: Kind = done ? "done" : run ? "active" : "idle";
-					return { kind, mark: MARK[kind], name: `${phase.name} · viewing · active: ${phases[active].name}` };
+					return { kind, mark: MARK[kind], name: clean(`${phase.name} · viewing · active: ${phases[active].name}`) };
 				})()
-			: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: phase.name, ...(waiting ? { note: label(ic.seal, `seal ${clean(waiting.id)} awaits you`) } : {}) };
+			: { kind: doing ? "active" : "idle", mark: doing ? (back ? ic.back : "▶") : "○", name: clean(phase.name), ...(waiting ? { note: label(ic.seal, `seal ${clean(waiting.id)} awaits you`) } : {}) };
 	const lines = waiting && input.seal?.id === waiting.id ? input.seal.lines.map(l => clean(l).trimEnd()) : [];
 	const prepared = lines.some(l => l.trim()) ? lines : undefined;
 	const panel = waiting && { title: label(ic.sealWait, `SEAL ${clean(waiting.id).toUpperCase()} · awaits you`), lines: prepared ?? ["the details are in the Captain's message"], prepared: !!prepared };
@@ -451,13 +451,13 @@ export function cockpitView(input: ViewInput) {
 		const [kind, state] = squadState(id);
 		const b = named(id);
 		const glyph = mark([...(input.deployed ?? [])].findLast(([, d]) => d.squad === id)?.[0]); // the newest deployed agent, the one Enter opens
-		const who = b ? `${oneLine(b.name)}${badges(b)}${glyph} · squad ${id} ${state}` : `squad ${id}${glyph} ${state}`;
+		const who = b ? `${oneLine(b.name)}${badges(b)}${glyph} · squad ${oneLine(id)} ${state}` : `squad ${oneLine(id)}${glyph} ${state}`;
 		return { id, key: `squad:${id}`, kind, mark: MARK[kind], text: label(input.notes[id]?.veteran ? ic.veteran : ic.brother, who) };
 	});
 
 	const tasks = (phase?.tasks ?? []).flatMap((t, i) => {
 		const m = t.content.match(ROLE_TAG);
-		return m ? [{ id: `task:${i}:${t.content}`, status: t.status, role: (m[1] ?? m[2]).toLowerCase(), text: m[3] }] : [];
+		return m ? [{ id: `task:${i}:${t.content}`, status: t.status, role: (m[1] ?? m[2]).toLowerCase(), text: clean(m[3]) }] : [];
 	});
 	const seen = phase ? [...(input.deployed ?? [])].filter(([, d]) => d.station === phase.name) : []; // no phases: no station, so no boxes
 	const boxes = BOXES.flatMap(def => {
@@ -480,7 +480,7 @@ export function cockpitView(input: ViewInput) {
 						return hit ? { ...line, id: key, ...row(...hit) } : { ...line, id: key };
 					})
 				: []),
-			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ id: `agent:${id}`, kind: d.state, mark: MARK[d.state], text: who(d.role, `${id}${mark(id)}`), ...row(id, d) })),
+			...agents.filter(([, d]) => !d.squad).map(([id, d]) => ({ id: `agent:${id}`, kind: d.state, mark: MARK[d.state], text: who(d.role, `${clean(id)}${mark(id)}`), ...row(id, d) })),
 		].sort((a, b) => RANK[a.kind] - RANK[b.kind]);
 		const tone = def.tone ?? (lines.some(l => l.kind === "failed") ? "red" : lines.some(l => l.kind !== "idle") ? "green" : "iron");
 		return [{ title: label(ic[def.icon], def.title), tone, lines }];
@@ -556,7 +556,7 @@ export function cockpitView(input: ViewInput) {
 			return e && { title: `CHRONICLE · ${clean(e.at)} · ${clean(e.who)}`, lines: [clean(e.text)] };
 		}
 		const t = tasks.find(x => x.id === id);
-		return t && phase && { title: `${clean(t.role).toUpperCase()} TASK`, lines: [clean(t.text), `status: ${clean(t.status)}`, `station: ${clean(phase.name)}`] };
+		return t && phase && { title: `${clean(t.role).toUpperCase()} TASK`, lines: [t.text, `status: ${clean(t.status)}`, `station: ${clean(phase.name)}`] };
 	};
 	const shownDetail = detailId === undefined ? undefined : detailOf(detailId);
 	const rows = transcript !== undefined && input.transcript?.id === transcript ? keepRows(input.transcript.lines).map(rowOf) : [];
@@ -564,7 +564,7 @@ export function cockpitView(input: ViewInput) {
 
 	const caster = input.caster && { title: `CASTER · ${oneLine(input.caster.station)}${input.caster.at !== undefined && input.now !== undefined ? ` · ${span(minutes(input.now - input.caster.at))}` : ""}`, text: oneLine(input.caster.text), dim: input.caster.dim };
 
-	return { key: input.key, status: input.status, ic, clock, caster, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav, detail };
+	return { key: clean(input.key), status: input.status, ic, clock, caster, seals: sealsFrom(phases).map(s => ({ ...s, id: clean(s.id) })), station, panel, sealIds, boxes, chronicle, items, stations: { shown: at, active, count: phases.length }, nav, detail };
 }
 
 /** A cursor move or a station browse, as `navigate` takes them. */
@@ -729,7 +729,7 @@ const statusText = (status: View["status"], pal: Palette, frame: number): string
 
 const entryLine = (e: Entry, pal: Palette) => {
 	const tone: Tone = e.tone === "ok" ? "green" : e.tone === "fail" ? "red" : e.tone === "seal" || e.tone === "warn" ? "gold" : "parchment";
-	return `${paint(pal.iron, e.at)}  ${paint(pal.parchment, pad(clean(e.who), 11))} ${paint(pal[tone], clean(e.text))}`;
+	return `${paint(pal.iron, clean(e.at))}  ${paint(pal.parchment, pad(clean(e.who), 11))} ${paint(pal[tone], clean(e.text))}`;
 };
 
 type Box = { title: string; lines: string[]; tone: Tone; sel?: number }; // sel: the row of the selected line

@@ -3316,3 +3316,27 @@ describe("ratings: badges and detail lines", () => {
 		for (const l of cockpitView(DETAIL({ ratings })).boxes.flatMap(b => b.lines)) expect([...l.text].filter(c => all.includes(c)).length).toBeLessThanOrEqual(1);
 	});
 });
+
+describe("control characters in model text", () => {
+	const evil = "a\x1b[31m\x9b\x1b]0;x\x07\u202e\u2066b";
+	const bad = /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\u2028\u2029\u200e\u200f\u061c]/u;
+	test("run key, station name and agent-box task text carry none", () => {
+		const phs: Phase[] = [{ name: `St${evil}`, tasks: [{ content: `[scout] t${evil}`, status: "in_progress" }] }];
+		const deployed = new Map([[`ag${evil}`, dep({ station: phs[0].name })]]);
+		for (const width of [50, 100]) for (const l of renderCockpit(cockpitView(input({ key: `K${evil}`, phases: phs, deployed })), width, 0, TRUE)) {
+			expect(plain(l)).not.toMatch(bad);
+			expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
+		}
+	});
+	test("slice id, chronicle time and a browsed station name carry none", () => {
+		const slice = { id: `s${evil}\n` };
+		const phs: Phase[] = [
+			{ name: `Br${evil}`, tasks: [{ content: "[battle-brother] x", status: "completed" }] },
+			{ name: "Act", tasks: [{ content: "[battle-brother] y", status: "in_progress" }] },
+		];
+		const view = cockpitView(input({ phases: phs, slices: [slice as never], chronicle: [{ at: `1${evil}`, who: "X", text: "t" }], nav: { shown: { phase: 0, from: 1 } } }));
+		for (const l of renderCockpit(view, 100, 0, TRUE)) expect(plain(l)).not.toMatch(bad);
+		const named = cockpitView(input({ phases: phs, slices: [slice as never], names: { squads: { [slice.id]: { name: "N" } } } as never }));
+		for (const l of renderCockpit(named, 100, 0, TRUE)) expect(plain(l)).not.toMatch(bad);
+	});
+});
