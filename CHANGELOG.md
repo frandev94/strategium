@@ -1,3 +1,13 @@
+## [0.2.53] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(timer)* A takeover begin keeps the taken run's state and cockpit
+- *(timer)* A takeover settles the taken session's agents and loads the moved cockpit
+
+### 🧪 Testing
+
+- *(timer)* A takeover of a run with no agents keeps the SLICES guard
 ## [0.2.52] - 2026-11-23
 
 ### 🐛 Bug Fixes
