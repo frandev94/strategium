@@ -187,6 +187,18 @@ The plan gives every squad a cost tier with a one-line reason, and the plugin ru
 
 Seal Plan shows each squad's tier and a rough estimate (relative cost 1 / 3 / 10, about 5 / 10 / 20 minutes per squad, from the table in the skill), and you can change a tier there (`S2 heavy`) without a redraft. A squad whose builder failed gets its penance one tier up (heavy stays heavy, then the `veteran`); the reviewers keep their own tiers. Set `STRATEGIUM_TIERS` to change the selectors, and set the `smol` role, which `light` needs: see [docs/models.md](docs/models.md).
 
+#### Ratings
+
+The Captain rates each agent of the run from the reviewers' reports, with the `rate` action: `proven`, `proven-regression` or `corrupted`, with its evidence (1 to 8 items: finding IDs, the failing check or the breached rule), the model and the effort. The model and effort are the ones the Captain spawned it with (a builder's tier selector split at the colon: `@task:medium` is `@task` and `medium`); the plugin stores them and does not observe them.
+
+| Rating | When |
+|---|---|
+| `corrupted` | a reproduced BLOCKING finding, an apothecary survivor or fuzz crash, a red acceptance check, or a rule breach (a commit, `git push`, a `gh` write, a write outside its worktree or scratch) |
+| `proven-regression` | it passes, but a new BLOCKING finding landed on the lines a penance touched |
+| `proven` | none of the above |
+
+A NOT REPRODUCED finding does not count. The rating never comes from the agent's own report. A penance or veteran is a new agent and starts unrated; every agent keeps its own rating. `corrupted` is permanent for the rest of the run: that agent can only be rated `corrupted` again. Ratings live in the run file, survive an omp restart and a `redraft`, and show as a badge on the agent's row (and on its squad's row, for the squad's newest agent), in the `rating:` and `evidence:` lines of its detail, and in the debrief (`## Ratings`, per agent and per model + effort). With names on, a `corrupted` rating on a squad's latest builder counts as a fall at the end of the run, even if its job ended `completed`; a corrupted first builder followed by a penance that is not corrupted stays a penance, and a builder retired by a redraft no longer counts.
+
 ## Install
 
 Strategium runs inside [omp](https://omp.sh/), our coding agent: install omp first.

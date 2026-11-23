@@ -187,6 +187,18 @@ El plan da a cada squad un tier de coste con un motivo de una línea, y el plugi
 
 El sello Plan muestra el tier de cada squad y una estimación aproximada (coste relativo 1 / 3 / 10, unos 5 / 10 / 20 minutos por squad, de la tabla de la skill), y puedes cambiar un tier ahí (`S2 heavy`) sin redraft. Un squad cuyo builder falló recibe su penance un tier más arriba (heavy sigue en heavy, y después el `veteran`); los revisores conservan sus propios tiers. Con `STRATEGIUM_TIERS` cambias los selectores, y hay que configurar el rol `smol`, que `light` necesita: mira [docs/models.md](docs/models.md) (en inglés).
 
+#### Valoraciones
+
+El Capitán valora a cada agente de la run a partir de los informes de los revisores, con la acción `rate`: `proven`, `proven-regression` o `corrupted`, con su evidencia (de 1 a 8 elementos: IDs de hallazgos, el check que falla o la regla infringida), el modelo y el effort. El modelo y el effort son con los que el Capitán lo lanzó (el selector del tier de un builder partido en los dos puntos: `@task:medium` es `@task` y `medium`); el plugin los guarda y no los observa.
+
+| Valoración | Cuándo |
+|---|---|
+| `corrupted` | un hallazgo BLOCKING reproducido, un superviviente del apothecary o un crash del fuzz, un check de aceptación en rojo, o una infracción de regla (un commit, `git push`, una escritura con `gh`, una escritura fuera de su worktree o su scratch) |
+| `proven-regression` | pasa, pero un hallazgo BLOCKING nuevo cayó en las líneas que tocó una penance |
+| `proven` | ninguna de las anteriores |
+
+Un hallazgo NOT REPRODUCED no cuenta. La valoración nunca sale del informe del propio agente. Una penance o un veterano es un agente nuevo y empieza sin valorar; cada agente conserva su propia valoración. `corrupted` es permanente durante el resto de la run: ese agente solo puede volver a valorarse `corrupted`. Las valoraciones viven en el archivo de la run, sobreviven a un reinicio de omp y a un `redraft`, y se ven como una insignia en la fila del agente (y en la de su squad, la del agente más reciente del squad), en las líneas `rating:` y `evidence:` de su detalle, y en el debrief (`## Ratings`, por agente y por modelo + effort). Con los nombres activados, una valoración `corrupted` del último builder de un squad cuenta como caída al terminar la run, aunque su job acabara `completed`; un primer builder corrupted seguido de una penance que no lo es sigue siendo una penance, y un builder retirado por un redraft ya no cuenta.
+
 ## Instalación
 
 Strategium funciona dentro de [omp](https://omp.sh/), nuestro agente de código: instala omp primero.
