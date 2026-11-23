@@ -3696,6 +3696,59 @@ describe("cockpit", () => {
 		ui.opened[2].component.handleInput!("q");
 	});
 
+	describe("the final screen", () => {
+		const text = (c: Comp, w = 100) => plain(c.render(w).join("\n"));
+		test("end with the cockpit open keeps the overlay and shows the debrief summary; q closes it", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			const comp = ui.opened[0].component;
+			await s.call({ action: "end" });
+			expect(ui.draws.closed).toBe(0);
+			const t = text(comp);
+			expect(t).toContain("K-1");
+			expect(t).toContain("debrief");
+			expect(t).toMatch(/TIME \d+ min active/);
+			expect(t).toContain("esc/q close");
+			comp.handleInput!("q");
+			expect(ui.draws.closed).toBe(1);
+		});
+		test("end with the cockpit closed opens nothing", async () => {
+			const { s, ui } = await running();
+			await s.call({ action: "end" });
+			expect(ui.opened).toHaveLength(0);
+		});
+		test("after q, /strategium-cockpit with no run warns and does not reopen the summary", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			await s.call({ action: "end" });
+			ui.opened[0].component.handleInput!("q");
+			await s.sub("cockpit");
+			expect(ui.opened).toHaveLength(1);
+			expect(s.notes.at(-1)).toContain("No Strategium run in this session");
+		});
+		test("the host disposing the final screen frees the cockpit for the next run", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			await s.call({ action: "end" });
+			ui.opened[0].component.dispose!();
+			await s.call({ action: "begin", key: "K-2" });
+			await s.sub("cockpit");
+			expect(ui.opened).toHaveLength(2);
+			ui.opened[1].component.handleInput!("q");
+		});
+		test("a begin while the final screen shows replaces it with the live cockpit of the new run", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			const comp = ui.opened[0].component;
+			await s.call({ action: "end" });
+			await s.call({ action: "begin", key: "K-2" });
+			const t = text(comp);
+			expect(t).toContain("K-2");
+			expect(t).not.toContain("debrief");
+			comp.handleInput!("q");
+		});
+	});
+
 	describe("the cockpit theme", () => {
 		const BG = /\x1b\[48;(?:2;24;13;16|5;\d+)m/; // blood-angels Night, at either colour depth
 		const raw = (ui: ReturnType<typeof uiCtx>) => {
@@ -4606,10 +4659,12 @@ describe("cockpit", () => {
 			expect(ui.draws.closed).toBe(1);
 		});
 
-		test("the end of the run closes an open overlay", async () => {
+		test("the end of the run turns an open overlay into the final screen, which q closes", async () => {
 			const { s, ui } = await running();
 			await s.sub("cockpit");
 			await s.sub("end");
+			expect(ui.draws.closed).toBe(0);
+			ui.opened[0].component.handleInput!("q");
 			expect(ui.draws.closed).toBe(1);
 		});
 

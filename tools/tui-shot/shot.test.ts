@@ -92,6 +92,10 @@ test("the caster-box replay is registered on the skirmish seed and always runs w
 	expect(REPLAYS["caster-box"]).toMatchObject({ seed: "skirmish", kind: "FIXED", caster: true });
 });
 
+test("the debrief-screen replay opens the cockpit, ends the run through the fake model and is a FIXED #121 shot", () => {
+	expect(REPLAYS["debrief-screen"]).toMatchObject({ r: "#121", seed: "scriptorium", kind: "FIXED", ext: true });
+});
+
 test("namesEnv always pins STRATEGIUM_NAMES, so a user's own value never changes a shot", () => {
 	expect(namesEnv(false)).toEqual({ STRATEGIUM_NAMES: "0" });
 	expect(namesEnv(true)).toEqual({ STRATEGIUM_NAMES: "1" });

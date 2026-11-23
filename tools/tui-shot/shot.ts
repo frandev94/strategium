@@ -1451,6 +1451,25 @@ function checksCockpitRatings(C: Ctx) {
 	C.ck("closed: q closes the cockpit (normal buffer)", q.type === "normal" && !q.framed(), q.type, "normal", q);
 }
 
+// debrief-screen (#121): the cockpit is open when the run ends (the fake model calls `strategium end`): it stays up as the final screen; q closes it.
+async function stepsDebriefScreen(R: Run) {
+	rmSync(join(R.work, "go"), { force: true }); // a work dir omp still holds is not wiped: no stale go
+	await R.typeText("replay-end"); await R.key("enter"); await R.sleep(1.0); await openSnap(R); await R.snap("live");
+	writeFileSync(join(R.work, "go"), ""); // releases the fake stream: it now calls strategium end
+	await R.waitFor(Buffer.from("debrief"), 15); await R.waitQuiet(1.0, 3.0); await R.snap("debrief", true);
+	await R.key("q"); await R.waitQuiet(1.0, 3.0); await R.snap("closed");
+}
+function checksDebriefScreen(C: Ctx) {
+	const l = snapOf(C, "live"), d = snapOf(C, "debrief"), q = snapOf(C, "closed");
+	C.ck("live: the cockpit is open (alternate buffer, framed)", l.type === "alternate" && l.framed(), l.type, "alternate, framed", l);
+	C.ck("debrief: still the alternate buffer after the run ended", d.type === "alternate", d.type, "alternate", d);
+	C.ck("debrief: the header says debrief", d.row(0).includes("debrief"), d.row(0), "… debrief", d);
+	C.ck("debrief: a summary line (TIME)", d.has("TIME"), null, "TIME", d);
+	C.ck("debrief: footer esc/q close", d.has("esc/q close"), null, "esc/q close", d);
+	C.ck("debrief: the live cockpit frame is gone", !d.framed(), d.framed(), false, d);
+	C.ck("closed: q closes the final screen (normal buffer)", q.type === "normal" && !q.has("esc/q close"), q.type, "normal, no final screen", q);
+}
+
 // name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, caster (true: run with the fake caster on whatever --caster says), settle (false: wait only for the first heartbeat), steps, checks
 type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; caster?: boolean; names?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
 export const REPLAYS: Record<string, Replay> = {
@@ -1483,6 +1502,7 @@ export const REPLAYS: Record<string, Replay> = {
 	"cockpit-transcript": { r: "#125", kind: "FIXED", seed: "transcript", ext: true, steps: stepsCockpitTranscript, checks: checksCockpitTranscript },
 	"cockpit-names": { r: "#135", kind: "FIXED", seed: "names", ext: true, names: true, steps: stepsCockpitNames, checks: checksCockpitNames },
 	"cockpit-ratings": { r: "#141", kind: "FIXED", seed: "ratings", ext: true, steps: stepsCockpitRatings, checks: checksCockpitRatings },
+	"debrief-screen": { r: "#121", kind: "FIXED", seed: "scriptorium", ext: true, steps: stepsDebriefScreen, checks: checksDebriefScreen },
 };
 
 // shortcut: only the entities Chromium's --dump-dom writes in text (amp, lt, gt, quot, apos, nbsp, numeric); a full table if that ever changes

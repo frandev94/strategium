@@ -64,17 +64,20 @@ export default function (pi: ExtensionAPI) {
 			if (last?.role === "toolResult") return text(`REPLAY-ANSWER ${textOf(last).slice(0, 200)}`);
 			// Side turns (title...) carry no tools: they get plain text, only the main turn waits and calls ask.
 			const names = (context.tools ?? []).map(t => t.name);
-			if (last?.role !== "user" || !textOf(last).trimEnd().endsWith("replay-ask") || !names.length) return text("replay");
+			const ending = textOf(last).trimEnd().endsWith("replay-end");
+			if (last?.role !== "user" || !(ending || textOf(last).trimEnd().endsWith("replay-ask")) || !names.length) return text("replay");
 
-			// ask is a discoverable device when tools.xdev is on (tools/ask.ts:371): then it is `write xd://ask`.
-			const call = names.includes("ask")
-				? { name: "ask", arguments: { html: FORM } }
-				: { name: "write", arguments: { path: "xd://ask", content: JSON.stringify({ html: FORM }) } };
+			// ask is a discoverable device when tools.xdev is on (tools/ask.ts:371): then it is `write xd://ask`. The strategium tool is not a model tool here: its bash command form ends the run.
+			const call = ending
+				? { name: "bash", arguments: { command: `strategium -j '${JSON.stringify({ action: "end" })}'` } }
+				: names.includes("ask")
+					? { name: "ask", arguments: { html: FORM } }
+					: { name: "write", arguments: { path: "xd://ask", content: JSON.stringify({ html: FORM }) } };
 			const message = out([{ type: "toolCall", id: "replay-ask-1", ...call }], "toolUse");
 			async function* events() {
 				const start = { type: "start", partial: out([], "toolUse") };
 				yield start;
-				log({ ev: "stream", phase: "start" });
+				log({ ev: "stream", phase: "start", names });
 				while (!existsSync(join(dir!, "go"))) {
 					if (options?.signal?.aborted) return;
 					await sleep(100);
