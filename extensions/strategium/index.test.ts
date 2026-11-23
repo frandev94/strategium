@@ -4467,7 +4467,7 @@ describe("cockpit", () => {
 				const prompt = calls[0].context.messages[0].content;
 				expect(prompt).toContain("QUESTION: who finished and what was done before Auspex?");
 				expect(prompt).toContain("station 1 Muster: 1/1 tasks done");
-				expect(prompt).toMatch(/agent A: scout · done .*last: mapped the parser · cost \$0\.5000/);
+				expect(prompt).toMatch(/agent A: scout · done · last: mapped the parser · deployed at Auspex · cost \$0\.5000/);
 				expect(calls[0].options.maxTokens).toBe(200);
 				const text = shownText(ui);
 				expect(text).toContain("SERVO-SKULL · answer to \"who finished and what was done before");
@@ -4574,7 +4574,7 @@ describe("cockpit", () => {
 			test("a short info notice says the servo-skull is answering", async () => {
 				const { s } = await casting({ env: ON, open: false });
 				await s.sub("skull", "who?");
-				expect(s.notes.at(-2)).toBe("The Servo-skull is answering…");
+				expect(s.notes.at(-2)).toBe("The servo-skull is answering…");
 			});
 
 			test("a long question and a long answer are cut with an ellipsis, in the box and in the chat", async () => {
@@ -4625,6 +4625,67 @@ describe("cockpit", () => {
 				await asked;
 				expect(s.notes.join("\n")).not.toContain("late answer");
 				expect(existsSync(join(s.dir, "runs", "sess-0001.cockpit")) ? cockpitJson(s)["servo-skull"] : undefined).toBeUndefined();
+			});
+
+			test("an agent line keeps a blocked reason whole when the cap cuts", async () => {
+				const { s, calls } = await casting({ env: ON, open: false });
+				await s.call({ action: "slices", slices: [{ id: "a", parallel: false, files: ["a.ts"] }] });
+				s.todo([{ name: "Skirmish", tasks: [{ content: "[battle-brother] Build squad a", status: "in_progress" }] }]);
+				s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "battle-brother", name: "A", isolated: true, task: "build squad a." }] }, details: { progress: [{ index: 0, id: "A", status: "running" }] }, isError: false }, s.ctx));
+				const reason = "need the migration approved by ops".padEnd(60, "!");
+				mkdirSync(join(s.dir, "runs", "sess-0001.live"), { recursive: true });
+				writeFileSync(join(s.dir, "runs", "sess-0001.live", "A.json"), JSON.stringify({ since: Date.now(), at: Date.now(), blocked: true, line: reason, tool: "bash", intent: "x".repeat(150) }));
+				await s.sub("skull", "who is stuck?");
+				const f = calls[0].context.messages[0].content.split("\n");
+				expect(f.find(l => l.startsWith("squad a"))).toBe("squad a: files a.ts"); // M29
+				expect(f.find(l => l.startsWith("agent A"))).toContain(`blocked: ${reason}`);
+			});
+
+			test("end and begin of the same key drops the answer in flight", async () => {
+				let land!: (v: unknown) => void;
+				const { s } = await casting({ env: ON, open: false, answer: () => new Promise(r => (land = r)) });
+				const asked = s.sub("skull", "one?");
+				await Bun.sleep(0);
+				await s.call({ action: "end" });
+				await s.call({ action: "begin", key: "K-1" });
+				land(reply("late answer"));
+				await asked;
+				expect(s.notes.join("\n")).not.toContain("late answer");
+				expect(existsSync(join(s.dir, "runs", "sess-0001.cockpit")) ? cockpitJson(s)["servo-skull"] : undefined).toBeUndefined();
+			});
+
+			test("a dim summary keeps the answer", async () => {
+				const g = gated();
+				const { s, ui } = await casting({ env: ON, answer: g.answer });
+				await s.sub("skull", "q?");
+				t0(120);
+				station(s, "Draft");
+				await tick();
+				g.lands[0](reply(""));
+				await Bun.sleep(0);
+				expect(shownText(ui)).toContain("Scout A returned.");
+			});
+
+			test("an answer while a detail view is open goes to the chat", async () => {
+				const { s, ui } = await casting({ env: ON, answer: async () => reply("Scout A returned.") });
+				s.todo([{ name: "Auspex", tasks: [{ content: "[scout] Map the code", status: "in_progress" }] }]);
+				s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "scout", name: "A", isolated: true, task: "map." }] }, details: { progress: [{ index: 0, id: "A", status: "running" }] }, isError: false }, s.ctx));
+				const comp = ui.opened.at(-1)!.component as { render(w: number): string[]; handleInput(d: string): void };
+				comp.render(100);
+				comp.handleInput("\u001b[B"); comp.handleInput("\r");
+				expect(comp.render(100).join("\n")).not.toContain("CHRONICLE"); // the detail view hides the box
+				await s.sub("skull", "who?");
+				expect(s.notes.at(-1)).toBe('Servo-skull on "who?": Scout A returned.');
+			});
+
+			test("/strategium-config shows how to ask while the servo-skull is on", async () => {
+				const on = await casting({ env: ON, open: false });
+				await on.s.sub("config");
+				expect(on.s.notes.at(-1)).toContain("· ask: /strategium-skull <question>");
+				delete process.env.STRATEGIUM_SERVO_SKULL;
+				const off = await casting({ open: false });
+				await off.s.sub("config");
+				expect(off.s.notes.at(-1)).not.toContain("· ask:");
 			});
 		});
 	});

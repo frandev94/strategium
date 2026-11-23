@@ -30,7 +30,7 @@ import {
 	type Via,
 } from "./timer";
 import { debrief, type AgentCost, type Reported } from "./debrief";
-import { answer, missionFacts, servoSkullFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete, type ServoSkullReply } from "./servo-skull";
+import { answer, cut, missionFacts, servoSkullFacts, chars, due, parseAlias, parseEvery, stateHash, summarize, type Complete, type ServoSkullReply } from "./servo-skull";
 import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, FINAL_STATUSES, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, renderDebrief, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
@@ -1844,8 +1844,6 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		debrief: undefined as { key: string; lines: string[] } | undefined, // the final screen: set at `end` while the overlay is open, so the overlay outlives the run
 		servoSkull: {} as ServoSkullState,
 	};
-	/** At most n characters, a cut one ending in `…`. */
-	const brief = (s: string, n: number) => ([...s].length > n ? `${chars(s, n - 1)}…` : s);
 	let cockpitWidth = 0; // the width the open cockpit was last drawn at; 0 before its first render
 	const SEAL_LINES = 200;
 	const SEAL_LINE_CHARS = 500;
@@ -2007,7 +2005,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			clock: cockpit.clock,
 			chronicle: cockpit.chronicle,
 			seal: cockpit.seal,
-			servoSkull: servoSkull.on ? (cockpit.servoSkull.answer ? { station: `answer to "${brief(cockpit.servoSkull.answer.question, 40)}"`, text: cockpit.servoSkull.answer.text, dim: false, at: cockpit.servoSkull.answer.at } : { station: cockpit.servoSkull.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.servoSkull.text ?? "listening…", dim: cockpit.servoSkull.text === undefined || cockpit.servoSkull.dim === true, at: cockpit.servoSkull.at }) : undefined,
+			servoSkull: servoSkull.on ? (cockpit.servoSkull.answer ? { station: `answer to "${cut(cockpit.servoSkull.answer.question, 40)}"`, text: cockpit.servoSkull.answer.text, dim: false, at: cockpit.servoSkull.answer.at } : { station: cockpit.servoSkull.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.servoSkull.text ?? "listening…", dim: cockpit.servoSkull.text === undefined || cockpit.servoSkull.dim === true, at: cockpit.servoSkull.at }) : undefined,
 			transcript: cockpit.transcript,
 			names: naming.on ? { squads: squadBrothers(cleanNames(run.names), "brothers" in roster ? roster.brothers : undefined), ...("error" in roster ? { unreadable: true as const } : {}) } : undefined,
 		};
@@ -2786,7 +2784,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		if ("reason" in prep) return notify(ctx, `The servo-skull cannot answer: ${prep.reason}.`, "warning");
 		const ctrl = new AbortController();
 		c.ask = ctrl;
-		notify(ctx, "The Servo-skull is answering…");
+		notify(ctx, "The servo-skull is answering…");
 		try {
 			const facts = missionFacts({ key: run.key, phases: run.phases, deployed: cockpit.deployed, live: liveRows(run), chronicle: cockpit.chronicle, seal: cockpit.seal, returns: { redraft: run.redraft === true, builds: run.builds }, clock: cockpit.clock, slices: run.slices });
 			const r = await answer(prep.complete, arg, facts, AbortSignal.any([ctrl.signal, AbortSignal.timeout(30_000)]));
@@ -2797,9 +2795,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const question = chars(oneLine(arg), 300);
 			c.answer = { question, text: r.text, at: Date.now() }; // a cockpit opened later still shows it, until a summary replaces it
 			// The box shows it only in the main view of a cockpit at least 72 columns wide (the width is 0 until the first render).
-			const boxShows = !!cockpit.close && !cockpit.nav.detail && !cockpit.debrief && (cockpitWidth === 0 || cockpitWidth >= 72);
+			const boxShows = !!cockpit.close && !cockpit.nav.detail && (cockpitWidth === 0 || cockpitWidth >= 72);
 			if (cockpit.close) drawCockpit(fresh, ctx);
-			if (!boxShows) notify(ctx, `Servo-skull on "${brief(question, 60)}": ${r.text}`);
+			if (!boxShows) notify(ctx, `Servo-skull on "${cut(question, 60)}": ${r.text}`);
 		} finally {
 			if (c.ask === ctrl) c.ask = undefined;
 		}

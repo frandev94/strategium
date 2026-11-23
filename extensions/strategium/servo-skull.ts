@@ -20,7 +20,7 @@ export const SERVO_SKULL_SYSTEM = [
 
 export const chars = (s: string, n: number) => [...s].slice(0, n).join("");
 /** At most n characters (never inside a surrogate pair); a cut ends in `…`. */
-const cut = (s: string, n: number) => ([...s].length > n ? `${chars(s, n - 1)}…` : s);
+export const cut = (s: string, n: number) => ([...s].length > n ? `${chars(s, n - 1)}…` : s);
 /** One printable line with the invisible format characters (zero-width, tag characters) gone: they can hide instructions from the reader. */
 const line = (s: unknown) => oneLine(s).replace(/\p{Cf}/gu, "");
 const fact = (s: unknown) => cut(line(s), FACT_CHARS);
@@ -134,9 +134,21 @@ export function missionFacts(m: Mission): string[] {
 	for (const s of m.slices ?? []) out.push(`squad ${s.id}:${s.tier ? ` tier ${s.tier} ·` : ""} files ${s.files?.length ? s.files.map(line).join(", ") : "none"}`);
 	for (const [id, a] of [...m.deployed].slice(-MISSION_AGENTS)) {
 		const l = m.live.get(id);
-		const row = l && liveRow(l);
-		const flags = [l?.done !== undefined && l.total !== undefined ? `${l.done}/${l.total} tasks` : "", l?.blocked || a.blocked ? "blocked" : "", a.stalled ? "stalled" : ""].filter(Boolean).join(" · ");
-		out.push(`agent ${id}: ${a.role}${a.name ? ` ${a.name}` : ""} · ${a.state}${a.squad ? ` · squad ${a.squad}` : ""}${a.station ? ` · deployed at ${a.station}` : ""}${flags ? ` · ${flags}` : ""}${row ? ` · last: ${row}` : ""}${l?.cost !== undefined ? ` · cost $${l.cost.toFixed(4)}` : ""}`);
+		const said = l ? line(l.line) : "";
+		const doing = l ? [l.tool, l.intent, l.current].map(line).filter(Boolean).join(" · ") : "";
+		// The reason and the last line come first: the 200-character cap cuts the padding behind them.
+		const parts = [
+			`${a.role}${a.name ? ` ${a.name}` : ""}`,
+			a.state,
+			l?.blocked || a.blocked ? `blocked${said ? `: ${said}` : ""}` : said ? `last: ${said}` : "",
+			a.stalled ? "stalled" : "",
+			a.squad ? `squad ${a.squad}` : "",
+			a.station ? `deployed at ${a.station}` : "",
+			l?.done !== undefined && l.total !== undefined ? `${l.done}/${l.total} tasks` : "",
+			doing,
+			l?.cost !== undefined ? `cost $${l.cost.toFixed(4)}` : "",
+		].filter(Boolean);
+		out.push(`agent ${id}: ${parts.join(" · ")}`);
 	}
 	for (const e of m.chronicle.slice(-MISSION_LOG)) out.push(`log ${e.at} ${e.who}: ${e.text}`);
 	return out.slice(0, MISSION_LINES).map(fact);

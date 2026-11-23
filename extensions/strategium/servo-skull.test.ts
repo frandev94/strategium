@@ -361,3 +361,18 @@ describe("the mission, review fixes (#178)", () => {
 		expect((await answer(async () => ({ text: "short" }), "q", [], sig())).text).toBe("short");
 	});
 });
+
+describe("the mission, penance 2 (#178)", () => {
+	test("many squads cap the facts at 150 lines", () => {
+		const slices = Array.from({ length: 400 }, (_, i) => ({ id: `s${i}`, files: ["a.ts"] }));
+		expect(missionFacts({ key: "1", chronicle: [], live: new Map(), deployed: new Map(), slices }).length).toBe(150);
+	});
+	test("an agent's blocked reason survives the 200-character cap, the padding does not", () => {
+		const reason = "need the migration approved by ops".padEnd(60, "!");
+		const live = new Map<string, Live>([["bb1", { since: 1, at: 2, line: reason, blocked: true, tool: "bash", intent: "i".repeat(150), cost: 1 }]]);
+		const deployed = new Map<string, Deployed>([["bb1", { who: "bb1", role: "battle-brother", state: "active", name: "N".repeat(40), squad: "q".repeat(60), station: "S".repeat(60) }]]);
+		const f = missionFacts({ key: "1", chronicle: [], live, deployed }).find(l => l.startsWith("agent bb1"))!;
+		expect(f).toContain(`blocked: ${reason}`);
+		expect([...f].length).toBeLessThanOrEqual(200);
+	});
+});
