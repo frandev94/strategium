@@ -1501,6 +1501,57 @@ describe("cursor identity", () => {
 		const e = { at: "10:00", who: "A", text: "same" };
 		expect(cockpitView(input({ chronicle: [e, e, e] })).chronicle.map(x => x.id)).toEqual(["log:10:00|A|same#2", "log:10:00|A|same#1", "log:10:00|A|same#0"]);
 	});
+	describe("a chronicle entry about an agent", () => {
+		const dep = (over: Partial<Deployed> = {}): Deployed => ({ who: "SCOUT", role: "scout", state: "active", at: 0, ...over });
+		const log = (agent?: string): Entry[] => [{ at: "10:00", who: "SCOUT", text: "deployed", ...(agent === undefined ? {} : { agent }) }];
+		const ID = "log:10:00|SCOUT|deployed#0";
+		const open = (base: ViewInput) => cockpitView({ ...base, nav: { cursor: { id: ID, at: 0 }, detail: { id: ID } } });
+		test("shows the entry's time and text, then the agent's facts, and Enter targets its transcript", () => {
+			const v = open(input({ chronicle: log("A"), deployed: new Map([["A", dep()]]) }));
+			expect(v.detail!.title).toBe("CHRONICLE · 10:00 · SCOUT");
+			expect(v.detail!.lines[0]).toBe("deployed");
+			expect(v.detail!.lines.length).toBeGreaterThan(2);
+			expect(v.detail!.target).toBe("A");
+			expect(navigate(v, "enter").detail).toEqual({ id: ID, transcript: "A" });
+		});
+		test("an agent of a squad shows the squad's detail and targets the squad's newest agent", () => {
+			const deployed = new Map([["A", dep({ role: "battle-brother", squad: "s" })], ["B", dep({ role: "veteran", squad: "s" })]]);
+			const v = open(input({ chronicle: log("A"), deployed, slices: [{ id: "s", files: ["x.ts"], parallel: true }] }));
+			expect(v.detail!.lines).toContain("files:");
+			expect(v.detail!.lines).toContain("  x.ts");
+			expect(v.detail!.target).toBe("B");
+		});
+		test("two agents of one role without a squad: each entry opens its own agent", () => {
+			const chronicle: Entry[] = [{ at: "10:00", who: "SCOUT", text: "deployed", agent: "A" }, { at: "10:00", who: "SCOUT", text: "deployed", agent: "B" }];
+			const deployed = new Map([["A", dep()], ["B", dep()]]);
+			const at = (id: string) => cockpitView({ ...input({ chronicle, deployed }), nav: { cursor: { id, at: 0 }, detail: { id } } }).detail!.target;
+			expect(at("log:10:00|SCOUT|deployed#0")).toBe("A");
+			expect(at("log:10:00|SCOUT|deployed#1")).toBe("B");
+		});
+		test("a transcript opened from a squad entry stays open when a newer agent of the squad deploys", () => {
+			const deployed = new Map([["A", dep({ role: "battle-brother", squad: "s" })], ["B", dep({ role: "veteran", squad: "s" })]]);
+			const v = cockpitView({ ...input({ chronicle: log("A"), deployed }), nav: { cursor: { id: ID, at: 0 }, detail: { id: ID, transcript: "A" } } });
+			expect(v.detail!.transcript).toBe(true);
+			expect(v.nav.detail).toEqual({ id: ID, transcript: "A" });
+		});
+		test("the transcript closes when the agent is no longer deployed", () => {
+			const base = input({ chronicle: log("A"), deployed: new Map([["A", dep()]]) });
+			const nav = { cursor: { id: ID, at: 0 }, detail: { id: ID, transcript: "A" } };
+			expect(cockpitView({ ...base, nav }).detail!.transcript).toBe(true);
+			expect(cockpitView({ ...base, deployed: new Map(), nav }).nav.detail).toEqual({ id: ID });
+		});
+		test("an entry with no agent keeps today's detail and Enter does nothing", () => {
+			const v = open(input({ chronicle: log(), deployed: new Map([["A", dep()]]) }));
+			expect(v.detail).toEqual({ title: "CHRONICLE · 10:00 · SCOUT", lines: ["deployed"] });
+			expect(navigate(v, "enter")).toEqual(v.nav);
+		});
+		test("an agent id the registry does not know (from disk) falls back to today's detail", () => {
+			for (const agent of ["ghost", 42 as unknown as string, "__proto__"]) {
+				const v = open(input({ chronicle: log(agent), deployed: new Map([["A", dep()]]) }));
+				expect(v.detail).toEqual({ title: "CHRONICLE · 10:00 · SCOUT", lines: ["deployed"] });
+			}
+		});
+	});
 	test("a removed line falls to the nearest position, and past the end to the last item", () => {
 		const v = cockpitView({ ...two("pending", "pending"), nav: sel("task:1:[captain] b", 1) });
 		const w = cockpitView({ ...input({ phases: [{ name: "Skirmish", tasks: [{ content: "[captain] a", status: "pending" }, { content: "[captain] c", status: "pending" }] }] }), nav: v.nav });

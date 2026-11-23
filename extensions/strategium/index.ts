@@ -1878,7 +1878,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				(saved.seal === undefined || (!!saved.seal && typeof saved.seal.id === "string" && Array.isArray(saved.seal.lines) && saved.seal.lines.every((l: unknown) => typeof l === "string")));
 			if (!shaped) throw new Error("another run's or a malformed state");
 			resetCockpit(key);
-			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP);
+			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP).map(({ agent, ...e }) => (typeof agent === "string" ? { ...e, agent } : e)); // an agent id that is not a string is dropped; the view checks it against the registry
 			cockpit.notes = saved.notes;
 			for (const [id, job] of saved.deployed as [string, Deployed][]) {
 				// Hand-edited or damaged numbers are read as absent.
@@ -1894,9 +1894,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			resetCockpit(key);
 		}
 	};
-	const log = (key: string, who: string, text: string, tone?: Entry["tone"]) => {
+	const log = (key: string, who: string, text: string, tone?: Entry["tone"], agent?: string) => {
 		if (cockpit.key !== key) resetCockpit(key);
-		cockpit.chronicle = pushEntry(cockpit.chronicle, { at: new Date().toTimeString().slice(0, 5), who, text, ...(tone ? { tone } : {}) });
+		cockpit.chronicle = pushEntry(cockpit.chronicle, { at: new Date().toTimeString().slice(0, 5), who, text, ...(tone ? { tone } : {}), ...(agent ? { agent } : {}) });
 		cockpit.dirty = true;
 	};
 	/** The live row of an agent, unless the file is older than this deploy (a previous agent's with the same id). */
@@ -1911,7 +1911,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		job.state = ok ? "done" : "failed";
 		job.ended = Date.now();
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
-		log(key, job.who, `${ok ? "✓" : "✗"} ${naming.on && job.name ? `${job.name} ` : ""}${ok ? "returned" : "failed"}`, ok ? "ok" : "fail");
+		log(key, job.who, `${ok ? "✓" : "✗"} ${naming.on && job.name ? `${job.name} ` : ""}${ok ? "returned" : "failed"}`, ok ? "ok" : "fail", id);
 	};
 	/** Idle for the host with nothing queued and no background job running: the prompt is free for the user's orders. */
 	const agentStatus = (ctx: SessionCtx) =>
@@ -1953,7 +1953,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				if (!job.blocked) {
 					job.blocked = true;
 					const line = cap(oneLine(row.line));
-					log(run.key, job.who, line ? `blocked: ${line}` : "blocked", "warn");
+					log(run.key, job.who, line ? `blocked: ${line}` : "blocked", "warn", id);
 					const err = alert(run.sid, "attention", `${run.key}: ${job.who} is blocked${line ? `: ${line}` : ""}`, ctx);
 					if (err) alarmWarn(ctx, err);
 				}
@@ -1962,7 +1962,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const start = row?.at ?? 0;
 			if (!start || row?.busy || now - start < STALL_MS || job.stalled === start) continue;
 			job.stalled = start;
-			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
+			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn", id);
 		}
 		cockpit.transcript = readOpen(ctx);
 		const n = run.names?.length ?? 0;
@@ -3415,14 +3415,14 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				// log first: it resets the cockpit when the run key changed, which would wipe a registry entry set before it.
 				if (!squad) {
 					const name = naming.on ? nameBehind(run, p.id) : undefined;
-					log(run.key, agent.toUpperCase(), name ? `${name} deployed` : "deployed");
+					log(run.key, agent.toUpperCase(), name ? `${name} deployed` : "deployed", undefined, p.id);
 					cockpit.deployed.set(p.id, { who: agent.toUpperCase(), role: agent, station, state: "active", at: Date.now(), ...(name ? { name } : {}) });
 					continue;
 				}
 				const veteran = agent === "veteran";
 				const ic = icons(process.env.STRATEGIUM_GLYPHS === "1");
 				const name = naming.on ? nameBehind(run, p.id) : undefined;
-				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} ${name ? `${name} ` : ""}escalated to VETERAN` : `${ic.brother} ${name ?? "battle-brother"} deployed`, veteran ? "fail" : undefined);
+				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} ${name ? `${name} ` : ""}escalated to VETERAN` : `${ic.brother} ${name ?? "battle-brother"} deployed`, veteran ? "fail" : undefined, p.id);
 				if (veteran) cockpit.notes[squad] = { ...cockpit.notes[squad], veteran: true };
 				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active", at: Date.now(), ...(name ? { name } : {}) });
 			} else if (FINAL_STATUSES.includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
@@ -3448,7 +3448,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const spawnKey = asObj(e).spawnKey;
 		const id = typeof spawnKey === "string" && spawnKey ? spawnKey : `eval-${agent}-${cockpit.deployed.size + 1}`;
 		const name = naming.on ? nameBehind(run, id) : undefined;
-		log(run.key, agent.toUpperCase(), name ? `${name} deployed` : "deployed");
+		log(run.key, agent.toUpperCase(), name ? `${name} deployed` : "deployed", undefined, id);
 		// The spawnKey is the agent's id: its job label and its eval status events, so the context hook above ends it.
 		// shortcut: an eval spawn without spawnKey has nothing to match its end, so it stays ▶ until the run key changes; upgrade if a host omits spawnKey.
 		cockpit.deployed.set(id, { who: agent.toUpperCase(), role: agent, station: activeStation(run.phases ?? []), state: "active", at: Date.now(), ...(name ? { name } : {}) });
