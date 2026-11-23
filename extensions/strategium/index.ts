@@ -1747,10 +1747,6 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			if (!shaped) throw new Error("another run's or a malformed state");
 			resetCockpit(key);
 			cockpit.chronicle = (saved.chronicle as Entry[]).slice(-CHRONICLE_CAP);
-			for (const { text } of [...cockpit.chronicle].reverse()) {
-				if (cockpit.station === undefined) cockpit.station = /^station (.+)$/.exec(text)?.[1];
-				if (cockpit.asked === undefined) cockpit.asked = /seal (.+) awaits the Chapter Master$/.exec(text)?.[1] ?? (/ granted$/.test(text) ? null : undefined);
-			}
 			cockpit.notes = saved.notes;
 			for (const [id, job] of saved.deployed as [string, Deployed][]) {
 				// Hand-edited or damaged numbers are read as absent.
@@ -3221,12 +3217,15 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		// A rebuild's init is auto-started by omp at its first task, which is not where the run is: no station or seal-waiting entry.
 		const rebuild = isRebuild(details?.op, before, phases);
 		const now = rebuild ? undefined : whereFrom(phases);
-		if (now && now.station !== (cockpit.station ?? was?.station)) {
+		// Seeded from the persisted phases, so a restart or a new run starts from what the run already showed.
+		cockpit.station ??= was?.station;
+		if (cockpit.asked === undefined && was) cockpit.asked = was.seal ?? null;
+		if (now && now.station !== cockpit.station) {
 			log(run.key, "STRATEGOS", `station ${now.station}`);
 			record({ event: "station", key: run.key, station: now.station.slice(0, 200) });
 		}
 		if (now) cockpit.station = now.station;
-		if (now?.seal && now.seal !== (cockpit.asked !== undefined ? cockpit.asked : was?.seal)) {
+		if (now?.seal && now.seal !== cockpit.asked) {
 			log(run.key, "STRATEGOS", `${icons(process.env.STRATEGIUM_GLYPHS === "1").seal} seal ${now.seal} awaits the Chapter Master`, "seal");
 			record({ event: "seal", key: run.key, seal: (waitingSeal(phases)?.id ?? now.seal).slice(0, 200), state: "asked" });
 		}
