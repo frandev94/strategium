@@ -1990,7 +1990,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						const squad = named?.squad ?? cockpit.deployed.get(id)?.squad;
 						const brother = naming.on && rating.rating === "corrupted" && squad ? squadBrothers(cleanNames(run.names), undefined)[squad] : undefined;
 						return text(
-							[`RATED ${id} ${rating.rating}${was ? ` (was ${was.rating})` : ""} model=${rating.model} effort=${rating.effort} evidence=${rating.evidence.length}`, ...(brother?.name === baseId(id) ? [`FALL ${brother.surname} squad ${squad} falls at end unless a later builder replaces it`] : [])].join("\n"),
+							[
+								`RATED ${id} ${rating.rating}${was ? ` (was ${was.rating})` : ""} model=${rating.model} effort=${rating.effort} evidence=${rating.evidence.length}`,
+								...(brother?.name === baseId(id) ? [`FALL ${brother.surname} squad ${squad} falls at end unless a later builder replaces it`] : []),
+								...(rating.rating === "corrupted" ? [`LESSON write local://${run.key}-lessons.md for ${id}${squad ? ` before the next round of squad ${squad}` : ""}`] : []),
+							].join("\n"),
 						);
 					}
 					case "status":

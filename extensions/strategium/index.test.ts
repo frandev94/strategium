@@ -6961,8 +6961,15 @@ describe("cockpit", () => {
 			const { s } = await rigged();
 			await s.call({ ...good, rating: "corrupted", evidence: ["I-9"] });
 			for (const rating of ["proven", "proven-regression"]) expect(await s.call({ ...good, rating })).toBe("ERROR Scout1 is corrupted for the rest of the run");
-			expect(await s.call({ ...good, rating: "corrupted", evidence: ["I-10"] })).toBe("RATED Scout1 corrupted (was corrupted) model=@task effort=medium evidence=1");
+			expect(await s.call({ ...good, rating: "corrupted", evidence: ["I-10"] })).toStartWith("RATED Scout1 corrupted (was corrupted) model=@task effort=medium evidence=1");
 			expect(runFile(s).ratings).toEqual({ Scout1: { rating: "corrupted", evidence: ["I-10"], model: "@task", effort: "medium" } });
+		});
+
+		test("a corrupted non-builder: the short LESSON line; proven and proven-regression print none (#142)", async () => {
+			const { s } = await rigged();
+			expect(await s.call({ ...good, rating: "corrupted" })).toMatch(/^RATED Scout1 corrupted model=@task effort=medium evidence=1\nLESSON write local:\/\/\S+-lessons\.md for Scout1$/);
+			const t = await rigged();
+			for (const rating of ["proven", "proven-regression"]) expect(await t.s.call({ ...good, rating })).not.toContain("LESSON");
 		});
 
 		test("the rating shows on the agent's row, and after a restart the saved run and registry still know it", async () => {
@@ -8663,7 +8670,7 @@ console.log("FAILED " + failed);`;
 		test("a corrupted latest builder: the FALL line, and at end a fall in the roster even though its job completed", async () => {
 			const s = await open();
 			const name = await running(s, "S1");
-			expect(await rate(s, name, "corrupted")).toBe(`RATED ${name} corrupted model=@task effort=medium evidence=1\nFALL ${surname(name)} squad S1 falls at end unless a later builder replaces it`);
+			expect(await rate(s, name, "corrupted")).toBe(`RATED ${name} corrupted model=@task effort=medium evidence=1\nFALL ${surname(name)} squad S1 falls at end unless a later builder replaces it\nLESSON write local://K-1-lessons.md for ${name} before the next round of squad S1`);
 			returned(s, "battle-brother", name, "S1", "completed");
 			expect(await s.call({ action: "end" })).toContain("ROSTER 1 squad(s) recorded");
 			expect(roster(s.dir)[surname(name)]).toEqual(svc({ falls: 1, squads: 1 }));
