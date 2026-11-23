@@ -1,3 +1,24 @@
+## [0.2.48] - 2026-11-23
+
+### 🚀 Features
+
+- *(timer)* A sub-task booked through its parent or its estimate
+
+### 🐛 Bug Fixes
+
+- *(tooling)* Tui-shot ask check ignores omp's startup tip
+- *(tooling)* Tui-shot dialog check accepts omp 19's one-option select
+- *(tooling)* The 1/2 counter must be on the Yes row
+- *(timer)* A parent group counts wall time, not each key's clock
+- *(timer)* A parent joins its group only with its own booking
+
+### 📚 Documentation
+
+- Sub-tasks booked through a parent or an estimate
+
+### 🧪 Testing
+
+- *(tooling)* Pin each ask marker alone
 ## [0.2.47] - 2026-11-23
 
 ### 🚀 Features
