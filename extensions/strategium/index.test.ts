@@ -112,7 +112,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_RELIC;
 	delete process.env.STRATEGIUM_NAMES;
 	delete process.env.STRATEGIUM_VAULT;
-	for (const k of Object.keys(process.env)) if (k.startsWith("STRATEGIUM_SERVO_SKULL")) delete process.env[k];
+	for (const k of Object.keys(process.env)) if (k.startsWith("STRATEGIUM_SERVO_SKULL") || k.startsWith("STRATEGIUM_CASTER")) delete process.env[k];
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
 	delete process.env.STRATEGIUM_IDLE_MIN;
@@ -4426,6 +4426,16 @@ describe("cockpit", () => {
 			const again = setup("sess-0001", s.dir);
 			await again.start();
 			await again.call({ action: "end" });
+			expect(debriefOf(s)).toMatch(/\| servo-skull \| servo-skull \| 1 call \|/);
+		});
+
+		test("a pre-rename cockpit file's caster spend reaches the debrief of a takeover end", async () => {
+			const { s } = await casting({ env: { STRATEGIUM_SERVO_SKULL: "1" } });
+			await tick();
+			const { "servo-skull": spend, ...rest } = cockpitJson(s);
+			writeFileSync(join(s.dir, "runs", "sess-0001.cockpit"), JSON.stringify({ ...rest, caster: spend }));
+			const c = setup("sess-0003", s.dir);
+			await c.call({ action: "end", key: "K-1", takeover: "sess-0001" });
 			expect(debriefOf(s)).toMatch(/\| servo-skull \| servo-skull \| 1 call \|/);
 		});
 
