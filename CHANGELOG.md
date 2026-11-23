@@ -1,3 +1,12 @@
+## [0.2.49] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(cockpit)* The cockpit opens again after the host disposes it
+
+### 🧪 Testing
+
+- *(cockpit)* The host-dispose test lives with the cockpit tests and checks the late-dispose guard
 ## [0.2.48] - 2026-11-23
 
 ### 🚀 Features
