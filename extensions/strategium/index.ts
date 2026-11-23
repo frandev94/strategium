@@ -697,8 +697,9 @@ function report(date?: string): string {
 	const file = date ? path.join(stateDir(), `${date}.jsonl`) : today();
 	const evs = load(file);
 	// A past day ends at its midnight, so a block left open then does not grow until now.
-	const now = date && date !== path.basename(today(), ".jsonl") ? new Date(`${date}T23:59:59`) : new Date();
-	const bl = blocks(evs, now);
+	const past = date !== undefined && date !== path.basename(today(), ".jsonl");
+	const now = past ? new Date(`${date}T23:59:59`) : new Date();
+	const bl = blocks(evs, now, past);
 	const keys = [...new Set(evs.filter(e => e.event === "start" || e.event === "stop" || e.event === "adjust").map(e => e.key))];
 	const tally = date === undefined ? tallyReport() : [];
 	if (!keys.length) return ["IDLE", ...tally].join("\n");
@@ -706,17 +707,14 @@ function report(date?: string): string {
 		evs.filter(e => e.key === k && e.event === ev).reduce((n, e) => n + (e.prior ?? 0), 0);
 	const overlap = Math.floor(overlapMin(evs, now));
 	// A block left open ends in "now" on today's report and at 23:59 on a past day, as in `blocks`.
-	const past = date !== undefined && date !== path.basename(today(), ".jsonl");
 	const hhmm = (d: Date) => (d.getTime() !== now.getTime() ? nowIso(d).slice(11, 16) : past ? "23:59" : "now");
-	const split = overlap
-		? [
-				...overlapIntervals(evs, now).map(o => {
-					const m = (o.end.getTime() - o.start.getTime()) / 60_000;
-					return `OVERLAP ${o.keys.join("+")} ${hhmm(o.start)}-${hhmm(o.end)} (${Math.floor(m)} min, ${Math.floor(m / o.keys.length)} each)`;
-				}),
-				...[...splitMin(evs, now)].map(([k, m]) => `SPLIT ${k} ${Math.floor(m)} min (measured after an equal split of the overlaps)`),
-			]
-		: [];
+	const split = [
+		...overlapIntervals(evs, now).flatMap(o => {
+			const m = Math.floor((o.end.getTime() - o.start.getTime()) / 60_000);
+			return m ? [`OVERLAP ${o.keys.join("+")} ${hhmm(o.start)}-${hhmm(o.end)} (${m} min, ${Math.floor(m / o.keys.length)} each)`] : [];
+		}),
+		...[...splitMin(evs, now)].map(([k, m]) => `SPLIT ${k} ${Math.floor(m)} min (measured after an equal split of the overlaps)`),
+	];
 	return [
 		...keys.flatMap(k => (sum(k, "start") ? [`PRIOR ${k} ${sum(k, "start")} min (estimate, before tracking)`] : [])),
 		...keys.flatMap(k => (sum(k, "adjust") ? [`ADJUST ${k} ${sum(k, "adjust")} min (added by hand)`] : [])),

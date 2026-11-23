@@ -220,8 +220,8 @@ export function dueAlert(evs: Ev[], key: string, now: Date): number | undefined 
 	return reached > alerted ? reached : undefined;
 }
 
-/** Work blocks of the day; HH:MM times, an open block ends in "now". */
-export function blocks(evs: Ev[], now: Date): { key: string; start: string; end: string; min: number }[] {
+/** Work blocks of the day; HH:MM times, an open block ends in "now" (or at 23:59 when `past`: `now` is then that day's end). */
+export function blocks(evs: Ev[], now: Date, past = false): { key: string; start: string; end: string; min: number }[] {
 	const out: { key: string; start: string; end: string; min: number }[] = [];
 	const open = new Map<string, string>();
 	for (const e of evs) {
@@ -235,7 +235,7 @@ export function blocks(evs: Ev[], now: Date): { key: string; start: string; end:
 	for (const [key, s] of open) {
 		// A block left open in a past day ends with that day, not with now: the time after it is not work.
 		const started = new Date(s);
-		const sameDay = started.toDateString() === now.toDateString();
+		const sameDay = !past && started.toDateString() === now.toDateString();
 		const end = sameDay ? now : new Date(started.getFullYear(), started.getMonth(), started.getDate(), 23, 59, 59);
 		out.push({ key, start: s.slice(11, 16), end: sameDay ? "now" : "23:59", min: Math.floor((end.getTime() - ms(s)) / 60_000) });
 	}

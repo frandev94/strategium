@@ -232,6 +232,35 @@ describe("the strategium tool", () => {
 			]);
 		});
 
+		test("a block left open on a past day ends 23:59 in the block and the OVERLAP lines", async () => {
+			const { call, dir } = setup();
+			setSystemTime(new Date(2026, 10, 16, 12, 0, 0));
+			day(dir, 15, [[9, 0, "start", "A"], [9, 30, "start", "B"]]);
+			const out = await call({ action: "report", date: "2026-11-15" });
+			expect(out).toContain("A 09:00-23:59 (");
+			expect(out).toContain("B 09:30-23:59 (");
+			expect(out).toMatch(/OVERLAP A\+B 09:30-23:59 \(/);
+			expect(out).not.toContain("now");
+		});
+
+		test("the keys of an overlap are listed sorted, whichever started first", async () => {
+			const { call, dir } = setup();
+			setSystemTime(new Date(2026, 10, 16, 12, 0, 0));
+			day(dir, 15, [[9, 0, "start", "B"], [9, 30, "start", "A"], [10, 0, "stop", "A"], [10, 0, "stop", "B"]]);
+			expect(await call({ action: "report", date: "2026-11-15" })).toContain("OVERLAP A+B 09:30-10:00 (30 min, 15 each)");
+		});
+
+		test("an overlap interval shorter than a minute is not listed", async () => {
+			const { call, dir } = setup();
+			setSystemTime(new Date(2026, 10, 16, 12, 0, 0));
+			day(dir, 15, [[9, 0, "start", "A"], [9, 30, "start", "B"], [10, 0, "start", "C"]]);
+			append(join(dir, "2026-11-15.jsonl"), { ts: nowIso(new Date(2026, 10, 15, 10, 0, 30)), event: "stop", key: "C" });
+			const out = await call({ action: "report", date: "2026-11-15" });
+			expect(out).toMatch(/OVERLAP A\+B 09:30-10:00 \(30 min/);
+			expect(out).not.toContain("A+B+C");
+			expect(out).toContain("SPLIT C 0 min");
+		});
+
 		test("an interval still open ends in now", async () => {
 			const { call, dir } = setup();
 			setSystemTime(new Date(2026, 10, 16, 10, 0, 0));
