@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allExit, askRows, type Args, CASTER_TEXT, casterEnv, dialogShowsPick, namesEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+import { allExit, askRows, type Args, CASTER_TEXT, casterEnv, dialogShowsPick, namesEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, sealGlyphCol, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
 
 const cancelled = (rows: string[]) => askRows(rows).some(r => r.toLowerCase().includes("cancel"));
 test("askRows: the startup tip's 'cancels' above the ask is ignored", () => {
@@ -119,6 +119,13 @@ test("Snap.colOf counts a wide cell's continuation as no text", () => {
 	expect(s.colOf(0, "ab")).toBe(2);
 	expect(s.colOf(0, "漢")).toBe(0);
 	expect(s.colOf(0, "zz")).toBe(-1);
+});
+
+test("sealGlyphCol is the cell column, not the code-point index, after a wide cell", () => {
+	const cells = ["漢", "", "\u{F051F}", " ", "P", "l", "a", "n", " ", "→", " ", "○", " ", "D", "e", "m", "o"];
+	const s = snap([cells], [[0, 0]]);
+	expect(sealGlyphCol(s, 0)).toBe(2);
+	expect(sealGlyphCol(snap([["a", "b"]]), 0)).toBe(-1);
 });
 
 test("Snap row helpers: lastCol, where, framed, wideCells", () => {
