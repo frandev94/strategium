@@ -8520,3 +8520,242 @@ console.log("FAILED " + failed);`;
 		});
 	});
 });
+
+// Names, honours and the record in the cockpit, the chronicle and the debrief (#135).
+describe("names in the cockpit (#135)", () => {
+	type Comp = { render(w: number): string[]; handleInput?(d: string): void };
+	const SQ = [
+		{ id: "S1", parallel: true, files: ["a.ts"] },
+		{ id: "S2", parallel: true, files: ["b.ts"] },
+		{ id: "S3", parallel: false, files: ["c.ts"] },
+	];
+	const LORENZO = { passed: 4, penances: 0, falls: 0, squads: 4, purity: 4, halo: 0, laurel: 0 };
+	const plain = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, "");
+	// A run with the three squads and a UI; `on` false leaves names off, `brothers` or `raw` seed roster.json.
+	const open = async (o: { on?: boolean; brothers?: object; raw?: string } = {}) => {
+		if (o.on !== false) process.env.STRATEGIUM_NAMES = "1";
+		const dir = mkdtempSync(join(tmpdir(), "st-names-cockpit-"));
+		dirs.push(dir);
+		if (o.brothers) writeFileSync(join(dir, "roster.json"), JSON.stringify({ version: 1, brothers: o.brothers }));
+		if (o.raw !== undefined) writeFileSync(join(dir, "roster.json"), o.raw);
+		const s = setup("sess-0001", dir);
+		const opened: Comp[] = [];
+		const c = s.ctx as unknown as { hasUI: boolean; ui: Record<string, unknown> };
+		c.hasUI = true;
+		c.ui.custom = (factory: (t: unknown, th: unknown, k: unknown, done: () => void) => Comp) => {
+			opened.push(factory({ requestRender() {}, terminal: { rows: 60 } }, {}, {}, () => {}));
+			return new Promise(() => {});
+		};
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "repo", repo: dir });
+		await s.call({ action: "slices", slices: SQ });
+		const phases = [{ name: "Skirmish", tasks: [{ content: "[battle-brother] Squads", status: "in_progress" }] }];
+		s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases } }, s.ctx));
+		return { ...s, opened };
+	};
+	type Opened = Awaited<ReturnType<typeof open>>;
+	const task = (s: Opened, agent: string, id: string, status: string) =>
+		s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent, name: id, task: "build squad S1" }] }, details: { progress: [{ index: 0, id, status }] }, isError: false }, s.ctx));
+	const named = async (s: Opened, agent: string, squad = "S1") => (await s.call({ action: "name", agent, squad })).split("\n").at(-1)!.slice(5);
+	const cockpitFile = (s: Opened) => JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8")) as { chronicle: { text: string }[]; deployed: [string, Record<string, unknown>][] };
+	const texts = (s: Opened) => cockpitFile(s).chronicle.map(e => e.text);
+	// The overlay as it is now, without colours; closed again so no interval stays alive.
+	const peek = async (s: Opened) => {
+		await s.sub("cockpit");
+		const comp = s.opened.at(-1)!;
+		const text = plain(comp.render(120).join("\n"));
+		comp.handleInput!("q");
+		return text;
+	};
+	const detail = async (s: Opened, squad = "S1") => {
+		await s.sub("cockpit");
+		const comp = s.opened.at(-1)!;
+		for (let i = 0; i < 40 && !plain(comp.render(120).join("\n")).split("\n").some(l => l.includes("▸") && l.includes(squad)); i++) comp.handleInput!("\x1b[B");
+		comp.handleInput!("\r");
+		const text = plain(comp.render(120).join("\n"));
+		comp.handleInput!("q");
+		return text;
+	};
+
+	test("names off: the chronicle, the cockpit file and the end result are today's", async () => {
+		const s = await open({ on: false });
+		task(s, "battle-brother", "S1", "running");
+		task(s, "battle-brother", "S1", "completed");
+		expect(texts(s).filter(t => /deployed|returned/.test(t))).toEqual(["† battle-brother deployed", "✓ returned"]);
+		expect(cockpitFile(s).deployed[0][1]).not.toHaveProperty("name");
+		const out = await s.call({ action: "end" });
+		expect(out).not.toContain("HONOURS");
+		expect(readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8")).not.toContain("## Honours");
+	});
+
+	test("names on: the chronicle carries the name, the deployed entry keeps it and the return says it", async () => {
+		const s = await open();
+		const name = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		task(s, "battle-brother", name, "running");
+		expect(texts(s)).toContain(`† ${name} deployed`);
+		expect(cockpitFile(s).deployed[0][1].name).toBe(name);
+		task(s, "battle-brother", name, "completed");
+		expect(texts(s)).toContain(`✓ ${name} returned`);
+		task(s, "veteran", "S1-v", "running");
+		expect(texts(s).at(-1)).toBe("‡ escalated to VETERAN"); // no name matches this id: today's text
+	});
+
+	test("names on: an eval spawn with a named spawnKey is deployed by name", async () => {
+		const s = await open();
+		const i = (await s.call({ action: "name", agent: "inquisitor" })).slice(5);
+		s.handlers.before_subagent_spawn.forEach(h => h({ invocationKind: "eval", agent: "inquisitor", spawnKey: i }, s.ctx));
+		expect(texts(s)).toContain(`${i} deployed`);
+		expect(cockpitFile(s).deployed.find(([id]) => id === i)![1].name).toBe(i);
+	});
+
+	test("names on: a veteran escalation and an unsquadded agent are named", async () => {
+		const s = await open();
+		const b = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: b }, s.ctx);
+		const v = await named(s, "veteran");
+		s.handlers.before_subagent_spawn[0]({ agent: "veteran", spawnKey: v }, s.ctx);
+		task(s, "veteran", v, "running");
+		expect(texts(s)).toContain(`‡ ${v} escalated to VETERAN`);
+		const i = (await s.call({ action: "name", agent: "inquisitor" })).slice(5);
+		s.handlers.before_subagent_spawn[0]({ agent: "inquisitor", spawnKey: i }, s.ctx);
+		s.handlers.tool_result.forEach(h => h({ toolName: "task", input: { tasks: [{ agent: "inquisitor", name: i, task: "judge" }] }, details: { progress: [{ index: 0, id: `${i}-2`, status: "running" }] }, isError: false }, s.ctx));
+		expect(texts(s)).toContain(`${i} deployed`);
+	});
+
+	test("names on: the squad row shows the badges, and one roster load serves the whole run", async () => {
+		const s = await open({ brothers: { Lorenzo: LORENZO } });
+		const name = await named(s, "battle-brother");
+		expect(name).toBe("BrotherLorenzo");
+		expect(await peek(s)).toContain("BrotherLorenzo ✠4");
+		rmSync(join(s.dir, "roster.json"));
+		expect(await peek(s)).toContain("BrotherLorenzo ✠4");
+	});
+
+	test("an unreadable roster.json shows record unknown in the detail and never throws", async () => {
+		const s = await open({ raw: "{nope" });
+		await named(s, "battle-brother");
+		expect(await detail(s)).toContain("record: unknown (roster unreadable)");
+	});
+
+	test("a saved cockpit with a non-string name loads without the field", async () => {
+		const s = await open();
+		task(s, "scout", "scout-1", "running");
+		const file = join(s.dir, "runs", "sess-0001.cockpit");
+		const saved = JSON.parse(readFileSync(file, "utf8"));
+		saved.deployed[0][1].name = 5;
+		writeFileSync(file, JSON.stringify(saved));
+		const again = setup("sess-0001", s.dir);
+		await again.start();
+		task(again as Opened, "scout", "scout-1", "completed");
+		expect(cockpitFile(again as Opened).deployed[0][1]).not.toHaveProperty("name");
+	});
+
+	test("end with names on prints the HONOURS line before ROSTER, and the debrief lists the Honours table", async () => {
+		const s = await open({ brothers: { Lorenzo: LORENZO } });
+		const name = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		task(s, "battle-brother", name, "completed");
+		const out = await s.call({ action: "end" });
+		expect(out).toMatch(/\nHONOURS Lorenzo earns a Purity Seal[^\n]*\nROSTER 1 squad\(s\) recorded$/);
+		expect(readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8")).toMatch(/## Honours[\s\S]*Lorenzo/);
+	});
+
+	test("a roster that cannot be written still prints HONOURS and the debrief says it was not saved, with no joins", async () => {
+		const s = await open();
+		const name = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		task(s, "battle-brother", name, "completed");
+		mkdirSync(join(s.dir, "roster.lock")); // a lock nobody can take over
+		const out = await s.call({ action: "end" });
+		expect(out).toContain("WARN ROSTER not written: roster busy");
+		expect(out).toContain("earns a Purity Seal");
+		expect(out).not.toContain("joins the roster");
+		expect(readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8")).toContain("this record was not saved");
+	}, 30000);
+
+	test("a roster written after the run opened still decorates a builder named later", async () => {
+		const s = await open();
+		await peek(s); // the roster is read now, while it is missing
+		writeFileSync(join(s.dir, "roster.json"), JSON.stringify({ version: 1, brothers: { Lorenzo: LORENZO } }));
+		expect(await named(s, "battle-brother", "S3")).toBe("BrotherLorenzo"); // S1 and S2 took their names at `slices`, S3 is the sequential squad
+		expect(await peek(s)).toContain("BrotherLorenzo ✠4");
+		expect(await detail(s, "S3")).toContain("passed 4");
+	});
+
+	test("an unreadable roster read is never cached: the next draw shows the record", async () => {
+		const s = await open({ raw: "{nope" });
+		const surname = (await named(s, "battle-brother")).replace(/^Brother/, "");
+		expect(await detail(s)).toContain("record: unknown (roster unreadable)");
+		writeFileSync(join(s.dir, "roster.json"), JSON.stringify({ version: 1, brothers: { [surname]: LORENZO } }));
+		expect(await detail(s)).toContain("passed 4");
+	});
+
+	test("a corrupted brother named while the roster was unreadable shows corrupted: kept in reserve once it reads", async () => {
+		const s = await open({ raw: "{nope" });
+		const surname = (await named(s, "battle-brother")).replace(/^Brother/, "");
+		writeFileSync(join(s.dir, "roster.json"), JSON.stringify({ version: 1, brothers: { [surname]: { ...LORENZO, falls: 3 } } }));
+		expect(await detail(s)).toContain("corrupted: kept in reserve");
+	});
+
+	test("end then begin of another key in the same session reads the roster again", async () => {
+		const s = await open({ brothers: { Lorenzo: LORENZO } });
+		expect(await peek(s)).toContain("BrotherLorenzo ✠4"); // S1 got him at `slices`
+		await s.call({ action: "end" });
+		writeFileSync(join(s.dir, "roster.json"), JSON.stringify({ version: 1, brothers: { Lorenzo: { ...LORENZO, passed: 5, purity: 5, squads: 5 } } }));
+		await s.call({ action: "begin", key: "K-2" });
+		await s.call({ action: "repo", repo: s.dir });
+		await s.call({ action: "slices", slices: SQ });
+		const phases = [{ name: "Skirmish", tasks: [{ content: "[battle-brother] Squads", status: "in_progress" }] }];
+		s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases } }, s.ctx));
+		expect(await peek(s)).toContain("BrotherLorenzoUnbroken ✠5"); // the epithet: his bare name was issued by K-1
+	});
+
+	const debriefText = (s: Opened) => readFileSync(join(s.dir, "debriefs", readdirSync(join(s.dir, "debriefs"))[0]), "utf8");
+	const finish = async (s: Opened) => {
+		const name = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		task(s, "battle-brother", name, "completed");
+		return name.replace(/^Brother/, "");
+	};
+
+	test("end: a brother passing for the tenth time earns the Crux in HONOURS and the debrief", async () => {
+		const s = await open({ brothers: { Lorenzo: { ...LORENZO, passed: 9, purity: 9, squads: 9 } } });
+		await finish(s);
+		const out = await s.call({ action: "end" });
+		expect(out).toContain("Lorenzo earns the Crux Terminatus");
+		expect(debriefText(s)).toContain("Crux Terminatus");
+	});
+
+	test("end: a new brother joins the roster, in HONOURS and in the debrief's Honours section", async () => {
+		const s = await open();
+		const surname = await finish(s);
+		const out = await s.call({ action: "end" });
+		expect(out).toContain(`${surname} joins the roster`);
+		expect(debriefText(s)).toContain(`${surname} joins the roster`);
+	});
+
+	test("end: a write that fails after the roster was read gives no joins or Crux, and says it was not saved", async () => {
+		const s = await open({ brothers: { Lorenzo: { ...LORENZO, passed: 9, purity: 9, squads: 9 } } });
+		await finish(s);
+		mkdirSync(join(s.dir, `roster.json.${process.pid}.tmp`)); // the temp file cannot be created
+		const out = await s.call({ action: "end" });
+		expect(out).toContain("WARN ROSTER not written");
+		expect(out).toContain("earns a Purity Seal");
+		expect(out).not.toContain("Crux");
+		expect(out).not.toContain("joins the roster");
+		expect(debriefText(s)).toContain("this record was not saved");
+		expect(debriefText(s)).not.toContain("Crux");
+	});
+
+	test("names turned off mid-run: the return line is today's text", async () => {
+		const s = await open();
+		const name = await named(s, "battle-brother");
+		s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: name }, s.ctx);
+		task(s, "battle-brother", name, "running");
+		await s.sub("config", "names off");
+		task(s, "battle-brother", name, "completed");
+		expect(texts(s)).toContain("✓ returned");
+		expect(texts(s)).not.toContain(`✓ ${name} returned`);
+	});
+});

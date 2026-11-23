@@ -19,6 +19,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { killTree, Pty } from "./pty.ts";
+import * as cockpit from "../../extensions/strategium/cockpit.ts"; // only BADGES, for the glyphs the cockpit-names checks look for
 
 const COLS = 140, ROWS = 45;
 const ROOT = resolve(import.meta.dir, "..", "..");
@@ -28,7 +29,7 @@ const SID = "01a1eb00-0000-7000-8000-00000000d3a0", KEY = "demo-shot"; // the se
 type Task = { content: string; status: string };
 type Phase = { name: string; tasks: Task[] };
 type Seed = { where: Record<string, string>; extra: Record<string, unknown>; phases: Phase[]; timed?: number; cockpit?: Record<string, unknown>; live?: Record<string, LiveSeed>;
-	transcripts?: Record<string, string>; finals?: Record<string, string> }; // id -> JSONL / md text, written beside the session file (<session minus .jsonl>/<id>.jsonl, <id>.md) as omp does
+	transcripts?: Record<string, string>; finals?: Record<string, string>; roster?: Record<string, object> }; // id -> JSONL / md text, written beside the session file (<session minus .jsonl>/<id>.jsonl, <id>.md) as omp does; roster: brother -> service record, written as roster.json (state dir)
 // What a child writes in runs/<sid>.live/<agent id>.json (index.ts readLive, contract v3: pct, eta_min, line, blocked are what a child's signal writes; cost is its USD spend, absent = unknown); since/at are minutes before the seed is written, the rest goes as is.
 type LiveSeed = { since: number; at: number; busy: number; done?: number; total?: number; current?: string; intent?: string; tool?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean; cost?: number; tokens_in?: number; tokens_out?: number; cache_read?: number; cache_write?: number };
 const t = (content: string, status: string): Task => ({ content, status });
@@ -131,6 +132,30 @@ SEEDS.detail = {
 	},
 };
 
+// #135: agent names, badges and the record. Detail with named ids: Lorenzo served 5 squads (the BADGES purity, halo and laurel), Tycho has 10 passed (the crux), Leon is a recruit (not in the roster), Volker has no squad.
+// run.names has Brother then Penitent for alpha (the last spawned, not retired, is the row's name).
+const named = (name: string, agent: string, surname: string, squad?: string) => ({ name, agent, surname, ...(squad ? { squad } : {}), spawned: true });
+const deployedAs = (id: string, role: string, squad: string | undefined, state: string, from: number, to?: number) =>
+	[id, { who: id, role, ...(squad ? { squad } : {}), station: "Skirmish", state, at: ago(from), ...(to === undefined ? {} : { ended: ago(to) }) }];
+SEEDS.names = {
+	...SEEDS.detail,
+	extra: { slices: [alpha], agents: { PenitentLorenzo: alpha }, stopped: [slice("beta", ["tools/tui-shot/shot.ts"]), slice("delta", ["README.md"])],
+		names: [named("BrotherLorenzo", "battle-brother", "Lorenzo", "alpha"), named("PenitentLorenzo", "battle-brother", "Lorenzo", "alpha"), named("BrotherTycho", "battle-brother", "Tycho", "delta"),
+			named("BrotherLeon", "battle-brother", "Leon", "beta"), named("ApothecaryVolker", "apothecary", "Volker")] },
+	cockpit: {
+		...SEEDS.detail.cockpit,
+		deployed: [
+			deployedAs("BrotherLorenzo", "battle-brother", "alpha", "done", 10, 4), deployedAs("PenitentLorenzo", "battle-brother", "alpha", "active", 4),
+			deployedAs("BrotherTycho", "battle-brother", "delta", "failed", 8, 5), deployedAs("BrotherLeon", "battle-brother", "beta", "done", 7, 2),
+			deployedAs("ApothecaryVolker", "apothecary", undefined, "active", 3)],
+	},
+	live: { PenitentLorenzo: SEEDS.detail.live!.AlphaBrother, ApothecaryVolker: SEEDS.detail.live!.ApothecaryBeta },
+	roster: {
+		Lorenzo: { passed: 6, penances: 1, falls: 0, squads: 5, purity: 4, halo: 1, laurel: 1 }, // 4 first builds + 1 saved squad (+2): passed = purity + 2 * halo
+		Tycho: { passed: 10, penances: 3, falls: 0, squads: 10, purity: 7, halo: 0, laurel: 0 }, // 7 first builds + 3 passes after a penance
+	},
+};
+
 // #125: the transcript view. The detail seed plus generated transcripts (never copied from a real session; shapes as omp writes a child's .jsonl).
 function assistantText(text: string) {
 	return JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } });
@@ -172,6 +197,8 @@ export interface Args {
 }
 /** The child's STRATEGIUM_RELIC: always set, so the caller's own value never changes a shot or a replay. */
 export const relicEnv = (relic: boolean) => ({ STRATEGIUM_RELIC: relic ? "1" : "0" });
+/** The child's STRATEGIUM_NAMES: always set, so the caller's own value never changes a shot or a replay; only a scenario that says `names: true` turns it on. */
+export const namesEnv = (on: boolean) => ({ STRATEGIUM_NAMES: on ? "1" : "0" });
 /** The text the fake caster says when --caster has no value. */
 export const CASTER_TEXT = "Squad alpha just went green on the parser tests; gamma has been quiet for six minutes.";
 /** The fake caster text of a replay: a scenario that needs the caster says its own fixed text, so --caster=OTHER never breaks its checks; the others follow the flag. */
@@ -284,7 +311,7 @@ export class Run {
 	private size = 0;
 	private pty!: Pty;
 
-	constructor(seed: string, readonly sfx: string, readonly ext = false, ponytail: string | null = null, caster: string | null = A.caster) {
+	constructor(seed: string, readonly sfx: string, readonly ext = false, ponytail: string | null = null, caster: string | null = A.caster, names = false) {
 		// Fixed name (it shows in omp's footer, so shots stay comparable) and per suffix (parallel runs need different --suffix).
 		this.work = join(OUT, "work" + sfx);
 		try { rmSync(this.work, { recursive: true, force: true }); } catch {}
@@ -300,6 +327,7 @@ export class Run {
 		if (S.cockpit) // the file index.ts writes (cockpit file contract: key, chronicle oldest first, notes, deployed [id, Deployed][])
 			writeFileSync(join(this.state, "runs", SID + ".cockpit"), JSON.stringify({ key: KEY, ...S.cockpit }));
 		if (S.live) this.writeLive(S.live);
+		if (S.roster) writeFileSync(join(this.state, "roster.json"), JSON.stringify({ version: 1, brothers: S.roster })); // the file roster.ts serializeRoster writes
 		if (S.transcripts || S.finals) {
 			mkdirSync(this.sfile.slice(0, -".jsonl".length), { recursive: true });
 			for (const [id, text] of Object.entries(S.transcripts ?? {})) writeFileSync(this.transcript(id), text);
@@ -321,6 +349,7 @@ export class Run {
 		Object.assign(this.env, { STRATEGIUM_STATE_DIR: this.state, STRATEGIUM_GLYPHS: "1", TERM_PROGRAM: "Windows_Terminal", WT_SESSION: "00000000-0000-0000-0000-000000000001" });
 		Object.assign(this.env, relicEnv(A.relic));
 		Object.assign(this.env, casterEnv(caster));
+		Object.assign(this.env, namesEnv(names));
 		if (ext) { // every model role pinned to the fake provider: side turns (title...) never reach a real model either
 			writeFileSync(join(this.work, "replay.yml"),
 				"modelRoles:\n" + ["default", "slow", "plan", "advisor", "task", "vision", "commit", "smol"].map(r => `  ${r}: replay/ask\n`).join(""));
@@ -1327,8 +1356,43 @@ function checksCockpitTranscript(C: Ctx) {
 	C.ck("narrow-closed: q closes from the narrow transcript", nc.type === "normal" && !nc.framed(), nc.type, "normal, no frame", nc);
 }
 
+// cockpit-names (#135): wide frame, the squad detail (down to the first seal line, Tab to squad alpha, Enter), back, resize to 60, q. Item order is the detail seed's.
+const NAMES_STEPS: [name: string, seqs: string[], png?: boolean][] = [
+	["down", KEYS.down], ["tab-squad", KEYS.tab], ["squad", ["\r"], true], ["squad-back", KEYS.esc],
+];
+async function stepsCockpitNames(R: Run) {
+	await R.open(); await R.snap("wide", true);
+	for (const [name, seqs, png] of NAMES_STEPS) {
+		for (const s of seqs) { R.send(s); await R.sleep(0.03); }
+		await R.sleep(0.7); await R.snap(name, !!png);
+	}
+	await R.resize(60, R.rows); await R.sleep(1.5); await R.snap("narrow", true);
+	for (const s of KEYS.q) { R.send(s); await R.sleep(0.03); }
+	await R.sleep(0.7); await R.snap("closed");
+}
+function checksCockpitNames(C: Ctx) {
+	const B = cockpit.BADGES(true), all = Object.values(B), w = snapOf(C, "wide");
+	const rowOf = (s: Snap, name: string) => s.rowsText.find(r => r.includes(name)) ?? "";
+	const pen = rowOf(w, "PenitentLorenzo"), tycho = rowOf(w, "BrotherTycho"), leon = rowOf(w, "BrotherLeon");
+	C.ck("wide: the BATTLE-BROTHERS box is there at 140 cols", w.cols === 140 && w.has("BATTLE-BROTHERS"), w.cols, 140, w);
+	C.ck("wide: PenitentLorenzo's row has the purity, halo and laurel glyphs", pen !== "" && [B.purity, B.halo, B.laurel].every(g => pen.includes(g)), pen, "PenitentLorenzo <purity> 4 <halo> 1 <laurel> 1 · squad alpha", w);
+	C.ck("wide: BrotherTycho's row has the crux glyph", tycho !== "" && tycho.includes(B.crux), tycho, "BrotherTycho … <crux>", w);
+	C.ck("wide: BrotherLeon (a recruit) has no badge glyph", leon !== "" && !all.some(g => leon.includes(g)), leon, "BrotherLeon with no glyph", w);
+	const d = snapOf(C, "squad");
+	C.ck("squad: the detail names SQUAD alpha", d.rowsText.some(r => r.startsWith("╟─") && r.includes("SQUAD alpha")), null, "SQUAD alpha", d);
+	C.ck("squad: brother: Lorenzo", d.has("brother: Lorenzo"), null, "brother: Lorenzo", d);
+	C.ck("squad: record: passed 6", d.has("record: passed 6"), null, "record: passed 6", d);
+	const b = snapOf(C, "squad-back");
+	C.ck("squad-back: the boxes are back", b.type === "alternate" && b.has("BATTLE-BROTHERS"), b.type, "alternate, BATTLE-BROTHERS", b);
+	const n = snapOf(C, "narrow"), long = n.rowsText.map((r, y) => [r, y] as const).filter(([r]) => /Lorenzo|Tycho|Leon/.test(r));
+	C.ck("narrow: 60 columns, with the named rows on screen", n.cols === 60 && long.length > 0, [n.cols, long.length], "60, > 0", n);
+	C.ck("narrow: every named row ends before col 60", long.every(([, y]) => n.lastCol(y) < 60), long.map(([, y]) => n.lastCol(y)), "< 60", n);
+	const q = snapOf(C, "closed");
+	C.ck("closed: q closes the cockpit (normal buffer)", q.type === "normal" && !q.framed(), q.type, "normal", q);
+}
+
 // name -> r (the regression), kind FIXED|KNOWN|OPEN, seed, ext (fake provider), ponytail, caster (true: run with the fake caster on whatever --caster says), settle (false: wait only for the first heartbeat), steps, checks
-type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; caster?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
+type Replay = { r: string; kind: "FIXED" | "KNOWN" | "OPEN"; seed: string; ext?: boolean; ponytail?: boolean; caster?: boolean; names?: boolean; settle?: boolean; steps: (R: Run) => Promise<void>; checks: (C: Ctx) => void };
 export const REPLAYS: Record<string, Replay> = {
 	"fullscreen-height": { r: "R9", kind: "FIXED", seed: "scriptorium", steps: stepsFullscreenHeight, checks: checksFullscreenHeight },
 	"fullscreen-resize": { r: "R9/F6", kind: "FIXED", seed: "scriptorium", steps: stepsFullscreenResize, checks: checksFullscreenResize },
@@ -1357,6 +1421,7 @@ export const REPLAYS: Record<string, Replay> = {
 	"cockpit-cursor": { r: "#123", kind: "FIXED", seed: "restart", ext: true, steps: stepsCockpitCursor, checks: checksCockpitCursor },
 	"cockpit-detail": { r: "#124", kind: "FIXED", seed: "detail", ext: true, steps: stepsCockpitDetail, checks: checksCockpitDetail },
 	"cockpit-transcript": { r: "#125", kind: "FIXED", seed: "transcript", ext: true, steps: stepsCockpitTranscript, checks: checksCockpitTranscript },
+	"cockpit-names": { r: "#135", kind: "FIXED", seed: "names", ext: true, names: true, steps: stepsCockpitNames, checks: checksCockpitNames },
 };
 
 // shortcut: only the entities Chromium's --dump-dom writes in text (amp, lt, gt, quot, apos, nbsp, numeric); a full table if that ever changes
@@ -1415,7 +1480,7 @@ async function replay(name: string): Promise<[string, string | null]> {
 		console.log(`SKIP ${name} (${sc.r}): ponytail plugin not found`);
 		return ["SKIP", "ponytail plugin not found"];
 	}
-	const R = new Run(sc.seed, sfx, sc.ext ?? false, pdir, replayCaster(sc, A.caster));
+	const R = new Run(sc.seed, sfx, sc.ext ?? false, pdir, replayCaster(sc, A.caster), sc.names ?? false);
 	console.log(`== ${name} (${sc.r}, ${sc.kind})\n   omp: ${R.cmd}`);
 	let err: string | null = null, C: Ctx;
 	try {

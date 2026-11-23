@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allExit, type Args, CASTER_TEXT, casterEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+import { allExit, type Args, CASTER_TEXT, casterEnv, namesEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
 
 const args = (argv: string[]) => {
 	const a = parseArgs(argv);
@@ -65,6 +65,16 @@ test("replayCaster: a caster scenario keeps its own text whatever --caster says,
 
 test("the caster-box replay is registered on the skirmish seed and always runs with the caster", () => {
 	expect(REPLAYS["caster-box"]).toMatchObject({ seed: "skirmish", kind: "FIXED", caster: true });
+});
+
+test("namesEnv always pins STRATEGIUM_NAMES, so a user's own value never changes a shot", () => {
+	expect(namesEnv(false)).toEqual({ STRATEGIUM_NAMES: "0" });
+	expect(namesEnv(true)).toEqual({ STRATEGIUM_NAMES: "1" });
+});
+
+test("only the cockpit-names replay runs with names on", () => {
+	expect(REPLAYS["cockpit-names"]).toMatchObject({ r: "#135", seed: "names", kind: "FIXED", ext: true, names: true });
+	expect(Object.entries(REPLAYS).filter(([, sc]) => sc.names).map(([n]) => n)).toEqual(["cockpit-names"]);
 });
 
 test("parseArgs rejects an unknown flag, a missing value and a bad seed", () => {

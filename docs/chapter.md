@@ -138,6 +138,14 @@ The record is filled only from what the plugin observes, and is written when the
 - Lock: the lock holds its owner's pid. A lock whose process is gone is taken at once; any other lock older than 10 s is taken as stale. A busy lock at allocation (waited 2 s) gives names from the pool with a `WARN roster busy`. The end waits 12 s, longer than the stale age, because it has no second chance: if the roster is still busy then, that run's record is lost, with a `WARN ROSTER not written`, and the end goes on. The record is written before the run's claim is released.
 - Takeover: a `begin` takeover drops the old run, so its record is lost; end it with `end` plus takeover first if it should count.
 
+Where it shows (names on; with names off none of it appears):
+
+- Cockpit squad row: the builder's name, then the badges, then the squad: `† PenitentLorenzo ✠4 ☉1 ❦1 · squad alpha forging`. A counter shows only from 1 up, in the order Purity Seal `✠`, Iron Halo `☉`, Laurel Imperialis `❦` (each glyph then its count), then Crux Terminatus `✚` (no count). With `STRATEGIUM_GLYPHS=1` the glyphs are Nerd Font ones, written glyph, space, count. A recruit with no record shows no badge. A corrupted brother is not allocated, so he is normally not on a live row; one can still be there when the roster could not be read at allocation, and his detail then shows `corrupted: kept in reserve`.
+- Cockpit detail of a squad: `brother:`, `record:` (passed, penances, falls, squads), `honours:` and, when it applies, `corrupted: kept in reserve`.
+- Chronicle: a deployed agent is written by name (`† BrotherLorenzo deployed`, `✓ BrotherLorenzo returned`).
+- `end` result and debrief: a `HONOURS …` line in the result and an `## Honours` section in the debrief, with who joins the roster, earns an honour, falls or is corrupted.
+- When: the record only changes at `end`, so the honours lines are made then. They go to the debrief and the `end` result, not to the live chronicle, because the cockpit closes at the same `end`.
+
 ## Stations and the chronicle voice
 
 Station names are unchanged. One line each:

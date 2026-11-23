@@ -28,7 +28,7 @@ import { volume } from "../../alarm/vox";
 import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type View, type ViewInput } from "./cockpit";
 import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./names";
-import { applyRun, corrupted, loadRoster, rankBrothers, runOutcomes, STALE_MS, unfinished, updateRoster, withRosterLock } from "./roster";
+import { applyRun, corrupted, type Brothers, type Honour, honours, loadRoster, rankBrothers, runOutcomes, squadBrothers, STALE_MS, unfinished, updateRoster, withRosterLock } from "./roster";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
 // One run per omp session: each session owns one ticket, its edit guard and its alerts.
@@ -609,7 +609,7 @@ function savedRoles(sid: string): Map<string, { role: string; squad?: string }> 
 }
 
 /** Build the run's debrief and save it under <state>/debriefs (kept after the run): the result lines for `end`. A failure never stops the end. */
-function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } } | undefined, clamp: boolean): string[] {
+function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: string; notes: Record<string, Note>; deployed?: Map<string, Deployed>; caster?: { spend?: Spend } } | undefined, clamp: boolean, honoursIn?: { rows: Honour[]; unsaved?: string }): string[] {
 	try {
 		const evs = eventsSince(run.key, run.since);
 		// A run stopped before `end` has no pause tail: its last interval closes at the stop (or at a later station entry). A takeover keeps it: the crash gap is real.
@@ -633,7 +633,7 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 		});
 		const spend = live?.key === run.key ? live.caster?.spend : savedSpend(run.sid);
 		if (spend?.calls) costs.push({ id: "caster", role: "caster", calls: spend.calls, model: spend.model, cost: spend.cost, tokens_in: spend.tokens_in, tokens_out: spend.tokens_out, cache_read: spend.cache_read, cache_write: spend.cache_write });
-		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported, agents: costs });
+		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported, agents: costs, ...(honoursIn ? { honours: honoursIn } : {}) });
 		const file = path.join(stateDir(), "debriefs", `${safeName(run.key)}-${nowIso(now).slice(0, 19).replace(/:/g, "-")}.md`);
 		try {
 			writeAtomic(file, markdown);
@@ -662,10 +662,10 @@ function endRun(sid: string, key?: string, takeover?: string, reported?: Reporte
 	const record = names ? recordRun(run) : undefined;
 	release(stateDir(), run.key, sid);
 	// After the last span is closed and before the run's files go: the debrief reads them.
-	const lines = writeDebrief(run, reported, live, run.sid === sid);
+	const lines = writeDebrief(run, reported, live, run.sid === sid, names ? { rows: record?.honours ?? [], ...(record?.error ? { unsaved: record.error } : {}) } : undefined);
 	dropFiles(run.sid);
 	dropPointer(sid);
-	return [`ENDED ${run.key}`, ...lines, ...(record ? [record] : [])].join("\n");
+	return [`ENDED ${run.key}`, ...lines, ...(record ? [record.line] : [])].join("\n");
 }
 
 function report(date?: string): string {
@@ -862,15 +862,28 @@ function isMerge(command: string): boolean {
 }
 
 /** Fold the run's outcomes into the shared roster at `end`: the line to print, undefined with nothing to record. A roster failure never stops the end. */
-function recordRun(run: Run): string | undefined {
+function recordRun(run: Run): { line: string; honours: Honour[]; error?: string } | undefined {
 	const names = cleanNames(run.names);
 	const outcomes = runOutcomes({ ...run, names });
 	if (!outcomes.length) return undefined;
 	const merged = run.merged === true && !unfinished({ names, ended: run.ended });
 	// The end has no second chance: wait past STALE_MS so a lock left by a crash is taken instead of losing the record.
-	const err = updateRoster(stateDir(), b => applyRun(b, outcomes, merged), STALE_MS + 2000);
-	return err ? `WARN ROSTER not written: ${err}` : `ROSTER ${outcomes.length} squad(s) recorded`;
+	const seen: { before?: Brothers } = {};
+	const err = updateRoster(
+		stateDir(),
+		b => {
+			seen.before = b;
+			return applyRun(b, outcomes, merged);
+		},
+		STALE_MS + 2000,
+	);
+	// An unsaved record has no known "before": no joins, Crux or corruption.
+	const rows = honours(outcomes, merged, err ? undefined : seen.before);
+	return err ? { line: `WARN ROSTER not written: ${err}`, honours: rows, error: err } : { line: `ROSTER ${outcomes.length} squad(s) recorded`, honours: rows };
 }
+
+/** The name behind a spawn id (omp's -N suffix dropped) in the run's names, if any. */
+const nameBehind = (run: Run, id: string): string | undefined => run.names?.find(n => n.name === baseId(id))?.name;
 
 type Pick = { prefer: string[]; skip: Set<string> };
 
@@ -1351,6 +1364,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		dirty: false,
 		seal: undefined as { id: string; lines: string[] } | undefined, // what the Captain prepared for the seal that waits (the `seal` action)
 		deployed: new Map<string, Deployed>(),
+		roster: undefined as { n: number; brothers: Brothers } | undefined, // roster.json as read for a run with `n` names, names on only: a brother's record cannot change while his run holds him, a new name may be one the file now knows. Never an unreadable read
 		final: new Map<string, Live | undefined>(), // a finished agent's live row: read once, a miss re-read while its agent's or squad's detail is open (undefined: none found); memory only
 		clock: undefined as ViewInput["clock"],
 		view: undefined as View | undefined,
@@ -1380,6 +1394,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		cockpit.chronicle = [];
 		cockpit.notes = {};
 		cockpit.deployed.clear();
+		cockpit.roster = undefined;
 		cockpit.final.clear();
 		cockpit.clock = undefined;
 		cockpit.seal = undefined;
@@ -1416,6 +1431,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				// Hand-edited or damaged numbers are read as absent.
 				for (const k of ["at", "ended", "stalled"] as const) if (typeof job[k] !== "number") delete job[k];
 				if (job.blocked !== true) delete job.blocked;
+				if (typeof job.name !== "string") delete job.name;
 				cockpit.deployed.set(id, job);
 			}
 			cockpit.seal = saved.seal && { id: saved.seal.id, lines: saved.seal.lines.slice(0, SEAL_LINES).map((l: string) => l.slice(0, SEAL_LINE_CHARS)) };
@@ -1442,7 +1458,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		job.state = ok ? "done" : "failed";
 		job.ended = Date.now();
 		if (job.squad) cockpit.notes[job.squad] = { ...(cockpit.notes[job.squad]?.veteran ? { veteran: true as const } : {}), ...(ok ? {} : { failed: true as const }) };
-		log(key, job.who, ok ? "✓ returned" : "✗ failed", ok ? "ok" : "fail");
+		log(key, job.who, `${ok ? "✓" : "✗"} ${naming.on && job.name ? `${job.name} ` : ""}${ok ? "returned" : "failed"}`, ok ? "ok" : "fail");
 	};
 	/** Idle for the host with nothing queued and no background job running: the prompt is free for the user's orders. */
 	const agentStatus = (ctx: SessionCtx) =>
@@ -1496,6 +1512,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			log(run.key, job.who, `stalled ${Math.floor((now - start) / 60_000)}m`, "warn");
 		}
 		cockpit.transcript = readOpen(ctx);
+		const n = run.names?.length ?? 0;
+		const roster = naming.on ? (cockpit.roster?.n === n ? cockpit.roster : loadRoster(stateDir())) : { brothers: {} };
+		if (naming.on) cockpit.roster = "error" in roster ? undefined : { n, brothers: roster.brothers };
 		cockpit.input = {
 			live: rows,
 			now,
@@ -1514,6 +1533,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			seal: cockpit.seal,
 			caster: caster.on ? { station: cockpit.caster.station ?? activeStation(run.phases ?? []) ?? "no station yet", text: cockpit.caster.text ?? "listening…", dim: cockpit.caster.text === undefined || cockpit.caster.dim === true, at: cockpit.caster.at } : undefined,
 			transcript: cockpit.transcript,
+			names: naming.on ? { squads: squadBrothers(cleanNames(run.names), "brothers" in roster ? roster.brothers : undefined), ...("error" in roster ? { unreadable: true as const } : {}) } : undefined,
 		};
 		cockpit.view = cockpitView({ ...cockpit.input, nav: cockpit.nav });
 		cockpit.nav = cockpit.view.nav; // normalized: a browsed station is dropped when the active one moved
@@ -2750,15 +2770,17 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				const station = activeStation(run.phases ?? []);
 				// log first: it resets the cockpit when the run key changed, which would wipe a registry entry set before it.
 				if (!squad) {
-					log(run.key, agent.toUpperCase(), "deployed");
-					cockpit.deployed.set(p.id, { who: agent.toUpperCase(), role: agent, station, state: "active", at: Date.now() });
+					const name = naming.on ? nameBehind(run, p.id) : undefined;
+					log(run.key, agent.toUpperCase(), name ? `${name} deployed` : "deployed");
+					cockpit.deployed.set(p.id, { who: agent.toUpperCase(), role: agent, station, state: "active", at: Date.now(), ...(name ? { name } : {}) });
 					continue;
 				}
 				const veteran = agent === "veteran";
 				const ic = icons(process.env.STRATEGIUM_GLYPHS === "1");
-				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} escalated to VETERAN` : `${ic.brother} battle-brother deployed`, veteran ? "fail" : undefined);
+				const name = naming.on ? nameBehind(run, p.id) : undefined;
+				log(run.key, `SQUAD ${squad}`, veteran ? `${ic.veteran} ${name ? `${name} ` : ""}escalated to VETERAN` : `${ic.brother} ${name ?? "battle-brother"} deployed`, veteran ? "fail" : undefined);
 				if (veteran) cockpit.notes[squad] = { ...cockpit.notes[squad], veteran: true };
-				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active", at: Date.now() });
+				cockpit.deployed.set(p.id, { who: `SQUAD ${squad}`, role: agent, squad, station, state: "active", at: Date.now(), ...(name ? { name } : {}) });
 			} else if (["completed", "failed", "aborted"].includes(String(p.status))) endJob(run.key, p.id, p.status === "completed");
 		}
 		drawCockpit(run, ctx);
@@ -2779,12 +2801,13 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		const run = ownRun(sidOf(ctx));
 		const agent = agentName(String(asObj(e).agent ?? "task"));
 		if (!run || !ROSTER.includes(agent)) return;
-		log(run.key, agent.toUpperCase(), "deployed");
 		const spawnKey = asObj(e).spawnKey;
 		const id = typeof spawnKey === "string" && spawnKey ? spawnKey : `eval-${agent}-${cockpit.deployed.size + 1}`;
+		const name = naming.on ? nameBehind(run, id) : undefined;
+		log(run.key, agent.toUpperCase(), name ? `${name} deployed` : "deployed");
 		// The spawnKey is the agent's id: its job label and its eval status events, so the context hook above ends it.
 		// shortcut: an eval spawn without spawnKey has nothing to match its end, so it stays ▶ until the run key changes; upgrade if a host omits spawnKey.
-		cockpit.deployed.set(id, { who: agent.toUpperCase(), role: agent, station: activeStation(run.phases ?? []), state: "active", at: Date.now() });
+		cockpit.deployed.set(id, { who: agent.toUpperCase(), role: agent, station: activeStation(run.phases ?? []), state: "active", at: Date.now(), ...(name ? { name } : {}) });
 		drawCockpit(run, ctx);
 	});
 

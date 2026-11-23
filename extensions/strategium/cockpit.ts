@@ -1,12 +1,13 @@
 // The cockpit: a pure view of the run (boxes, seals, clock, chronicle) and its renderers. No fs, no ctx, no index.ts.
 import { AGENTS } from "../../skills/strategium/todo";
 import { DEFAULT_THEME, THEMES, type Theme, type Tone } from "./themes";
+import type { Brother } from "./roster";
 
 export type Phase = { name: string; tasks: { content: string; status: string }[] };
 export type Seal = { id: string; state: "granted" | "waiting" | "pending" };
 export type Entry = { at: string; who: string; text: string; tone?: "ok" | "fail" | "seal" | "warn" };
 export type Note = { veteran?: true; failed?: true };
-export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; ended?: number; stalled?: number; blocked?: true }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. ended: when the host saw it end, in ms. stalled: the live entry's `at` (the idle start) the reader marked stalled. blocked: its row said so and the alarm rang for it; cleared when the row stops saying it
+export type Deployed = { who: string; role: string; squad?: string; station?: string; state: "active" | "done" | "failed"; at?: number; ended?: number; stalled?: number; blocked?: true; name?: string }; // station: its name at spawn; undefined with no phases. at: deploy time in ms. ended: when the host saw it end, in ms. stalled: the live entry's `at` (the idle start) the reader marked stalled. blocked: its row said so and the alarm rang for it; cleared when the row stops saying it. name: its agent name, names on only
 /** What a child writes about itself, already validated by the reader (contract v3): ms timestamps, its todo counts, its last tool call and what it signalled (pct, eta_min, line, blocked), and its usage. Usage is optional and absent means unknown, never 0: cost is USD (finite, >= 0) as omp prices it, its own spend without nested subagents; the tokens are safe integers >= 0. */
 export type Live = { since: number; at: number; tool?: string; intent?: string; done?: number; total?: number; current?: string; pct?: number; eta_min?: number; line?: string; blocked?: boolean; cost?: number; tokens_in?: number; tokens_out?: number; cache_read?: number; cache_write?: number };
 export type Depth = "truecolor" | "256";
@@ -33,6 +34,7 @@ export type ViewInput = {
 	now?: number; // ms; the elapsed time of a live row counts to it. No now, no live rows
 	caster?: { station: string; text: string; dim: boolean; at?: number }; // the caster's summary box; absent when the caster is off. text: the summary or an empty-state row (dim: true); at: the summary time in ms. Untrusted: the view cleans it again
 	transcript?: { id: string; lines: string[] }; // the rows index.ts read for that agent's transcript (transcriptLines, or one reason line); shown while nav.detail.transcript is that id. Untrusted: the view cleans and caps them again
+	names?: { squads: Record<string, Brother>; unreadable?: true }; // present only with names on (index.ts reads roster.json; this view does no I/O): squad id → its builder and his record; unreadable: roster.json could not be read. Untrusted: the view cleans every string
 };
 export type View = ReturnType<typeof cockpitView>;
 
@@ -346,6 +348,10 @@ export const icons = (nf: boolean) =>
 			}
 		: { captain: "☩", scout: "", librarian: "", brother: "†", veteran: "‡", apothecary: "", inquisitor: "", securityReviewer: "", sonic: "", task: "", seal: "◷", back: "↶", sealOn: "✠", sealWait: "○" };
 
+/** Honour badges next to a squad's builder: plain glyphs one cell wide, never emoji. Nerd Font: md-seal_variant, md-circle_double, md-crown, md-cross_celtic (codepoints checked in the Nerd Fonts glyphnames.json; a cross, not the shield of a rank). */
+export const BADGES = (nf: boolean) =>
+	nf ? { purity: "\u{f0fd9}", halo: "\u{f0e95}", laurel: "\u{f01a5}", crux: "\u{f0cf5}" } : { purity: "✠", halo: "☉", laurel: "❦", crux: "✚" };
+
 /** `icon` then `text`, one gap between them. No icon: just the text. */
 const label = (icon: string, text: string) => (icon ? `${icon} ${text}` : text);
 
@@ -394,9 +400,35 @@ export function cockpitView(input: ViewInput) {
 	const returned = new Set((input.stopped ?? []).map(s => s.id));
 	const squadState = (id: string): [Kind, string] =>
 		building.has(id) ? ["active", "forging"] : input.notes[id]?.failed ? ["failed", "failed"] : returned.has(id) ? ["done", "returned"] : ["idle", "awaiting deployment"];
+	const named = (id: string) => {
+		const b = input.names && Object.hasOwn(input.names.squads, id) ? input.names.squads[id] : undefined;
+		return b && oneLine(b.name) ? b : undefined;
+	};
+	const bg = BADGES(!!input.glyphs);
+	// Counters >= 1 only, in the order purity, halo, laurel; the Crux has no number. A Nerd glyph takes a space before its count, as icons() does.
+	const badges = (b: Brother) => {
+		const count = (g: string, n: number | undefined) => (n !== undefined && Number.isSafeInteger(n) && n >= 1 ? [`${g}${input.glyphs ? " " : ""}${n}`] : []);
+		const s = b.service;
+		return [...count(bg.purity, s?.purity), ...count(bg.halo, s?.halo), ...count(bg.laurel, s?.laurel), ...(b.crux ? [bg.crux] : [])].map(x => ` ${x}`).join("");
+	};
+	/** The detail lines of a squad's builder: surname, record, honours and corruption. */
+	const brotherLines = (id: string): string[] => {
+		const b = named(id);
+		if (!b) return [];
+		const s = b.service;
+		const honours = s ? [[s.purity, "Purity Seal"], [s.halo, "Iron Halo"], [s.laurel, "Laurel Imperialis"]].flatMap(([n, name]) => (Number.isSafeInteger(n) && (n as number) >= 1 ? [`${name} ×${n}`] : [])).concat(b.crux ? ["Crux Terminatus"] : []) : [];
+		return [
+			`brother: ${oneLine(b.surname)}`,
+			`record: ${s ? `passed ${s.passed} · penances ${s.penances} · falls ${s.falls} · squads ${s.squads}` : input.names?.unreadable ? "unknown (roster unreadable)" : "none yet"}`,
+			...(s || !input.names?.unreadable ? [`honours: ${honours.join(" · ") || "none"}`] : []),
+			...(b.corrupted ? ["corrupted: kept in reserve"] : []),
+		];
+	};
 	const squads = ids.map(id => {
 		const [kind, state] = squadState(id);
-		return { id, key: `squad:${id}`, kind, mark: MARK[kind], text: label(input.notes[id]?.veteran ? ic.veteran : ic.brother, `squad ${id} ${state}`) };
+		const b = named(id);
+		const who = b ? `${oneLine(b.name)}${badges(b)} · squad ${id} ${state}` : `squad ${id} ${state}`;
+		return { id, key: `squad:${id}`, kind, mark: MARK[kind], text: label(input.notes[id]?.veteran ? ic.veteran : ic.brother, who) };
 	});
 
 	const tasks = (phase?.tasks ?? []).flatMap((t, i) => {
@@ -485,6 +517,7 @@ export function cockpitView(input: ViewInput) {
 					`parallel: ${slice ? (slice.parallel ? "yes" : "no") : "unknown"}`,
 					...(tier ? [`tier: ${tier}`] : []),
 					...(input.notes[rest]?.veteran ? ["escalated to veteran"] : []),
+					...brotherLines(rest),
 					...(mine.length ? [`agents (${mine.length}):`, ...mine.flatMap(([aid, d], i) => [...(i ? [""] : []), ...facts(aid, d).map(l => `  ${l}`)])] : ["no agent deployed yet"]),
 				],
 			};
