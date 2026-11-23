@@ -1,3 +1,17 @@
+## [0.2.41] - 2026-11-23
+
+### 🚀 Features
+
+- *(extension)* Lessons from corrupted agents for the next round
+
+### 📚 Documentation
+
+- *(theatre)* Check the board at the end of the task
+- *(theatre)* Board check reads the issue and PR state
+
+### 🧪 Testing
+
+- *(extension)* LESSON line with names off; penance brief carries lessons
 ## [0.2.40] - 2026-11-23
 
 ### 🚀 Features
