@@ -1528,6 +1528,12 @@ describe("cursor identity", () => {
 			expect(at("log:10:00|SCOUT|deployed#0")).toBe("A");
 			expect(at("log:10:00|SCOUT|deployed#1")).toBe("B");
 		});
+		test("a transcript opened from a squad entry stays open when a newer agent of the squad deploys", () => {
+			const deployed = new Map([["A", dep({ role: "battle-brother", squad: "s" })], ["B", dep({ role: "veteran", squad: "s" })]]);
+			const v = cockpitView({ ...input({ chronicle: log("A"), deployed }), nav: { cursor: { id: ID, at: 0 }, detail: { id: ID, transcript: "A" } } });
+			expect(v.detail!.transcript).toBe(true);
+			expect(v.nav.detail).toEqual({ id: ID, transcript: "A" });
+		});
 		test("the transcript closes when the agent is no longer deployed", () => {
 			const base = input({ chronicle: log("A"), deployed: new Map([["A", dep()]]) });
 			const nav = { cursor: { id: ID, at: 0 }, detail: { id: ID, transcript: "A" } };

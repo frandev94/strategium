@@ -5158,6 +5158,8 @@ describe("cockpit", () => {
 			const entries = (await chron(s, ui)).split("\n").filter(l => l.includes("SQUAD a"));
 			expect(entries).toHaveLength(2);
 			expect(entries[0]).toContain("✗ failed");
+			const log = JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8")).chronicle as { text: string; agent?: string }[];
+			expect(log.find(e => e.text.includes("failed"))?.agent).toBe("A");
 			expect(entries[1]).toContain("† battle-brother deployed");
 			expect(await peek(s, ui)).toMatch(/✗ † squad a failed/);
 		});
@@ -5786,6 +5788,8 @@ describe("cockpit", () => {
 			spawn(s, { invocationKind: "eval", agent: "scout" });
 			expect(await deployed(s, ui)).toHaveLength(1);
 			expect((await deployed(s, ui))[0]).toContain("SCOUT");
+			const entry = (JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8")).chronicle as { text: string; agent?: string }[]).find(e => e.text === "deployed");
+			expect(entry?.agent).toBe("eval-scout-1");
 		});
 
 		test("a spawn that is not from eval logs nothing", async () => {
@@ -6100,6 +6104,7 @@ describe("cockpit", () => {
 				ui.opened.at(-1)!.component.handleInput!("q");
 				expect(alarmLines()).toEqual(["attention|K-1: SQUAD a is blocked: need the API shape"]);
 				expect((await chron(s, ui)).match(/blocked: need the API shape/g)).toHaveLength(1);
+				expect(saved(s).chronicle.find((e: { text: string }) => e.text.startsWith("blocked: "))?.agent).toBe("A");
 				expect(saved(s).deployed.find((d: [string, unknown]) => d[0] === "A")[1]).toMatchObject({ blocked: true });
 				expect(top(await peek(s, ui))).toContain("blocked · ");
 			});
@@ -6138,6 +6143,7 @@ describe("cockpit", () => {
 				expect(top(await peek(s, ui))).toContain("blocked · stalled 6m");
 				await peek(s, ui);
 				expect((await chron(s, ui)).match(/stalled 6m/g)).toHaveLength(1);
+				expect(saved(s).chronicle.find((e: { text: string }) => e.text === "stalled 6m")?.agent).toBe("A");
 			});
 
 			test("a second signal within a second reaches the file after the trailing write", async () => {
@@ -6518,6 +6524,15 @@ describe("cockpit", () => {
 					entry(c);
 					expect(show(c)).toContain("CHRONICLE");
 					expect(show(c)).not.toContain("enter transcript");
+				});
+
+				test("a saved entry whose agent is still deployed opens that agent after a restart", async () => {
+					const { s } = await squad();
+					const file = JSON.parse(readFileSync(join(s.dir, "runs", "sess-0001.cockpit"), "utf8"));
+					file.chronicle.push({ at: "10:00", who: "SCOUT", text: "deployed", agent: "A" });
+					const c = await reopen(s, file);
+					entry(c);
+					expect(show(c)).toContain("enter transcript");
 				});
 
 				test("an agent id from disk that the registry does not know, or that is no string, shows today's detail", async () => {

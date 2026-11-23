@@ -524,14 +524,15 @@ export function cockpitView(input: ViewInput) {
 	const refOf = (id: string): string => {
 		if (!id.startsWith("log:")) return id;
 		const a = chronicle.find(c => c.id === id)?.agent;
-		const d = typeof a === "string" ? input.deployed?.get(a) : undefined;
+		const d = a === undefined ? undefined : input.deployed?.get(a);
 		return d ? (d.squad ? `squad:${d.squad}` : `agent:${a}`) : id;
 	};
 	const detailId = want !== undefined && items.some(i => i.id === want) ? want : undefined;
 	// The transcript stays while its agent is still deployed and belongs to the open detail: that agent, or any agent of that squad (a newer one deploying does not close it).
-	const target = detailId === undefined ? undefined : targetOf(refOf(detailId), input.deployed);
+	const ref = detailId === undefined ? undefined : refOf(detailId);
+	const target = ref === undefined ? undefined : targetOf(ref, input.deployed);
 	const open = input.nav?.detail?.transcript;
-	const transcript = target !== undefined && open !== undefined && (open === target || (refOf(detailId!).startsWith("squad:") && input.deployed?.get(open)?.squad === refOf(detailId!).slice(6))) ? open : undefined;
+	const transcript = target !== undefined && open !== undefined && (open === target || (ref!.startsWith("squad:") && input.deployed?.get(open)?.squad === ref!.slice(6))) ? open : undefined;
 	const tops = Object.fromEntries(Object.entries(input.nav?.tops ?? {}).filter(([k, n]) => (k === "seal" ? !!panel : k === "detail" ? detailId !== undefined : k === "transcript" ? transcript !== undefined : boxes.some(b => b.title === k)) && Number.isInteger(n) && n > 0));
 	const nav: Nav = { ...(to >= 0 ? { cursor: { id: items[to].id, at: to } } : {}), ...(shown === undefined ? {} : { shown: { phase: shown, from: active } }), ...(Object.keys(tops).length ? { tops } : {}), ...(detailId === undefined ? {} : { detail: { id: detailId, ...(transcript === undefined ? {} : { transcript }) } }) };
 
@@ -564,8 +565,8 @@ export function cockpitView(input: ViewInput) {
 		if (id.startsWith("log:")) {
 			const e = chronicle.find(c => c.id === id);
 			if (!e) return undefined;
-			const ref = refOf(id);
-			const more = ref === id ? undefined : detailOf(ref);
+			const via = refOf(id);
+			const more = via === id ? undefined : detailOf(via);
 			return { title: `CHRONICLE · ${clean(e.at)} · ${clean(e.who)}`, lines: [clean(e.text), ...(more ? ["", ...more.lines] : [])] };
 		}
 		const t = tasks.find(x => x.id === id);
