@@ -29,6 +29,7 @@ import { childEnv } from "./env";
 import { activeStation, briefRow, CHRONICLE_CAP, clean, cockpitKey as keyAction, cockpitView, colorDepth, grantedSeals, icons, isCost, jobEnds, navigate, oneLine, palette, pushEntry, RATINGS, renderCockpit, transcriptLines, waitingSeal, type Deployed, type Entry, type Live, type Nav, type Note, type Rating, type View, type ViewInput } from "./cockpit";
 import { allocateName, baseId, MAX_NAME, NAMED_AGENTS, type NameEntry } from "./names";
 import { applyRun, corrupted, type Brothers, type Honour, honours, loadRoster, rankBrothers, runOutcomes, squadBrothers, STALE_MS, unfinished, updateRoster, withRosterLock } from "./roster";
+import { loadContract, recordLine } from "./vault";
 import { addResults, loadTally, proposals, squadKind, tallyLines, updateTally } from "./tally";
 import { DEFAULT_THEME, isTheme, THEMES, type ThemeName } from "./themes";
 
@@ -80,6 +81,7 @@ type Run = {
 	phases?: Phase[];
 	since?: string;
 	ratings?: Record<string, Rating>; // agent id → the Captain's rating (the rate action); read through cleanRatings
+	recorded?: string[]; // vault event ids already attempted (begin, seal:<id>, pr), so a replay or restart adds no second daily line; read through cleanRecorded
 };
 type Tui = { requestRender(): void; terminal: { rows: number } };
 type Component = { render(width: number): string[]; handleInput?(data: string): void; invalidate?(): void; dispose?(): void };
@@ -379,6 +381,7 @@ function readRun(sid: string): Run | undefined {
 			if ("names" in run) run.names = cleanNames(run.names);
 			run.ended = cleanEnded(run.ended);
 			run.ratings = cleanRatings(run.ratings);
+			if ("recorded" in run) run.recorded = cleanRecorded(run.recorded);
 			if (run.merged !== true) delete run.merged;
 		}
 		return run;
@@ -538,7 +541,7 @@ function begin(sid: string, key: string, theatre: string, booked?: number, spent
 	// Begun again on the same key, every stored field stays except the booking mode.
 	const { untimed: _u, ...kept } = keep ?? {};
 	// A run begun under another key still hands its hidden tools on, or end could never restore them.
-	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: keep ? keep.repo : other?.repo, since: keep?.since ?? other?.since ?? nowIso(), ...(untimed ? { untimed: true as const } : {}) });
+	writeRun({ ...kept, ...(mine?.hidden ? { hidden: mine.hidden } : {}), key, theatre, sid, repo: keep ? keep.repo : other?.repo, since: keep?.since ?? other?.since ?? nowIso(), ...(keep ? {} : { recorded: other?.recorded }), ...(untimed ? { untimed: true as const } : {}) });
 	beat(sid);
 	sweepPointers();
 	startKey(key, booked, spent, untimed);
@@ -861,6 +864,12 @@ function cleanEnded(v: unknown): Record<string, "ok" | "failed"> | undefined {
 	return kept.length ? (Object.fromEntries(kept) as Record<string, "ok" | "failed">) : undefined;
 }
 
+/** Run.recorded as read from disk: unique ids of at most 220 characters, the first 200; undefined when none is left. */
+function cleanRecorded(v: unknown): string[] | undefined {
+	const kept = [...new Set(Array.isArray(v) ? v.filter((id): id is string => typeof id === "string" && id.length <= 220) : [])].slice(0, 200);
+	return kept.length ? kept : undefined;
+}
+
 /** One rating as the rate action takes it and as the run file holds it: the checked Rating, or the reason it is refused. Cuts nothing. */
 function parseRating(v: unknown): Rating | string {
 	const o = asObj(v);
@@ -900,13 +909,98 @@ function setEnded(run: Run, squad: string, end?: "ok" | "failed"): Run {
 const outcomeOf = (status: unknown): "ok" | "failed" | undefined => (status === "completed" ? "ok" : status === "failed" ? "failed" : undefined);
 
 /**
- * The Captain's own merge: after any `cd …` steps joined by `&&`, the command starts with gh pr merge / glab mr merge,
- * is not --auto or --help/-h, and has no pipe, `;` or newline whose exit code could stand for the merge's.
+ * The Captain's own gh pr <verb> / glab mr <verb>: after any `cd …` steps joined by `&&`, the command starts with it,
+ * is not --help/-h, and has no pipe, `;` or newline whose exit code could stand for its own.
  */
-function isMerge(command: string): boolean {
+function ownCommand(command: string, verb: string): boolean {
 	const segs = command.split("&&").map(s => s.trim());
 	const seg = segs.find(s => !/^cd(\s|$)/.test(s)) ?? "";
-	return /^(?:gh\s+pr|glab\s+mr)\s+merge(?:\s|$)/.test(seg) && !/\s--auto\b|\s(?:--help|-h)(?:\s|$)|[|;\n]|(?<![&>])&(?![&>])/.test(command);
+	return new RegExp(`^(?:gh\\s+pr|glab\\s+mr)\\s+${verb}(?:\\s|$)`).test(seg) && !/\s(?:--help|-h)(?:\s|$)|[|;\n]|(?<![&>])&(?![&>])/.test(command);
+}
+
+const isMerge = (command: string): boolean => ownCommand(command, "merge") && !/\s--auto\b/.test(command);
+
+const HEREDOC = /(?<!<)<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/;
+
+/**
+ * The words of one shell line, quotes removed and backslashes resolved; undefined when a quote is left open or an unquoted `|`, `;` or lone `&` appears
+ * (they hide the exit code). One linear pass.
+ */
+function shellWords(line: string): string[] | undefined {
+	const words: string[] = [];
+	let word = "";
+	let live = false;
+	for (let i = 0; i < line.length; i++) {
+		const c = line[i];
+		if (c === "'" || c === '"') {
+			let close = -1;
+			for (let j = i + 1; j < line.length && close < 0; j++) {
+				if (c === '"' && line[j] === "\\") j++;
+				else if (line[j] === c) close = j;
+			}
+			if (close < 0) return undefined;
+			word += line.slice(i + 1, close);
+			live = true;
+			i = close;
+		} else if (c === "\\") {
+			if (i + 1 < line.length) word += line[++i];
+			live = true;
+		} else if (/\s/.test(c)) {
+			if (live) words.push(word);
+			word = "";
+			live = false;
+		} else if (c === "|" || c === ";") return undefined;
+		else if (c === "&" && line[i + 1] !== "&" && line[i + 1] !== ">" && line[i - 1] !== ">" && line[i - 1] !== "&") return undefined;
+		else {
+			word += c;
+			live = true;
+		}
+	}
+	if (live) words.push(word);
+	return words;
+}
+
+/** Index just past the heredoc body a line opens (its terminator included), or `from` when the line opens none. */
+function afterHeredoc(lines: string[], from: number, line: string): { next: number; opened: boolean } {
+	const m = HEREDOC.exec(line);
+	if (!m) return { next: from, opened: false };
+	let i = from;
+	while (i < lines.length && lines[i].trim() !== m[2]) i++;
+	return { next: Math.min(i + 1, lines.length), opened: true };
+}
+
+/**
+ * A PR create is the command whose first real line, after optional `cd … &&` steps, starts `gh pr create` / `glab mr create`.
+ * Lines before it may only be shell assignments (`title=$(cat <<'X'` with its body, terminator and `)`); after it only its own heredoc body.
+ * The create line is refused with an unquoted `|`, `;` or lone `&`, an open quote, or --web/--dry-run/--help (also `=value`) or a short cluster with w or h.
+ */
+function isPrCreate(command: string): boolean {
+	const lines = command.split("\n").map(l => l.replace(/\r$/, ""));
+	let afterAssign = false;
+	for (let i = 0; i < lines.length; ) {
+		const raw = lines[i].trim();
+		if (raw === "" || (raw === ")" && afterAssign)) {
+			afterAssign = false;
+			i++;
+			continue;
+		}
+		afterAssign = false;
+		let rest = raw;
+		for (let m = /^cd(?:\s[^&;|]*)?&&\s*/.exec(rest); m; m = /^cd(?:\s[^&;|]*)?&&\s*/.exec(rest)) rest = rest.slice(m[0].length);
+		const create = /^(?:gh\s+pr|glab\s+mr)\s+create(?:\s|$)/.test(rest);
+		if (!create && !/^[A-Za-z_]\w*=/.test(raw)) return false;
+		const words = shellWords(create ? rest : raw);
+		if (!words) return false;
+		const { next, opened } = afterHeredoc(lines, i + 1, create ? rest : raw);
+		if (!create) {
+			afterAssign = opened;
+			i = next;
+			continue;
+		}
+		if (words.some(w => /^--(?:web|dry-run|help)(?:=|$)/.test(w) || /^-[A-Za-z]*[wh][A-Za-z]*$/.test(w))) return false;
+		return lines.slice(next).every(l => l.trim() === "");
+	}
+	return false;
 }
 
 /** Fold the run's outcomes into the shared roster at `end`: the line to print, undefined with nothing to record. A roster failure never stops the end. */
@@ -1472,6 +1566,56 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	};
 	let naming = namesSetting();
 	const namesState = () => `${naming.on ? "on" : "off"} (${naming.from})`;
+
+	// Vault records (#151): /strategium-config vault saves an absolute folder or "off" in the state dir, which wins over STRATEGIUM_VAULT (an absolute folder, anything else ignored); off by default.
+	const vaultFile = () => path.join(stateDir(), "vault");
+	const vaultSetting = (): { dir?: string; from: string } => {
+		let saved = "";
+		try {
+			saved = readFileSync(vaultFile(), "utf8").trim();
+		} catch {
+			// no saved choice: fall through to the env and the default
+		}
+		const fromEnv = process.env.STRATEGIUM_VAULT?.trim() ?? "";
+		if (saved.toLowerCase() === "off") return { from: "/strategium-config" };
+		if (path.isAbsolute(saved)) return { dir: saved, from: "/strategium-config" };
+		if (path.isAbsolute(fromEnv)) return { dir: fromEnv, from: "STRATEGIUM_VAULT" };
+		return { from: "default" };
+	};
+	let vault = vaultSetting();
+	const vaultLine = () => {
+		if (!vault.dir) return `vault: off (${vault.from})`;
+		const c = loadContract(vault.dir);
+		return `vault: ${vault.dir} (${vault.from}) · ${"error" in c ? c.error : "contract ok"}`;
+	};
+	const vaultNoticed = new Set<string>();
+	/** Append one line to the vault's daily. A failure is one notice per run and the run goes on; nothing here throws. */
+	function vaultWrite(ctx: SessionCtx, run: Run, text: string): void {
+		if (!vault.dir) return;
+		let why: string | undefined;
+		try {
+			const c = loadContract(vault.dir);
+			why = "error" in c ? c.error : recordLine(vault.dir, c.contract, stateDir(), new Date(), run.key, text);
+		} catch (err) {
+			why = err instanceof Error ? err.message : String(err);
+		}
+		const id = `${run.key} ${run.since}`;
+		if (!why || vaultNoticed.has(id)) return;
+		vaultNoticed.add(id);
+		ctx.ui.notify(`Strategium: vault ${vault.dir}: ${why}; the run goes on and this event is not in the vault`, "warning");
+	}
+	/** Record event `id` once per run: the id goes into the run file first, so a crash loses the line and never doubles it. Returns the run to carry on with. */
+	function vaultEvent(ctx: SessionCtx, run: Run, id: string, text: string): Run {
+		if (!vault.dir || run.recorded?.includes(id)) return run;
+		const next = { ...run, recorded: [...(run.recorded ?? []), id] };
+		try {
+			writeRun(next);
+		} catch {
+			return run;
+		}
+		vaultWrite(ctx, next, text);
+		return next;
+	}
 	// The names issued in this omp process, per session, across its runs: omp suffixes an id it has already seen, so a campaign's next run avoids them. Lost on restart.
 	const issuedBySession = new Map<string, Set<string>>();
 	const issuedFor = (sid: string) => {
@@ -1856,7 +2000,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	}
 
 	/** Begin `key` for the session: the tool's `begin` and the /strategium command both come here, so the edit guard is armed the same way. */
-	async function beginRun(sid: string, key: string, theatre: string, booked?: number, spent?: number, takeover?: string, archmagos?: boolean): Promise<string> {
+	async function beginRun(sid: string, key: string, theatre: string, booked: number | undefined, spent: number | undefined, takeover: string | undefined, archmagos: boolean | undefined, ctx: SessionCtx): Promise<string> {
 		// A session that lost its ticket drops its files here; its in-memory cockpit goes too, or a begin of the same key would bring it back.
 		if (!ownRun(sid)) resetCockpit();
 		begin(sid, key, theatre, booked, spent, takeover);
@@ -1864,19 +2008,27 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		idleSince = undefined;
 		const run = ownRun(sid)!;
 		const hid = await hideCaptainTools();
-		writeRun({
+		const begun = {
 			...run,
 			hidden: [...new Set([...(run.hidden ?? []), ...hid])],
 			// Omitted keeps what a same-key begin stored; false clears it.
 			...(archmagos !== undefined ? { archmagos: archmagos || undefined } : {}),
-		});
+		};
+		writeRun(begun);
+		vaultEvent(ctx, begun, "begin", "run begun");
 		return statusLines();
 	}
 
 	/** End the session's run. When it was its own, the tools come back and the Strategium theme plays; a takeover end does neither. */
 	async function finish(sid: string, ctx: SessionCtx, key?: string, takeover?: string, reported?: Reported): Promise<string> {
 		const mine = ownRun(sid);
+		// endRun picks the same run and deletes its file: the end line is built from this copy.
+		const target = vault.dir ? (key && key !== mine?.key ? allRuns().find(r => r.key === key) : mine) : undefined;
 		const result = endRun(sid, key, takeover, reported, cockpit, naming.on);
+		if (target && result.split("\n", 1)[0] === `ENDED ${target.key}`) {
+			const time = result.split("\n").find(l => l.startsWith("TIME "))?.slice(5).split(":")[0];
+			vaultWrite(ctx, target, `run ended${target.merged ? ", PR merged" : ""}${time ? ` (${time})` : ""}`);
+		}
 		if (mine && result.split("\n", 1)[0] === `ENDED ${mine.key}`) {
 			await restoreTools(mine.hidden);
 			const err = alert(sid, "theme", `${mine.key}: run ended`, ctx);
@@ -2024,7 +2176,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				switch (params.action) {
 					case "begin": {
 						if (!params.key) throw new Error("begin needs key");
-						return text(await beginRun(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover, params.archmagos));
+						return text(await beginRun(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover, params.archmagos, ctx));
 					}
 					case "repo": {
 						const run = ownRun(sid);
@@ -2273,7 +2425,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			if (ownRun(sid)?.key === key) note = `Strategium run ${key} is already this session's run.`;
 			else {
 				try {
-					await beginRun(sid, key, theatre);
+					await beginRun(sid, key, theatre, undefined, undefined, undefined, undefined, ctx);
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
 					ctx.ui.notify(`Strategium: ${message}`, "warning");
@@ -2340,7 +2492,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 
 	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => ctx.ui.notify(fullStatus(sid), "info"));
 
-	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look; caster on|off|default sets the cockpit's model commentator; names on|off|default sets whether the plugin hands out and checks agent names", (arg, ctx, sid) => {
+	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look; caster on|off|default sets the cockpit's model commentator; names on|off|default sets whether the plugin hands out and checks agent names; vault <absolute folder>|off|default sets the vault whose daily note records run events", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
 		let preview = false;
 		if (arg !== undefined) {
@@ -2356,7 +2508,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			const re = arg.match(/^relic\s+(on|off|default)$/);
 			const ca = arg.match(/^caster\s+(on|off|default)$/);
 			const na = arg.match(/^names\s+(on|off|default)$/);
-			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re && !ca && !na) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default, or names on|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
+			const va = arg.match(/^vault\s+(.+)$/);
+			if (!m && !so && !to && !i && !(vo && (vo[1] || vo[2])) && !a && !c && !k && !th && !re && !ca && !na && !va) throw new Error("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default, or names on|off|default, or vault <absolute folder>|off|default; the other settings live in ~/.omp/agent/.env (/skill:strategium-setup)");
 			if (m) notifyBySession.set(sid, m[1] === "on");
 			else if (so) soundBySession.set(sid, so[1] === "on");
 			else if (to) toastBySession.set(sid, to[1] === "on");
@@ -2403,6 +2556,16 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					writeFileSync(namesFile(), v);
 				}
 				naming = namesSetting();
+			} else if (va) {
+				const v = va[1].trim().replace(/^"(.*)"$/, "$1");
+				if (v.toLowerCase() === "default") rmSync(vaultFile(), { force: true });
+				else {
+					const off = v.toLowerCase() === "off";
+					if (!off && !path.isAbsolute(v)) throw new Error("vault takes an absolute folder path, off or default");
+					mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
+					writeFileSync(vaultFile(), off ? "off" : v);
+				}
+				vault = vaultSetting();
 			} else if (k) {
 				const v = k[1].toLowerCase();
 				if (v === "default") rmSync(keyFile(), { force: true });
@@ -2432,6 +2595,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 				`cockpit-theme: ${theme.name} (${theme.from})`,
 				`relic: ${relic.on ? "on" : "off"} (${relic.from})`,
 				`names: ${namesState()}`,
+				vaultLine(),
 				casterConfigLine(),
 				`theatre: ${env("STRATEGIUM_THEATRE")}`,
 				`glyphs: ${process.env.STRATEGIUM_GLYPHS === "1" ? "on" : "off"}`,
@@ -2805,11 +2969,23 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 
 	// The Captain's own gh pr merge / glab mr merge that came back clean: the run was merged (the Laurel needs it).
 	pi.on("tool_result", (e, ctx) => {
-		if (!naming.on || ctx?.agent?.kind === "sub" || !ctx?.sessionManager || e.toolName.replace(/^_+/, "") !== "bash" || e.isError) return;
+		if (!(naming.on || vault.dir) || ctx?.agent?.kind === "sub" || !ctx?.sessionManager || e.toolName.replace(/^_+/, "") !== "bash" || e.isError) return;
 		const input = asObj(e.input);
 		if (input.async === true || asObj(e.details).async !== undefined || asObj(e.details).exitCode !== undefined || !isMerge(String(input.command ?? ""))) return;
 		const run = ownRun(sidOf(ctx));
 		if (run && !run.merged) writeRun({ ...run, merged: true });
+	});
+
+	// The Captain's own gh pr create / glab mr create that came back clean: the run's first PR goes into the vault's daily.
+	pi.on("tool_result", (e, ctx) => {
+		if (!vault.dir || ctx?.agent?.kind === "sub" || !ctx?.sessionManager || e.toolName.replace(/^_+/, "") !== "bash" || e.isError) return;
+		const input = asObj(e.input);
+		if (input.async === true || asObj(e.details).async !== undefined || asObj(e.details).exitCode !== undefined || !isPrCreate(String(input.command ?? ""))) return;
+		const run = ownRun(sidOf(ctx));
+		if (!run) return;
+		const out = (Array.isArray(e.content) ? e.content : []).map(c => (c?.type === "text" ? c.text : "")).join("\n");
+		const url = out.match(/https?:\/\/\S+?\/(?:pull|merge_requests)\/\d+/)?.[0];
+		vaultEvent(ctx, run, "pr", url ? `PR opened ${url}` : "PR opened");
 	});
 
 	// ponytail: bash is a pattern list (see bashBlock); the edit tools are hidden and write/edit targets are checked below.
@@ -2944,9 +3120,11 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		}
 		// A hand-off (plan stations replaced by the remaining ones) is the approval: the seal that waited is granted.
 		const handedOff = isHandOff(details?.op, before, phases) ? waitingSeal(before) : undefined;
+		let sealed: Run = { ...run, phases };
 		for (const seal of handedOff ? [handedOff] : grantedSeals(before, phases)) {
 			log(run.key, "✠ SEAL", `${seal.id} granted`, "seal");
 			record({ event: "seal", key: run.key, seal: seal.id.slice(0, 200), state: "granted" });
+			sealed = vaultEvent(ctx, sealed, `seal:${seal.id.slice(0, 200)}`, `seal ${seal.id} granted`);
 			const err = alert(sidOf(ctx), "done", `${run.key}: seal ${seal.id} granted`, ctx);
 			if (err) ctx.ui.notify(`Strategium: ${err}`, "warning");
 		}
@@ -2955,7 +3133,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			cockpit.seal = undefined;
 			cockpit.dirty = true;
 		}
-		drawCockpit({ ...run, phases }, ctx);
+		drawCockpit(sealed, ctx);
 	});
 
 	// An agent deployed: the host allocates its id in the task result. An agent spawned by eval agent() is registered by its spawn hook (below).
