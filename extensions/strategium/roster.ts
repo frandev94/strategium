@@ -230,11 +230,11 @@ function takeStale(lock: string): void {
 }
 
 /**
- * Run `fn` under `<dir>/roster.lock` (exclusive create, 20 ms retries up to `waitMs`, stale after 10 s or when its holder's pid is dead).
+ * Run `fn` under `<dir>/<name>` (exclusive create, 20 ms retries up to `waitMs`, stale after 10 s or when its holder's pid is dead).
  * `{ busy: true }` when the lock could not be taken, including a state dir that cannot hold it. `fn`'s own errors propagate after the release.
  */
-export function withRosterLock<T>(dir: string, fn: () => T, waitMs = 2000): { value: T } | { busy: true } {
-	const lock = join(dir, "roster.lock");
+export function withLock<T>(dir: string, name: string, fn: () => T, waitMs = 2000): { value: T } | { busy: true } {
+	const lock = join(dir, name);
 	const token = `${process.pid}-${Math.random().toString(36).slice(2)}`;
 	const deadline = Date.now() + waitMs;
 	try {
@@ -263,6 +263,10 @@ export function withRosterLock<T>(dir: string, fn: () => T, waitMs = 2000): { va
 		}
 	}
 }
+
+/** The roster's own lock: `withLock` on `<dir>/roster.lock`. */
+export const withRosterLock = <T>(dir: string, fn: () => T, waitMs?: number): { value: T } | { busy: true } =>
+	withLock(dir, "roster.lock", fn, waitMs);
 
 /** Lock, load, refuse on an unreadable roster, apply `fn`, write atomically. Returns the reason it did not write, or undefined. */
 export function updateRoster(dir: string, fn: (brothers: Brothers) => Brothers, waitMs?: number): string | undefined {

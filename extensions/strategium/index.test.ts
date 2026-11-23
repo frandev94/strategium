@@ -93,6 +93,7 @@ const shared = (sid: string, dir: string, footer: string[], notes: string[] = []
 // omp loads ~/.omp/agent/.env into the process; a default theatre there must not change what the tests expect.
 delete process.env.STRATEGIUM_THEATRE;
 delete process.env.STRATEGIUM_NAMES;
+delete process.env.STRATEGIUM_VAULT;
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -103,6 +104,7 @@ afterEach(() => {
 	delete process.env.STRATEGIUM_COCKPIT_THEME;
 	delete process.env.STRATEGIUM_RELIC;
 	delete process.env.STRATEGIUM_NAMES;
+	delete process.env.STRATEGIUM_VAULT;
 	for (const k of Object.keys(process.env)) if (k.startsWith("STRATEGIUM_CASTER")) delete process.env[k];
 	delete process.env.STRATEGIUM_GLYPHS;
 	delete process.env.STRATEGIUM_NOTIFY;
@@ -3421,7 +3423,7 @@ describe("cockpit", () => {
 	test("/strategium-config no longer takes cockpit on|off and lists no cockpit line", async () => {
 		const s = setup();
 		await s.sub("config", "cockpit on");
-		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default, or names on|off|default; the other settings live in ~/.omp/agent/.env");
+		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default, or names on|off|default, or vault <absolute folder>|off|default; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
 	});
@@ -9677,5 +9679,260 @@ describe("tally wiring (#144)", () => {
 		const s = setup();
 		expect(s.tool.description).toContain("report (date?) also ends with the TALLY and PROPOSE lines");
 		expect(s.tool.description).toContain("end also adds the run's rated builders to <state dir>/tally.json");
+	});
+});
+
+// The plugin's own events in the vault's daily note (#151): off by default, one line per event, never a duplicate.
+describe("vault records (#151)", () => {
+	type S = ReturnType<typeof setup>;
+	const CONTRACT = { daily: "Daily/{date}.md", heading: "## 📝 Log", line: "- {time} - Strategium {key}: {text}" };
+	const vaultDir = (contract: unknown = CONTRACT) => {
+		const v = mkdtempSync(join(tmpdir(), "st-vault-"));
+		dirs.push(v);
+		if (contract !== null) writeFileSync(join(v, ".strategium.json"), typeof contract === "string" ? contract : JSON.stringify(contract));
+		return v;
+	};
+	const dailyFile = (v: string) => join(v, "Daily", "2026-11-16.md");
+	const dailyLines = (v: string) => (existsSync(dailyFile(v)) ? readFileSync(dailyFile(v), "utf8").split("\n").filter(l => l.startsWith("- ")) : []);
+	const at = (h: number, m: number) => setSystemTime(new Date(2026, 10, 16, h, m, 0));
+	const sealTodo = (status: string) => [{ name: "Scriptorium", tasks: [{ content: "[seal] Plan", status }] }];
+	const todo = (s: S, status: string) => s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases: sealTodo(status) } }, s.ctx));
+	const bash = (s: S, command: string, extra: object = {}, ctx: object = s.ctx, text = "https://github.com/o/r/pull/7") =>
+		s.handlers.tool_result.forEach(h => h({ toolName: "bash", input: { command }, isError: false, details: {}, content: [{ type: "text", text }], ...extra }, ctx));
+	const runOf = (s: S, sid = "sess-0001") => JSON.parse(readFileSync(join(s.dir, "runs", `${sid}.json`), "utf8")) as { recorded?: unknown; merged?: unknown };
+	// The clock is frozen at the day's 09:00: the daily's name and the lines' times are then known.
+	const withVault = (v: string) => {
+		process.env.STRATEGIUM_VAULT = v;
+		at(9, 0);
+		return setup();
+	};
+	// begin, a seal, the first PR, end: the calls a run makes, with the state dir masked. A frozen clock never ends a lock wait: `clock` false leaves the real one running.
+	const script = async (s: S, clock = true) => {
+		const out: string[] = [];
+		if (clock) at(9, 0);
+		out.push(await s.call({ action: "begin", key: "K-1" }));
+		todo(s, "in_progress");
+		todo(s, "completed");
+		bash(s, "gh pr create --fill");
+		if (clock) at(9, 30);
+		out.push(await s.call({ action: "end" }));
+		return out.map(o => o.replaceAll(s.dir, "<dir>").replace(/T\d\d-\d\d-\d\d/, "T<time>"));
+	};
+
+	test("A1: begin, a granted seal, the first PR and end each add one line at the local time", async () => {
+		const v = vaultDir();
+		const s = withVault(v);
+		at(9, 5);
+		await s.call({ action: "begin", key: "K-1" });
+		at(9, 20);
+		todo(s, "in_progress");
+		todo(s, "completed");
+		at(9, 30);
+		bash(s, "gh pr create --fill");
+		at(10, 0);
+		expect(await s.call({ action: "end" })).toStartWith("ENDED K-1");
+		const lines = dailyLines(v);
+		expect(lines).toHaveLength(4);
+		expect(lines.slice(0, 3)).toEqual(["- 09:05 - Strategium K-1: run begun", "- 09:20 - Strategium K-1: seal Plan granted", "- 09:30 - Strategium K-1: PR opened https://github.com/o/r/pull/7"]);
+		expect(lines[3]).toMatch(/^- 10:00 - Strategium K-1: run ended \(\d+ min active, \d+ min paused\)$/);
+		expect(readFileSync(dailyFile(v), "utf8").split("\n")[0]).toBe("## 📝 Log");
+	});
+
+	test("A2: restart, same-key begin, takeover, replayed todo and a second gh pr create add no line", async () => {
+		const v = vaultDir();
+		const s = withVault(v);
+		at(9, 5);
+		await s.call({ action: "begin", key: "K-1" });
+		await s.call({ action: "begin", key: "K-1" });
+		todo(s, "in_progress");
+		todo(s, "completed");
+		todo(s, "completed");
+		bash(s, "gh pr create --fill");
+		bash(s, "gh pr create --fill");
+		expect(dailyLines(v)).toHaveLength(3);
+		expect(runOf(s).recorded).toEqual(["begin", "seal:Plan", "pr"]);
+		const again = setup("sess-0001", s.dir);
+		await again.start();
+		await again.call({ action: "begin", key: "K-1" });
+		expect(dailyLines(v)).toHaveLength(3);
+		const b = setup("sess-0002", s.dir);
+		await b.call({ action: "begin", key: "K-1", takeover: "sess-0001" });
+		expect(dailyLines(v)).toHaveLength(3);
+		expect(runOf(b, "sess-0002").recorded).toEqual(["begin", "seal:Plan", "pr"]);
+	});
+
+	test("a hand-edited recorded list is sanitized on read: junk dropped, ids kept", async () => {
+		const v = vaultDir();
+		const s = withVault(v);
+		await s.call({ action: "begin", key: "K-1" });
+		const file = join(s.dir, "runs", "sess-0001.json");
+		const edit = (recorded: unknown) => writeFileSync(file, JSON.stringify({ ...runOf(s), recorded }));
+		edit(["pr", "pr", 5, "x".repeat(221)]);
+		bash(s, "gh pr create --fill");
+		todo(s, "in_progress");
+		todo(s, "completed");
+		expect(runOf(s).recorded).toEqual(["pr", "seal:Plan"]);
+		expect(dailyLines(v).map(l => l.split(": ")[1])).toEqual(["run begun", "seal Plan granted"]);
+		edit("oops");
+		bash(s, "gh pr create --fill");
+		expect(runOf(s).recorded).toEqual(["pr"]);
+	});
+
+	test("A3: vault off writes nothing, adds no recorded field and changes no output", async () => {
+		const v = vaultDir();
+		const plain = setup();
+		const base = await script(plain);
+		const off = withVault(v);
+		await off.sub("config", "vault off");
+		off.notes.length = 0;
+		plain.notes.length = 0;
+		await off.call({ action: "begin", key: "K-0" });
+		expect("recorded" in runOf(off)).toBe(false);
+		todo(off, "in_progress");
+		todo(off, "completed");
+		bash(off, "gh pr create --fill");
+		expect("recorded" in runOf(off)).toBe(false);
+		await off.call({ action: "end" });
+		expect(existsSync(join(v, "Daily"))).toBe(false);
+		expect(off.notes.filter(n => n.includes("vault"))).toEqual([]);
+		const again = await script(setup());
+		expect(again).toEqual(base);
+	});
+
+	describe("A3: an unusable vault costs one notice and changes no output", () => {
+		const reasons: [string, () => string, RegExp][] = [
+			["folder missing", () => join(vaultDir(), "nope"), /unreachable \(\w+\)/],
+			["no contract", () => vaultDir(null), /no contract \(\.strategium\.json\)/],
+			["invalid contract", () => vaultDir("{nope"), /contract invalid: not JSON/],
+			["held vault.lock", () => vaultDir(), /daily busy/],
+		];
+		for (const [label, make, why] of reasons) {
+			test(label, async () => {
+				const clock = label !== "held vault.lock";
+				const base = await script(setup(), clock);
+				const v = make();
+				const s = withVault(v);
+				if (!clock) setSystemTime();
+				if (label === "held vault.lock") writeFileSync(join(s.dir, "vault.lock"), `${process.pid}-held`);
+				expect(await script(s, clock)).toEqual(base);
+				const notices = s.notes.filter(n => n.startsWith("Strategium: vault "));
+				expect(notices).toHaveLength(1);
+				expect(notices[0]).toMatch(why);
+				expect(notices[0]).toEndWith("; the run goes on and this event is not in the vault");
+				expect(existsSync(join(v, "Daily"))).toBe(false);
+			}, 15000);
+		}
+	});
+
+	describe("the setting", () => {
+		const listed = (s: S) => s.notes.at(-1)!.split("\n").find(l => l.startsWith("vault: "));
+
+		test("the listing starts at vault: off (default)", async () => {
+			const s = setup();
+			await s.sub("config");
+			expect(listed(s)).toBe("vault: off (default)");
+		});
+
+		test("vault <abs> saves the folder (quotes stripped) and applies at once", async () => {
+			const v = vaultDir();
+			const s = setup();
+			await s.sub("config", `vault "${v}"`);
+			expect(readFileSync(join(s.dir, "vault"), "utf8")).toBe(v);
+			expect(listed(s)).toBe(`vault: ${v} (/strategium-config) · contract ok`);
+			at(9, 5);
+			await s.call({ action: "begin", key: "K-1" });
+			expect(dailyLines(v)).toEqual(["- 09:05 - Strategium K-1: run begun"]);
+		});
+
+		test("a missing folder is accepted and reported in the listing", async () => {
+			const v = join(vaultDir(), "nope");
+			const s = setup();
+			await s.sub("config", `vault ${v}`);
+			expect(listed(s)).toMatch(new RegExp(`^vault: .*nope \\(/strategium-config\\) · unreachable \\(\\w+\\)$`));
+		});
+
+		test("a relative path or a bare vault is refused and writes no file", async () => {
+			const s = setup();
+			await s.sub("config", "vault some/where");
+			expect(s.notes.at(-1)).toContain("vault takes an absolute folder path, off or default");
+			await s.sub("config", "vault");
+			expect(s.notes.at(-1)).toContain("config takes");
+			expect(existsSync(join(s.dir, "vault"))).toBe(false);
+		});
+
+		test("STRATEGIUM_VAULT picks it, vault off beats it, vault default falls back to it", async () => {
+			const v = vaultDir();
+			const s = withVault(v);
+			await s.sub("config");
+			expect(listed(s)).toBe(`vault: ${v} (STRATEGIUM_VAULT) · contract ok`);
+			await s.sub("config", "vault off");
+			expect(readFileSync(join(s.dir, "vault"), "utf8")).toBe("off");
+			expect(listed(s)).toBe("vault: off (/strategium-config)");
+			await s.call({ action: "begin", key: "K-1" });
+			expect(existsSync(join(v, "Daily"))).toBe(false);
+			await s.sub("config", "vault default");
+			expect(existsSync(join(s.dir, "vault"))).toBe(false);
+			expect(listed(s)).toBe(`vault: ${v} (STRATEGIUM_VAULT) · contract ok`);
+		});
+
+		test("a relative STRATEGIUM_VAULT is ignored", async () => {
+			process.env.STRATEGIUM_VAULT = "some/where";
+			const s = setup();
+			await s.sub("config");
+			expect(listed(s)).toBe("vault: off (default)");
+		});
+
+		test("the listing names a bad contract", async () => {
+			const s = withVault(vaultDir("[]"));
+			await s.sub("config");
+			expect(listed(s)).toEndWith("(STRATEGIUM_VAULT) · contract invalid: not an object");
+		});
+	});
+
+	describe("first PR detection", () => {
+		const yes = ["gh pr create --fill", "glab mr create --fill", "cd x && glab mr create", "cd a && cd b && gh pr create --title x", "gh pr create 2>&1", "gh pr create && echo done"];
+		const no = ["gh pr create --web", "gh pr create -w", "gh pr create --dry-run", "gh pr create -h", "gh pr create --help", "gh pr create | tee x", "gh pr create; echo hi", "echo gh pr create", "gh pr view 7", "gh pr merge 7", "git log && gh pr create", "gh pr create &", "gh pr create || true"];
+
+		test("a Captain's gh pr create or glab mr create adds one line, with or without a URL", async () => {
+			for (const command of yes) {
+				const v = vaultDir();
+				const s = withVault(v);
+				await s.call({ action: "begin", key: "K-1" });
+				bash(s, command, {}, s.ctx, command.startsWith("glab") ? "https://gitlab.com/o/r/-/merge_requests/3" : "created");
+				const lines = dailyLines(v).map(l => l.split(": ").slice(1).join(": "));
+				expect(lines, command).toEqual(["run begun", command.startsWith("glab") ? "PR opened https://gitlab.com/o/r/-/merge_requests/3" : "PR opened"]);
+			}
+		}, 20000);
+
+		test("anything else, an error, an exit code, a background run or a subagent adds none", async () => {
+			const v = vaultDir();
+			const s = withVault(v);
+			await s.call({ action: "begin", key: "K-1" });
+			for (const command of no) bash(s, command);
+			bash(s, "gh pr create --fill", { isError: true });
+			bash(s, "gh pr create --fill", { details: { exitCode: 1 } });
+			bash(s, "gh pr create --fill", { details: { async: { state: "running", jobId: "bg_1" } } });
+			bash(s, "gh pr create --fill", { input: { command: "gh pr create --fill", async: true } });
+			bash(s, "gh pr create --fill", {}, { ...s.ctx, agent: { kind: "sub" } });
+			expect(dailyLines(v)).toHaveLength(1);
+			expect(runOf(s).recorded).toEqual(["begin"]);
+		}, 20000);
+	});
+
+	test("a merge with names off and the vault on puts ', PR merged' in the end line", async () => {
+		const v = vaultDir();
+		const s = withVault(v);
+		await s.call({ action: "begin", key: "K-1" });
+		bash(s, "gh pr merge 7 --merge --delete-branch");
+		expect(runOf(s).merged).toBe(true);
+		await s.call({ action: "end" });
+		expect(dailyLines(v).at(-1)).toMatch(/: run ended, PR merged \(\d+ min active, \d+ min paused\)$/);
+	});
+
+	test("a merge with names and the vault off still leaves no merged flag", async () => {
+		const s = setup();
+		await s.call({ action: "begin", key: "K-1" });
+		bash(s, "gh pr merge 7");
+		expect("merged" in runOf(s)).toBe(false);
 	});
 });
