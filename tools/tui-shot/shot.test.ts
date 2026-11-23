@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allExit, askRows, type Args, CASTER_TEXT, casterEnv, dialogShowsPick, namesEnv, parseArgs, replayCaster, parseSnaps, rec, relicEnv, REPLAYS, sealGlyphCol, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
+import { allExit, askRows, type Args, SERVO_SKULL_TEXT, servoSkullEnv, dialogShowsPick, namesEnv, parseArgs, replayServoSkull, parseSnaps, rec, relicEnv, REPLAYS, sealGlyphCol, snapOf, type Row, Snap, squadMarks, tableRow, TABLE_HEAD, unifiedDiff } from "./shot";
 
 const cancelled = (rows: string[]) => askRows(rows).some(r => r.toLowerCase().includes("cancel"));
 test("askRows: the startup tip's 'cancels' above the ask is ignored", () => {
@@ -68,28 +68,28 @@ test("relicEnv always pins STRATEGIUM_RELIC, so a user's own value never changes
 	expect(relicEnv(true)).toEqual({ STRATEGIUM_RELIC: "1" });
 });
 
-test("parseArgs --caster: off by default, bare = default text, =TEXT and TEXT, bare before a flag", () => {
-	expect(args([]).caster).toBeNull();
-	expect(args(["--caster"]).caster).toBe(CASTER_TEXT);
-	expect(args(["--caster=Alpha is green"]).caster).toBe("Alpha is green");
-	expect(args(["--caster", "Alpha is green"]).caster).toBe("Alpha is green");
-	expect(args(["--caster", "--all"])).toMatchObject({ caster: CASTER_TEXT, all: true });
+test("parseArgs --servo-skull: off by default, bare = default text, =TEXT and TEXT, bare before a flag", () => {
+	expect(args([]).servoSkull).toBeNull();
+	expect(args(["--servo-skull"]).servoSkull).toBe(SERVO_SKULL_TEXT);
+	expect(args(["--servo-skull=Alpha is green"]).servoSkull).toBe("Alpha is green");
+	expect(args(["--servo-skull", "Alpha is green"]).servoSkull).toBe("Alpha is green");
+	expect(args(["--servo-skull", "--all"])).toMatchObject({ servoSkull: SERVO_SKULL_TEXT, all: true });
 });
 
-test("casterEnv always pins STRATEGIUM_CASTER and its fake text, so a user's own values never change a shot", () => {
-	expect(casterEnv(null)).toEqual({ STRATEGIUM_CASTER: "0", STRATEGIUM_CASTER_FAKE: "" });
-	expect(casterEnv("Alpha is green")).toEqual({ STRATEGIUM_CASTER: "1", STRATEGIUM_CASTER_FAKE: "Alpha is green" });
+test("servoSkullEnv always pins STRATEGIUM_SERVO_SKULL and its fake text, so a user's own values never change a shot", () => {
+	expect(servoSkullEnv(null)).toEqual({ STRATEGIUM_SERVO_SKULL: "0", STRATEGIUM_SERVO_SKULL_FAKE: "" });
+	expect(servoSkullEnv("Alpha is green")).toEqual({ STRATEGIUM_SERVO_SKULL: "1", STRATEGIUM_SERVO_SKULL_FAKE: "Alpha is green" });
 });
 
-test("replayCaster: a caster scenario keeps its own text whatever --caster says, the others follow the flag", () => {
-	expect(replayCaster({ caster: true }, "OTHER")).toBe(CASTER_TEXT);
-	expect(replayCaster({ caster: true }, null)).toBe(CASTER_TEXT);
-	expect(replayCaster({}, "OTHER")).toBe("OTHER");
-	expect(replayCaster({}, null)).toBeNull();
+test("replayServoSkull: a servo-skull scenario keeps its own text whatever --servo-skull says, the others follow the flag", () => {
+	expect(replayServoSkull({ servoSkull: true }, "OTHER")).toBe(SERVO_SKULL_TEXT);
+	expect(replayServoSkull({ servoSkull: true }, null)).toBe(SERVO_SKULL_TEXT);
+	expect(replayServoSkull({}, "OTHER")).toBe("OTHER");
+	expect(replayServoSkull({}, null)).toBeNull();
 });
 
-test("the caster-box replay is registered on the skirmish seed and always runs with the caster", () => {
-	expect(REPLAYS["caster-box"]).toMatchObject({ seed: "skirmish", kind: "FIXED", caster: true });
+test("the servo-skull-box replay is registered on the skirmish seed and always runs with the servo-skull", () => {
+	expect(REPLAYS["servo-skull-box"]).toMatchObject({ seed: "skirmish", kind: "FIXED", servoSkull: true });
 });
 
 test("the debrief-screen replay opens the cockpit, ends the run through the fake model and is a FIXED #121 shot", () => {
