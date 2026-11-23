@@ -144,7 +144,7 @@ Where it shows (names on; with names off none of it appears):
 - Cockpit detail of a squad: `brother:`, `record:` (passed, penances, falls, squads), `honours:` and, when it applies, `corrupted: kept in reserve`.
 - Chronicle: a deployed agent is written by name (`† BrotherLorenzo deployed`, `✓ BrotherLorenzo returned`).
 - `end` result and debrief: a `HONOURS …` line in the result and an `## Honours` section in the debrief, with who joins the roster, earns an honour, falls or is corrupted.
-- When: the record only changes at `end`, so the honours lines are made then. They go to the debrief and the `end` result, not to the live chronicle, because the cockpit closes at the same `end`.
+- When: the record only changes at `end`, so the honours lines are made then. They go to the debrief and the `end` result, not to the live chronicle, because the live cockpit has no run left to show; an open cockpit instead turns into a final screen with the debrief summary at that `end`.
 
 ## Stations and the chronicle voice
 
