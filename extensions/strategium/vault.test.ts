@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONTRACT_FILE, type Contract, type ContractResult, formatLine, insertUnder, loadContract, recordLine } from "./vault";
@@ -29,6 +29,15 @@ describe("loadContract", () => {
 	test("accepts the documented example and ignores unknown keys", () => {
 		put({ ...GOOD, notes: ["x"] });
 		expect(loadContract(vault)).toEqual({ contract: GOOD });
+	});
+
+	test("createDaily: true is carried, anything else is dropped", () => {
+		put({ ...GOOD, createDaily: true });
+		expect(loadContract(vault)).toEqual({ contract: { ...GOOD, createDaily: true } });
+		for (const createDaily of [false, "true", 1, null]) {
+			put({ ...GOOD, createDaily });
+			expect(loadContract(vault)).toEqual({ contract: GOOD });
+		}
 	});
 
 	test("reports an unreachable vault", () => {
@@ -73,6 +82,8 @@ describe("loadContract", () => {
 		["Daily/day.md"],
 		["Daily//{date}.md"],
 		["Daily/{date}.md/"],
+		["Daily /{date}.md"],
+		["Daily./{date}.md"],
 		["Da:ily/{date}.md"],
 		["Da<ily/{date}.md"],
 		['Da"ily/{date}.md'],
@@ -191,6 +202,14 @@ describe("insertUnder", () => {
 		expect(insertUnder("## Log  \n- a\n## Log\n- b\n", H, L)).toBe("## Log  \n- a\n- NEW\n## Log\n- b\n");
 	});
 
+	test("headings inside fenced code blocks are not matched and do not end the section", () => {
+		expect(insertUnder("```\n## Log\n```\n", H, L)).toBe("```\n## Log\n```\n\n## Log\n- NEW\n");
+		expect(insertUnder("~~~md\n## Log\n~~~\n## Log\n- a\n", H, L)).toBe("~~~md\n## Log\n~~~\n## Log\n- a\n- NEW\n");
+		expect(insertUnder("## Log\n- a\n```\n## Next\n```\n- b\n## Next\n", H, L)).toBe("## Log\n- a\n```\n## Next\n```\n- b\n- NEW\n## Next\n");
+		// a different fence mark inside a block does not close it
+		expect(insertUnder("```\n~~~\n## Log\n```\n", H, L)).toBe("```\n~~~\n## Log\n```\n\n## Log\n- NEW\n");
+	});
+
 	test("CRLF files keep CRLF, including a file without final EOL", () => {
 		expect(insertUnder("# D\r\n## Log\r\n- a\r\n## N\r\n", H, L)).toBe("# D\r\n## Log\r\n- a\r\n- NEW\r\n## N\r\n");
 		expect(insertUnder("## Log\r\n- a", H, L)).toBe("## Log\r\n- a\r\n- NEW\r\n");
@@ -245,7 +264,7 @@ describe("insertUnder", () => {
 });
 
 describe("recordLine", () => {
-	const contract: Contract = GOOD;
+	const contract: Contract = { ...GOOD, createDaily: true };
 	const now = new Date(2026, 10, 21, 5, 12, 33);
 	const daily = () => join(vault, "Daily", "2026-11-21.md");
 	const rec = (text = "run begun", key = "151", c: Contract = contract) => recordLine(vault, c, state, now, key, text);
@@ -346,5 +365,51 @@ describe("recordLine", () => {
 	test("never throws: a vault that vanished is a reason", () => {
 		rmSync(vault, { recursive: true });
 		expect(rec()).toMatch(/^unreachable \(/);
+	});
+
+	test("a missing daily is not created by default: the reason is daily missing and nothing is written", () => {
+		expect(rec("x", "1", GOOD)).toBe("daily missing");
+		expect(existsSync(join(vault, "Daily"))).toBe(false);
+		mkdirSync(join(vault, "Daily"));
+		writeFileSync(daily(), "# Day\n");
+		expect(rec("x", "1", GOOD)).toBeUndefined();
+		expect(readFileSync(daily(), "utf8")).toBe("# Day\n\n## 📝 Log\n- 05:12 - Strategium 1: x\n");
+	});
+
+	test("a concurrent append between read and write is kept: the insert is redone once on fresh bytes", () => {
+		mkdirSync(join(vault, "Daily"));
+		writeFileSync(daily(), "## 📝 Log\n- a\n## Next\n");
+		let calls = 0;
+		const r = recordLine(vault, contract, state, now, "1", "x", () => {
+			if (calls++ === 0) appendFileSync(daily(), "- late\n");
+		});
+		expect(r).toBeUndefined();
+		expect(calls).toBe(2);
+		expect(readFileSync(daily(), "utf8")).toBe("## 📝 Log\n- a\n- 05:12 - Strategium 1: x\n## Next\n- late\n");
+	});
+
+	test("a daily that keeps changing is left as the other writer made it and reported", () => {
+		mkdirSync(join(vault, "Daily"));
+		writeFileSync(daily(), "## 📝 Log\n- a\n## Next\n");
+		let n = 0;
+		const r = recordLine(vault, contract, state, now, "1", "x", () => appendFileSync(daily(), `- late${n++}\n`));
+		expect(r).toBe("daily changed while writing");
+		expect(readFileSync(daily(), "utf8")).toBe("## 📝 Log\n- a\n## Next\n- late0\n- late1\n");
+	});
+
+	test("a failing mid-file write leaves the old bytes and no temp file", () => {
+		mkdirSync(join(vault, "Daily"));
+		const old = "## 📝 Log\n- a\n## Next\n- keep\n";
+		writeFileSync(daily(), old);
+		chmodSync(daily(), 0o444);
+		try {
+			const r = rec();
+			if (r === undefined) return; // this host lets a read-only file be written (root): nothing to prove
+			expect(r).toMatch(/^daily write failed/);
+			expect(readFileSync(daily(), "utf8")).toBe(old);
+			expect(readdirSync(state).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+		} finally {
+			chmodSync(daily(), 0o666);
+		}
 	});
 });

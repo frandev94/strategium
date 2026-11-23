@@ -1,12 +1,12 @@
 // Vault records (#151): parse an untrusted contract file, format one line, insert it under a heading and write the daily.
 // Everything here treats the vault and the daily as untrusted input and never throws: failures come back as reason strings.
 
-import { appendFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { withLock } from "./roster";
 
 export const CONTRACT_FILE = ".strategium.json";
-export type Contract = { daily: string; heading: string; line: string };
+export type Contract = { daily: string; heading: string; line: string; createDaily?: true };
 export type ContractResult = { contract: Contract } | { error: string };
 
 const MAX_CONTRACT = 16 * 1024;
@@ -20,7 +20,7 @@ const code = (e: unknown): string => String((e as NodeJS.ErrnoException)?.code ?
 function dailyOk(daily: unknown): daily is string {
 	if (typeof daily !== "string" || daily.length > 200 || !daily.includes("{date}") || !daily.endsWith(".md")) return false;
 	// Empty segments cover absolute (`/x`, `\\x`) and doubled separators; ":" covers drive letters; a leading "." covers `.`, `..`, `.obsidian`, `.git`.
-	return daily.split(/[\\/]/).every((s) => s !== "" && !s.startsWith(".") && !/[:<>"|?*\0]/.test(s));
+	return daily.split(/[\\/]/).every((s) => s !== "" && !s.startsWith(".") && !/[ .]$/.test(s) && !/[:<>"|?*\0]/.test(s));
 }
 
 const headingOk = (h: unknown): h is string => typeof h === "string" && h.length <= 200 && /^#{1,6} \S[^\r\n]*$/.test(h);
@@ -54,11 +54,11 @@ export function loadContract(vault: string): ContractResult {
 		return { error: "contract invalid: not JSON" };
 	}
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { error: "contract invalid: not an object" };
-	const { daily, heading, line } = raw as Record<string, unknown>;
+	const { daily, heading, line, createDaily } = raw as Record<string, unknown>;
 	if (!dailyOk(daily)) return { error: DAILY_BAD };
 	if (!headingOk(heading)) return { error: HEADING_BAD };
 	if (!lineOk(line)) return { error: LINE_BAD };
-	return { contract: { daily, heading, line } };
+	return { contract: { daily, heading, line, ...(createDaily === true ? { createDaily } : {}) } };
 }
 
 /** One line, trimmed, capped without splitting a surrogate pair. */
@@ -86,13 +86,21 @@ export function insertUnder(content: string, heading: string, line: string): str
 	// Pieces split on "\n" only, so joining them with "\n" restores every original byte; a trailing "" means a final EOL.
 	const lines = body.split("\n");
 	const want = heading.trimEnd();
-	// shortcut: the heading search ignores fenced code blocks, upgrade if a daily holds a fenced copy of its log heading.
-	const h = lines.findIndex((l) => l.trimEnd() === want);
+	// Lines inside a fenced code block (``` or ~~~, closed by the same mark) are never headings.
+	const fenced: boolean[] = [];
+	let fence = "";
+	for (const l of lines) {
+		const m = /^ {0,3}(`{3,}|~{3,})/.exec(l);
+		fenced.push(fence !== "" || m !== null);
+		if (m && fence === "") fence = m[1][0];
+		else if (m && m[1][0] === fence) fence = "";
+	}
+	const h = lines.findIndex((l, i) => !fenced[i] && l.trimEnd() === want);
 	if (h >= 0) {
 		const level = /^#+/.exec(want)![0].length;
 		const next = new RegExp(`^#{1,${level}}\\s`);
 		let end = h + 1;
-		while (end < lines.length && !next.test(lines[end])) end++;
+		while (end < lines.length && (fenced[end] || !next.test(lines[end]))) end++;
 		let at = end;
 		while (at > h + 1 && lines[at - 1].trim() === "") at--;
 		if (at === lines.length) {
@@ -144,7 +152,7 @@ const pad = (n: number): string => String(n).padStart(2, "0");
  * Append one formatted line to the contract's daily note under its heading. Returns the reason it did not write, or undefined.
  * Reads the daily as bytes, refuses > 4 MiB and non-UTF-8 untouched, and holds `<lockDir>/vault.lock` for the write.
  */
-export function recordLine(vault: string, contract: Contract, lockDir: string, now: Date, key: string, text: string): string | undefined {
+export function recordLine(vault: string, contract: Contract, lockDir: string, now: Date, key: string, text: string, beforeWrite?: () => void): string | undefined {
 	try {
 		if (!dailyOk(contract.daily)) return DAILY_BAD;
 		const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
@@ -161,27 +169,70 @@ export function recordLine(vault: string, contract: Contract, lockDir: string, n
 			lockDir,
 			"vault.lock",
 			(): string | undefined => {
-				let old = "";
-				let exists = true;
-				try {
-					const st = lstatSync(target);
-					if (!st.isFile()) return "daily not a regular file";
-					if (st.size > MAX_DAILY) return "daily larger than 4 MiB";
-				} catch (e) {
-					if (code(e) !== "ENOENT") throw e;
-					exists = false;
+				const sig = (): string | undefined => {
+					try {
+						const st = lstatSync(target);
+						return `${st.size}:${st.mtimeMs}`;
+					} catch {
+						return undefined;
+					}
+				};
+				// A second pass only when the daily changed between the read and the write (a sync client or the user saved it).
+				for (let pass = 0; ; pass++) {
+					let old = "";
+					let bytes = Buffer.alloc(0);
+					let exists = true;
+					try {
+						const st = lstatSync(target);
+						if (!st.isFile()) return "daily not a regular file";
+						if (st.size > MAX_DAILY) return "daily larger than 4 MiB";
+					} catch (e) {
+						if (code(e) !== "ENOENT") throw e;
+						exists = false;
+					}
+					const before = sig();
+					if (exists) {
+						bytes = readFileSync(target);
+						old = bytes.toString("utf8");
+						if (!Buffer.from(old, "utf8").equals(bytes)) return "daily not UTF-8";
+					} else {
+						if (!contract.createDaily) return "daily missing";
+						mkdirSync(dirname(target), { recursive: true });
+					}
+					const next = insertUnder(old, contract.heading, line);
+					if (exists && next.startsWith(old)) {
+						appendFileSync(target, next.slice(old.length));
+						return undefined;
+					}
+					if (!exists) {
+						writeFileSync(target, next);
+						return undefined;
+					}
+					beforeWrite?.();
+					if (sig() !== before) {
+						if (pass > 0) return "daily changed while writing";
+						continue;
+					}
+					// Mid-file insert: stage the new content in the state dir, then copy it over; a failed copy restores the old bytes.
+					const tmp = join(lockDir, `vault-${process.pid}.tmp`);
+					try {
+						writeFileSync(tmp, next);
+						try {
+							copyFileSync(tmp, target);
+						} catch (e) {
+							try {
+								writeFileSync(target, bytes);
+							} catch {
+								// the restore failed too: the error below says so
+								return `daily write failed (${code(e)}) and could not be restored`;
+							}
+							return `daily write failed (${code(e)}), restored`;
+						}
+					} finally {
+						rmSync(tmp, { force: true });
+					}
+					return undefined;
 				}
-				if (exists) {
-					const bytes = readFileSync(target);
-					old = bytes.toString("utf8");
-					if (!Buffer.from(old, "utf8").equals(bytes)) return "daily not UTF-8";
-				} else {
-					mkdirSync(dirname(target), { recursive: true });
-				}
-				const next = insertUnder(old, contract.heading, line);
-				if (exists && next.startsWith(old)) appendFileSync(target, next.slice(old.length));
-				else writeFileSync(target, next);
-				return undefined;
 			},
 			500,
 		);

@@ -920,7 +920,45 @@ function ownCommand(command: string, verb: string): boolean {
 
 const isMerge = (command: string): boolean => ownCommand(command, "merge") && !/\s--auto\b/.test(command);
 
-const isPrCreate = (command: string): boolean => ownCommand(command, "create") && !/\s(?:--web|-w|--dry-run)(?:\s|$)/.test(command);
+/**
+ * A PR create is judged by the command head only: the first line, after optional `cd … &&` steps, starts `gh pr create` / `glab mr create`.
+ * One pass over that line: quoted text (titles) is skipped, an unquoted `|`, `;` or lone `&` refuses it (they hide the exit code), and
+ * an unquoted --web/-w/--dry-run/--help/-h refuses it. Later lines (a heredoc body) are never read.
+ */
+function isPrCreate(command: string): boolean {
+	let rest = command.split("\n", 1)[0].trim();
+	for (let m = /^cd(?:\s[^&;|]*)?&&\s*/.exec(rest); m; m = /^cd(?:\s[^&;|]*)?&&\s*/.exec(rest)) rest = rest.slice(m[0].length);
+	if (!/^(?:gh\s+pr|glab\s+mr)\s+create(?:\s|$)/.test(rest)) return false;
+	const words: string[] = [];
+	let word = "";
+	for (let i = 0; i < rest.length; i++) {
+		const c = rest[i];
+		if (c === "'" || c === '"') {
+			const close = c === "'" ? rest.indexOf(c, i + 1) : closingDouble(rest, i + 1);
+			if (close < 0) return false;
+			i = close;
+		} else if (c === "\\") i++;
+		else if (/\s/.test(c)) {
+			if (word) words.push(word);
+			word = "";
+		} else if (c === "|" || c === ";") return false;
+		else if (c === "&") {
+			if (rest[i + 1] !== "&" && rest[i + 1] !== ">" && rest[i - 1] !== ">" && rest[i - 1] !== "&") return false;
+			word += c;
+		} else word += c;
+	}
+	if (word) words.push(word);
+	return !words.some(w => ["--web", "-w", "--dry-run", "--help", "-h"].includes(w));
+}
+
+/** Index of the `"` closing a double-quoted span that starts at `from`, honouring `\"`; -1 when unterminated. */
+function closingDouble(s: string, from: number): number {
+	for (let i = from; i < s.length; i++) {
+		if (s[i] === "\\") i++;
+		else if (s[i] === '"') return i;
+	}
+	return -1;
+}
 
 /** Fold the run's outcomes into the shared roster at `end`: the line to print, undefined with nothing to record. A roster failure never stops the end. */
 function recordRun(run: Run): { line: string; honours: Honour[]; error?: string } | undefined {
@@ -1518,7 +1556,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		} catch (err) {
 			why = err instanceof Error ? err.message : String(err);
 		}
-		const id = `${run.sid} ${run.key} ${run.since}`;
+		const id = `${run.key} ${run.since}`;
 		if (!why || vaultNoticed.has(id)) return;
 		vaultNoticed.add(id);
 		ctx.ui.notify(`Strategium: vault ${vault.dir}: ${why}; the run goes on and this event is not in the vault`, "warning");
@@ -2902,7 +2940,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		if (input.async === true || asObj(e.details).async !== undefined || asObj(e.details).exitCode !== undefined || !isPrCreate(String(input.command ?? ""))) return;
 		const run = ownRun(sidOf(ctx));
 		if (!run) return;
-		const out = (Array.isArray(e.content) ? e.content : []).map(c => (c.type === "text" ? c.text : "")).join("\n");
+		const out = (Array.isArray(e.content) ? e.content : []).map(c => (c?.type === "text" ? c.text : "")).join("\n");
 		const url = out.match(/https?:\/\/\S+?\/(?:pull|merge_requests)\/\d+/)?.[0];
 		vaultEvent(ctx, run, "pr", url ? `PR opened ${url}` : "PR opened");
 	});

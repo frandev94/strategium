@@ -1574,6 +1574,20 @@ describe("the run follows an approved plan", () => {
 		expect(count("Plan granted")).toBe(1);
 	});
 
+	test("the vault warns once across the plan hand-off (#151)", async () => {
+		const v = mkdtempSync(join(tmpdir(), "st-vault-"));
+		dirs.push(v);
+		writeFileSync(join(v, ".strategium.json"), JSON.stringify({ daily: "Daily/{date}.md", heading: "## Log", line: "- {text}" }));
+		process.env.STRATEGIUM_VAULT = v;
+		const { s, sm, ctx, notes } = await owner();
+		await todoResult(s, ctx, "start", planStations());
+		await approve(s, sm, ctx);
+		await todoResult(s, ctx, "init", handOff());
+		const warned = (a: string[]) => a.filter(n => n.startsWith("Strategium: vault ") && n.includes("daily missing"));
+		expect([...warned(s.notes), ...warned(notes)]).toHaveLength(1);
+		expect(movedRun(s.dir).recorded).toEqual(["begin", "seal:Plan"]);
+	});
+
 	test("a rebuild init while the Plan seal waits (plan-mode compaction) logs no grant", async () => {
 		const { s, sm, ctx } = await owner();
 		await todoResult(s, ctx, "start", planStations());
@@ -9685,7 +9699,7 @@ describe("tally wiring (#144)", () => {
 // The plugin's own events in the vault's daily note (#151): off by default, one line per event, never a duplicate.
 describe("vault records (#151)", () => {
 	type S = ReturnType<typeof setup>;
-	const CONTRACT = { daily: "Daily/{date}.md", heading: "## 📝 Log", line: "- {time} - Strategium {key}: {text}" };
+	const CONTRACT = { daily: "Daily/{date}.md", heading: "## 📝 Log", line: "- {time} - Strategium {key}: {text}", createDaily: true };
 	const vaultDir = (contract: unknown = CONTRACT) => {
 		const v = mkdtempSync(join(tmpdir(), "st-vault-"));
 		dirs.push(v);
@@ -9780,23 +9794,20 @@ describe("vault records (#151)", () => {
 
 	test("A3: vault off writes nothing, adds no recorded field and changes no output", async () => {
 		const v = vaultDir();
-		const plain = setup();
-		const base = await script(plain);
-		const off = withVault(v);
+		delete process.env.STRATEGIUM_VAULT;
+		const base = await script(setup());
+		const off = withVault(v); // STRATEGIUM_VAULT set again here, so only the saved `off` can keep it quiet
 		await off.sub("config", "vault off");
 		off.notes.length = 0;
-		plain.notes.length = 0;
+		// The same script as base, on the off run: its outputs must equal the unset-variable run's.
+		expect(await script(off)).toEqual(base);
+		expect(existsSync(join(v, "Daily"))).toBe(false);
+		expect(off.notes.filter(n => n.includes("vault"))).toEqual([]);
 		await off.call({ action: "begin", key: "K-0" });
-		expect("recorded" in runOf(off)).toBe(false);
 		todo(off, "in_progress");
 		todo(off, "completed");
 		bash(off, "gh pr create --fill");
 		expect("recorded" in runOf(off)).toBe(false);
-		await off.call({ action: "end" });
-		expect(existsSync(join(v, "Daily"))).toBe(false);
-		expect(off.notes.filter(n => n.includes("vault"))).toEqual([]);
-		const again = await script(setup());
-		expect(again).toEqual(base);
 	});
 
 	describe("A3: an unusable vault costs one notice and changes no output", () => {
@@ -9890,7 +9901,20 @@ describe("vault records (#151)", () => {
 	});
 
 	describe("first PR detection", () => {
-		const yes = ["gh pr create --fill", "glab mr create --fill", "cd x && glab mr create", "cd a && cd b && gh pr create --title x", "gh pr create 2>&1", "gh pr create && echo done"];
+		const DELIVERY = `gh pr create -R github.com/o/r -d -B main -H feat/151-x -t "$title" -F - -a @me -l "bug" <<'GH_x7'\nCloses #151; done & dusted | really\n- ok; fine && more\nGH_x7`;
+		const yes = [
+			"gh pr create --fill",
+			"glab mr create --fill",
+			"cd x && glab mr create",
+			"cd a && cd b && gh pr create --title x",
+			"gh pr create 2>&1",
+			"gh pr create && echo done",
+			DELIVERY,
+			`cd C:/p && ${DELIVERY}`,
+			`gh pr create --title "fix; a & b | c -w --web" --fill`,
+			`gh pr create -t 'x; y & z' --fill`,
+			`gh pr create -t "say \\"-w\\"; ok" --fill`,
+		];
 		const no = ["gh pr create --web", "gh pr create -w", "gh pr create --dry-run", "gh pr create -h", "gh pr create --help", "gh pr create | tee x", "gh pr create; echo hi", "echo gh pr create", "gh pr view 7", "gh pr merge 7", "git log && gh pr create", "gh pr create &", "gh pr create || true"];
 
 		test("a Captain's gh pr create or glab mr create adds one line, with or without a URL", async () => {
@@ -9934,5 +9958,79 @@ describe("vault records (#151)", () => {
 		await s.call({ action: "begin", key: "K-1" });
 		bash(s, "gh pr merge 7");
 		expect("merged" in runOf(s)).toBe(false);
+	});
+
+	test("N7: a null item in the tool result's content does not throw and the URL is still found", async () => {
+		const v = vaultDir();
+		const s = withVault(v);
+		await s.call({ action: "begin", key: "K-1" });
+		expect(() => bash(s, "gh pr create --fill", { content: [null, undefined, { type: "text", text: "https://github.com/o/r/pull/9" }] })).not.toThrow();
+		expect(dailyLines(v).at(-1)).toEndWith(": PR opened https://github.com/o/r/pull/9");
+	});
+
+	test("N3: two seals granted in one todo result are both recorded", async () => {
+		const v = vaultDir();
+		const s = withVault(v);
+		await s.call({ action: "begin", key: "K-1" });
+		const seals = (a: string, b: string) => [{ name: "Scriptorium", tasks: [{ content: "[seal] Plan", status: a }, { content: "[seal] UI", status: b }] }];
+		const send = (phases: unknown) => s.handlers.tool_result.forEach(h => h({ toolName: "todo", isError: false, details: { phases } }, s.ctx));
+		send(seals("in_progress", "pending"));
+		send(seals("completed", "completed"));
+		expect(runOf(s).recorded).toEqual(["begin", "seal:Plan", "seal:UI"]);
+		expect(dailyLines(v).map(l => l.split(": ")[1])).toEqual(["run begun", "seal Plan granted", "seal UI granted"]);
+	});
+
+	describe("a daily that is missing (the vault does not create it unless the contract says createDaily)", () => {
+		const { createDaily: _, ...NO_CREATE } = { ...CONTRACT, createDaily: true };
+		const notices = (s: S) => s.notes.filter(n => n.startsWith("Strategium: vault "));
+
+		test("CN4: default skips every line and warns once with daily missing", async () => {
+			const v = vaultDir(NO_CREATE);
+			const s = withVault(v);
+			await script(s);
+			expect(existsSync(join(v, "Daily"))).toBe(false);
+			expect(notices(s)).toHaveLength(1);
+			expect(notices(s)[0]).toContain("daily missing");
+		});
+
+		test("CN4: an existing daily is written without createDaily", async () => {
+			const v = vaultDir(NO_CREATE);
+			mkdirSync(join(v, "Daily"));
+			writeFileSync(dailyFile(v), "# Day\n\n## 📝 Log\n");
+			const s = withVault(v);
+			await s.call({ action: "begin", key: "K-1" });
+			expect(dailyLines(v)).toEqual(["- 09:00 - Strategium K-1: run begun"]);
+			expect(notices(s)).toEqual([]);
+		});
+
+		test("CN4: createDaily true creates the daily and its folder", async () => {
+			const v = vaultDir({ ...NO_CREATE, createDaily: true });
+			const s = withVault(v);
+			await s.call({ action: "begin", key: "K-1" });
+			expect(dailyLines(v)).toEqual(["- 09:00 - Strategium K-1: run begun"]);
+		});
+	});
+
+	describe("end by another session", () => {
+		const two = async () => {
+			const v = vaultDir();
+			const s = withVault(v);
+			await s.call({ action: "begin", key: "K-1" });
+			return { v, s, b: setup("sess-0002", s.dir) };
+		};
+
+		test("N4: a refused end writes nothing", async () => {
+			const { v, b } = await two();
+			expect(await b.call({ action: "end", key: "K-1" })).toStartWith("ERROR K-1 belongs to session");
+			expect(dailyLines(v)).toEqual(["- 09:00 - Strategium K-1: run begun"]);
+		});
+
+		test("CN5: an end by takeover writes the line with the other run's key and merged flag", async () => {
+			const { v, s, b } = await two();
+			bash(s, "gh pr merge 7 --merge --delete-branch");
+			expect(await b.call({ action: "end", key: "K-1", takeover: "sess-0001" })).toStartWith("ENDED K-1");
+			expect(dailyLines(v)).toHaveLength(2);
+			expect(dailyLines(v)[1]).toMatch(/^- 09:00 - Strategium K-1: run ended, PR merged( \(.*\))?$/);
+		});
 	});
 });
