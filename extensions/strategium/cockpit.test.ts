@@ -3193,6 +3193,7 @@ describe("names: squad rows, badges and record", () => {
 		expect(out).toContain("corrupted: kept in reserve");
 		const unknown = lines({ squads: { alpha: { name: "PenitentLorenzo", surname: "Lorenzo" } }, unreadable: true });
 		expect(unknown).toContain("record: unknown (roster unreadable)");
+		expect(unknown.join("\n")).not.toContain("honours:");
 		expect(unknown.join("\n")).not.toContain("corrupted");
 		expect(lines(NAMES())).not.toContain("corrupted: kept in reserve");
 	});

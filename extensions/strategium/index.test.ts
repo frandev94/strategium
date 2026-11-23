@@ -8601,6 +8601,14 @@ describe("names in the cockpit (#135)", () => {
 		expect(texts(s).at(-1)).toBe("‡ escalated to VETERAN"); // no name matches this id: today's text
 	});
 
+	test("names on: an eval spawn with a named spawnKey is deployed by name", async () => {
+		const s = await open();
+		const i = (await s.call({ action: "name", agent: "inquisitor" })).slice(5);
+		s.handlers.before_subagent_spawn.forEach(h => h({ invocationKind: "eval", agent: "inquisitor", spawnKey: i }, s.ctx));
+		expect(texts(s)).toContain(`${i} deployed`);
+		expect(cockpitFile(s).deployed.find(([id]) => id === i)![1].name).toBe(i);
+	});
+
 	test("names on: a veteran escalation and an unsquadded agent are named", async () => {
 		const s = await open();
 		const b = await named(s, "battle-brother");
