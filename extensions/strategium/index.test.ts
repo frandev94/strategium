@@ -1584,32 +1584,6 @@ describe("the run follows an approved plan", () => {
 		expect(t).toContain("Squads: a, b");
 	});
 
-	test("the host disposing the overlay (no Esc, no q) frees the cockpit so it opens again", async () => {
-		const { s, sm, ctx } = await owner();
-		await todoResult(s, ctx, "start", [phase("Plan", ["[seal] Plan", "in_progress"])]);
-		await s.call({ action: "seal", lines: ["Squads: a, b"] });
-		await approve(s, sm, ctx);
-		const again = setup("sess-B", s.dir);
-		const comps: { dispose?(): void }[] = [];
-		(again.ctx as unknown as { ui: Record<string, unknown> }).ui.custom = (factory: (...a: unknown[]) => { dispose?(): void }) => {
-			comps.push(factory({ requestRender() {}, terminal: { rows: 40 } }, {}, {}, () => {}));
-			return new Promise(() => {});
-		};
-		(again.ctx as unknown as { hasUI: boolean }).hasUI = true;
-		await again.start();
-		await again.sub("cockpit");
-		expect(comps.length).toBe(1);
-		comps[0].dispose!(); // the host tears the overlay down on its own
-		await again.sub("cockpit");
-		expect(comps.length).toBe(2);
-		comps[1].dispose!();
-		comps[1].dispose!(); // idempotent
-		comps[0].dispose!(); // an old overlay disposed late leaves nothing behind
-		await again.sub("cockpit");
-		expect(comps.length).toBe(3);
-		comps[2].dispose!();
-	});
-
 	const planStations = () => [
 		phase("Muster", ["[captain] Objective", "completed"], ["[captain] Orders", "completed"]),
 		phase("Auspex", ["[scout] Map", "completed"]),
@@ -3549,6 +3523,23 @@ describe("cockpit", () => {
 		expect(s.notes.at(-1)).toContain("config takes notify on|off or idle <min>, or archmagos on|off, or commit on|off, or sound on|off, or toast on|off, or volume <0-100> [preview], or cockpit-key <key>, or cockpit-theme <name>, or relic on|off|default, or caster on|off|default, or names on|off|default, or vault <absolute folder>|off|default; the other settings live in ~/.omp/agent/.env");
 		await s.sub("config");
 		expect(s.notes.at(-1)).not.toContain("cockpit:");
+	});
+
+	test("the host disposing the overlay frees the cockpit; a late dispose of an old overlay leaves the open one alone", async () => {
+		const { s, ui } = await running();
+		await s.sub("cockpit");
+		expect(ui.opened.length).toBe(1);
+		ui.opened[0].component.dispose!(); // the host tears it down: no Esc, no q
+		await s.sub("cockpit");
+		expect(ui.opened.length).toBe(2);
+		ui.opened[0].component.dispose!(); // the old overlay, disposed late, while the new one is open
+		await s.sub("cockpit");
+		expect(ui.opened.length).toBe(2); // still refused: the cockpit is open
+		ui.opened[1].component.dispose!();
+		ui.opened[1].component.dispose!(); // idempotent
+		await s.sub("cockpit");
+		expect(ui.opened.length).toBe(3);
+		ui.opened[2].component.handleInput!("q");
 	});
 
 	describe("the cockpit theme", () => {
