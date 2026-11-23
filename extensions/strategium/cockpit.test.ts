@@ -3372,4 +3372,20 @@ describe("renderDebrief", () => {
 		const rows = renderDebrief("K-1", ["TIME " + "word ".repeat(40)], 50, TRUE);
 		expect(plain(rows.join("\n")).match(/word/g)).toHaveLength(40);
 	});
+	test("a wrapped line continues indented 2 columns more than its first row", () => {
+		const rows = renderDebrief("K-1", ["TIME " + "word ".repeat(40)], 50, TRUE).map(plain);
+		const body = rows.filter(r => r.includes("word"));
+		expect(body[0].startsWith("  TIME")).toBe(true);
+		for (const r of body.slice(1)) expect(r.startsWith("    word")).toBe(true);
+	});
+	test("a themed background fills every row to the full width", () => {
+		const pal = palette("truecolor", THEMES["blood-angels"]);
+		expect(pal.bg).toBeDefined();
+		const rows = renderDebrief("K-1", SUMMARY, 72, pal, 12);
+		for (const r of rows) {
+			expect(r.startsWith(pal.bg!)).toBe(true);
+			expect(Bun.stringWidth(r)).toBe(72);
+		}
+		for (const r of renderDebrief("K-1", SUMMARY, 72, TRUE)) expect(r).not.toContain("\x1b[48;");
+	});
 });

@@ -686,16 +686,20 @@ function writeDebrief(run: Run, reported: Reported | undefined, live: { key?: st
 		const spend = live?.key === run.key ? live.caster?.spend : savedSpend(run.sid);
 		if (spend?.calls) costs.push({ id: "caster", role: "caster", calls: spend.calls, model: spend.model, cost: spend.cost, tokens_in: spend.tokens_in, tokens_out: spend.tokens_out, cache_read: spend.cache_read, cache_write: spend.cache_write });
 		const { markdown, summary } = debrief({ key: run.key, theatre: run.theatre, since: run.since, end, evs, squads, notes: live?.key === run.key ? live.notes : savedNotes(run.sid), reported, agents: costs, ratings: cleanRatings(run.ratings), ...(honoursIn ? { honours: honoursIn } : {}) });
-		if (out) out.summary = summary; // the open cockpit's final screen
 		const file = path.join(stateDir(), "debriefs", `${safeName(run.key)}-${nowIso(now).slice(0, 19).replace(/:/g, "-")}.md`);
 		try {
 			writeAtomic(file, markdown);
 		} catch (err) {
-			return [`DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`, ...summary, markdown];
+			const failed = `DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`;
+			if (out) out.summary = [failed, ...summary]; // the open cockpit's final screen shows what the end reports, without the markdown
+			return [failed, ...summary, markdown];
 		}
+		if (out) out.summary = [`DEBRIEF ${file}`, ...summary];
 		return [`DEBRIEF ${file}`, ...summary];
 	} catch (err) {
-		return [`DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`];
+		const failed = `DEBRIEF not written: ${err instanceof Error ? err.message : String(err)}`;
+		if (out) out.summary = [failed];
+		return [failed];
 	}
 }
 
@@ -2038,7 +2042,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					let open = true; // a timer callback the host still holds after close does nothing
 					const timer = setInterval(() => {
 						try {
-							if (!open) return;
+							if (!open || cockpit.debrief) return; // the final screen is static: nothing to redraw until esc/q or a new run
 							frame++;
 							if (live) setAgentStatus(live); // the host's idle flag lags agent_end, and the last job ending sends no event
 							// Every second frame the children's files are read again: at most once a second.
@@ -2140,7 +2144,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			// An open cockpit stays up as the final screen; a closed one is not opened.
 			if (cockpit.close && out.summary) {
 				abortCaster(); // no run left to cast about
-				cockpit.debrief = { key: mine.key, lines: out.summary };
+				cockpit.nav = {}; // an open detail must not make esc a "back" on the final screen
+				cockpit.transcript = undefined;
+				cockpit.debrief = { key: mine.key, lines: [...out.summary, ...(mine.merged ? ["PR merged"] : [])] };
 				cockpit.overlay?.requestRender();
 			}
 			await restoreTools(mine.hidden);

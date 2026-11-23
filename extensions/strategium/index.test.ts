@@ -3747,6 +3747,75 @@ describe("cockpit", () => {
 			expect(t).not.toContain("debrief");
 			comp.handleInput!("q");
 		});
+		test("esc closes the final screen even when an agent detail was open at the end", async () => {
+			const { s, ui } = await running();
+			s.todo(sealTodo("in_progress"));
+			await s.sub("cockpit");
+			const comp = ui.opened[0].component;
+			let opened = false;
+			for (let i = 0; i < 20 && !opened; i++) {
+				comp.handleInput!("\t");
+				comp.handleInput!("\r");
+				opened = text(comp).includes("back · q close");
+				if (!opened) comp.handleInput!("\x7f");
+			}
+			expect(opened).toBe(true);
+			await s.call({ action: "end" });
+			comp.handleInput!("\x1b");
+			expect(ui.draws.closed).toBe(1);
+		});
+		test("the final screen shows the DEBRIEF line with the saved file", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			await s.call({ action: "end" });
+			expect(text(ui.opened[0].component, 200)).toMatch(/DEBRIEF .*K-1.*\.md/);
+			ui.opened[0].component.handleInput!("q");
+		});
+		test("Enter and the arrows do nothing on the final screen", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			const comp = ui.opened[0].component;
+			await s.call({ action: "end" });
+			const before = comp.render(72).join("\n");
+			for (const k of ["\r", "\t", "\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"]) comp.handleInput!(k);
+			expect(comp.render(72).join("\n")).toBe(before);
+			expect(ui.draws.closed).toBe(0);
+			comp.handleInput!("q");
+		});
+		test("a session change closes the final screen", async () => {
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			await s.call({ action: "end" });
+			await s.handlers.session_switch[0]({}, s.ctx);
+			expect(ui.draws.closed).toBe(1);
+		});
+		test("the 500 ms redraw does nothing while the final screen shows", async () => {
+			const timers: (() => void)[] = [];
+			const real = { set: globalThis.setInterval, clear: globalThis.clearInterval };
+			globalThis.setInterval = ((fn: () => void) => (timers.push(fn), 7)) as never;
+			globalThis.clearInterval = (() => {}) as never;
+			try {
+				const { s, ui } = await running();
+				await s.sub("cockpit");
+				await s.call({ action: "end" });
+				const before = ui.draws.n;
+				for (const fn of timers) fn();
+				expect(ui.draws.n).toBe(before);
+				ui.opened[0].component.handleInput!("q");
+			} finally {
+				globalThis.setInterval = real.set;
+				globalThis.clearInterval = real.clear;
+			}
+		});
+		test("a merged run's final screen says PR merged", async () => {
+			process.env.STRATEGIUM_NAMES = "1";
+			const { s, ui } = await running();
+			await s.sub("cockpit");
+			for (const h of s.handlers.tool_result) h({ toolName: "bash", input: { command: "gh pr merge 7 --merge" }, isError: false, details: {} }, s.ctx);
+			await s.call({ action: "end" });
+			expect(text(ui.opened[0].component)).toContain("PR merged");
+			ui.opened[0].component.handleInput!("q");
+		});
 	});
 
 	describe("the cockpit theme", () => {
