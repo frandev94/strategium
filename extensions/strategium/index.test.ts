@@ -6961,7 +6961,7 @@ describe("cockpit", () => {
 			const { s } = await rigged();
 			await s.call({ ...good, rating: "corrupted", evidence: ["I-9"] });
 			for (const rating of ["proven", "proven-regression"]) expect(await s.call({ ...good, rating })).toBe("ERROR Scout1 is corrupted for the rest of the run");
-			expect(await s.call({ ...good, rating: "corrupted", evidence: ["I-10"] })).toStartWith("RATED Scout1 corrupted (was corrupted) model=@task effort=medium evidence=1");
+			expect(await s.call({ ...good, rating: "corrupted", evidence: ["I-10"] })).toBe(`RATED Scout1 corrupted (was corrupted) model=@task effort=medium evidence=1\nLESSON write local://K-1-lessons.md for Scout1`);
 			expect(runFile(s).ratings).toEqual({ Scout1: { rating: "corrupted", evidence: ["I-10"], model: "@task", effort: "medium" } });
 		});
 
@@ -8638,6 +8638,19 @@ describe("service record (#134)", () => {
 			expect(await s.call({ action: "end" })).not.toContain("ROSTER");
 			expect(existsSync(join(s.dir, "roster.json"))).toBe(false);
 			expect(existsSync(join(s.dir, "roster.lock"))).toBe(false);
+		});
+
+		test("a corrupted async builder: the LESSON names its squad from the cockpit registry, not run.names (#142)", async () => {
+			delete process.env.STRATEGIUM_NAMES;
+			const s = setup();
+			await s.call({ action: "begin", key: "K-1" });
+			await s.call({ action: "repo", repo: s.dir });
+			await s.call({ action: "slices", slices: SQ });
+			s.handlers.before_subagent_spawn[0]({ agent: "battle-brother", spawnKey: "S1" }, s.ctx);
+			const event = { toolName: "task", input: { tasks: [{ agent: "battle-brother", name: "S1", task: "build squad S1" }] }, details: { progress: [{ index: 0, id: "S1", status: "running" }] }, isError: false };
+			for (const h of s.handlers.tool_result) h(event, s.ctx);
+			const out = await s.call({ action: "rate", agent: "S1", rating: "corrupted", evidence: ["I-3"], model: "@task", effort: "medium" });
+			expect(out).toEndWith("LESSON write local://K-1-lessons.md for S1 before the next round of squad S1");
 		});
 	});
 
