@@ -1,3 +1,17 @@
+## [0.2.52] - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- *(tui-shot)* The seal-row check compares cell columns
+- *(cockpit)* A cancelled blocking task ends its cockpit row
+
+### 🚜 Refactor
+
+- *(cockpit)* One list of final agent statuses
+
+### 🧪 Testing
+
+- *(cockpit)* The chronicle 200-entry test gets a timeout for loaded Windows machines
 ## [0.2.51] - 2026-11-23
 
 ### 🐛 Bug Fixes
