@@ -1,3 +1,20 @@
+## [0.2.39] - 2026-11-23
+
+### 🚀 Features
+
+- *(extension)* Agent names, honour badges and the record in the cockpit and debrief
+
+### 🐛 Bug Fixes
+
+- *(extension)* Roster read after allocation, every honour in the debrief
+
+### 📚 Documentation
+
+- Names, badges and honours in the cockpit and debrief
+
+### 🧪 Testing
+
+- *(extension)* Eval spawn by name, no honours line on an unreadable roster
 ## [0.2.38] - 2026-11-22
 
 ### 🚀 Features
