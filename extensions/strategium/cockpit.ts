@@ -451,7 +451,7 @@ export function cockpitView(input: ViewInput) {
 		const [kind, state] = squadState(id);
 		const b = named(id);
 		const glyph = mark([...(input.deployed ?? [])].findLast(([, d]) => d.squad === id)?.[0]); // the newest deployed agent, the one Enter opens
-		const who = b ? `${oneLine(b.name)}${badges(b)}${glyph} · squad ${id} ${state}` : `squad ${id}${glyph} ${state}`;
+		const who = b ? `${oneLine(b.name)}${badges(b)}${glyph} · squad ${oneLine(id)} ${state}` : `squad ${oneLine(id)}${glyph} ${state}`;
 		return { id, key: `squad:${id}`, kind, mark: MARK[kind], text: label(input.notes[id]?.veteran ? ic.veteran : ic.brother, who) };
 	});
 
@@ -556,7 +556,7 @@ export function cockpitView(input: ViewInput) {
 			return e && { title: `CHRONICLE · ${clean(e.at)} · ${clean(e.who)}`, lines: [clean(e.text)] };
 		}
 		const t = tasks.find(x => x.id === id);
-		return t && phase && { title: `${clean(t.role).toUpperCase()} TASK`, lines: [clean(t.text), `status: ${clean(t.status)}`, `station: ${clean(phase.name)}`] };
+		return t && phase && { title: `${clean(t.role).toUpperCase()} TASK`, lines: [t.text, `status: ${clean(t.status)}`, `station: ${clean(phase.name)}`] };
 	};
 	const shownDetail = detailId === undefined ? undefined : detailOf(detailId);
 	const rows = transcript !== undefined && input.transcript?.id === transcript ? keepRows(input.transcript.lines).map(rowOf) : [];
@@ -729,7 +729,7 @@ const statusText = (status: View["status"], pal: Palette, frame: number): string
 
 const entryLine = (e: Entry, pal: Palette) => {
 	const tone: Tone = e.tone === "ok" ? "green" : e.tone === "fail" ? "red" : e.tone === "seal" || e.tone === "warn" ? "gold" : "parchment";
-	return `${paint(pal.iron, e.at)}  ${paint(pal.parchment, pad(clean(e.who), 11))} ${paint(pal[tone], clean(e.text))}`;
+	return `${paint(pal.iron, clean(e.at))}  ${paint(pal.parchment, pad(clean(e.who), 11))} ${paint(pal[tone], clean(e.text))}`;
 };
 
 type Box = { title: string; lines: string[]; tone: Tone; sel?: number }; // sel: the row of the selected line

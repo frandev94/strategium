@@ -3328,4 +3328,13 @@ describe("control characters in model text", () => {
 			expect(Bun.stringWidth(l)).toBeLessThanOrEqual(width);
 		}
 	});
+	test("slice id, chronicle time and a browsed station name carry none", () => {
+		const slice = { id: `s${evil}\n` } as never;
+		const phs: Phase[] = [
+			{ name: `Br${evil}`, tasks: [{ content: "[battle-brother] x", status: "completed" }] },
+			{ name: "Act", tasks: [{ content: "[battle-brother] y", status: "in_progress" }] },
+		];
+		const view = cockpitView(input({ phases: phs, slices: [slice], chronicle: [{ at: `1${evil}`, who: "X", text: "t" }], nav: { shown: { phase: 0, from: 1 } } }));
+		for (const l of renderCockpit(view, 100, 0, TRUE)) expect(plain(l)).not.toMatch(bad);
+	});
 });
