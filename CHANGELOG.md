@@ -1,3 +1,12 @@
+## [0.2.59] - 2026-11-23
+
+### 🚀 Features
+
+- *(cockpit)* A chronicle entry about an agent opens that agent or its squad
+
+### 🧪 Testing
+
+- *(cockpit)* Chronicle agent ids survive a restart and every logging site
 ## [0.2.58] - 2026-11-23
 
 ### 📚 Documentation
