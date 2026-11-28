@@ -170,6 +170,30 @@ export function keyOf(objective: string): string {
 // Read on every use: the environment can change it, and a test points it somewhere of its own.
 const stateDir = () => process.env.STRATEGIUM_STATE_DIR || path.join(homedir(), ".omp", "agent", "state", "strategium");
 const runsDir = () => path.join(stateDir(), "runs");
+
+/** Where a theatre skill can live: the plugin's skills dir, and the user dirs omp scans (discovery/builtin.ts, discovery/agents.ts, autolearn/managed-skills.ts). Injectable for tests. */
+type SkillRoots = { plugin: string; user: string[] };
+const defaultSkillRoots = (): SkillRoots => ({
+	plugin: path.join(import.meta.dir, "../../skills"),
+	user: [
+		path.join(homedir(), ".omp", "agent", "skills"),
+		path.join(homedir(), ".omp", "agent", "managed-skills"),
+		path.join(homedir(), ".agents", "skills"),
+		path.join(homedir(), ".agent", "skills"),
+		path.join(process.cwd(), ".omp", "skills"),
+	],
+});
+
+/** The skill a theatre name loads: the plugin's `strategium-<name>` first, then a user's `theatre-<name>`; `none` has no skill. Either prefix may be spelled out. */
+function resolveTheatre(raw: string, roots: SkillRoots): { name: string; skill?: string; error?: string } {
+	const name = raw.replace(/^(?:strategium|theatre)-/, "");
+	if (name === "none") return { name };
+	const tries: [string, string][] = [[`strategium-${name}`, roots.plugin], ...roots.user.map((r): [string, string] => [`theatre-${name}`, r])];
+	const hit = tries.find(([skill, root]) => existsSync(path.join(root, skill, "SKILL.md")));
+	if (hit) return { name, skill: hit[0] };
+	return { name, error: `ERROR unknown theatre ${name}: no ${tries.map(([skill, root]) => path.join(root, skill, "SKILL.md")).join(", no ")}` };
+}
+
 const CAPTAIN_REASON =
 	"Strategium: the Captain does not edit repository files. Delegate this change to a battle-brother agent.";
 
@@ -607,11 +631,12 @@ function statusLines(): string {
 		.join("\n");
 }
 
-function fullStatus(sid: string): string {
+function fullStatus(sid: string, roots: SkillRoots): string {
 	const runs = allRuns().map(r => {
 		// A run whose session is gone (crash) still has its file: say so, or the user counts it twice.
 		const stale = holds(stateDir(), r.key, r.sid) ? "" : " (stale: its session is gone)";
-		return `RUN ${r.key} theatre=${r.theatre} repo=${r.repo ?? "none"} session=${shortSid(r.sid)}${r.sid === sid ? " (this session)" : ""}${stale}`;
+		const skill = resolveTheatre(r.theatre, roots).skill;
+		return `RUN ${r.key} theatre=${r.theatre} repo=${r.repo ?? "none"} session=${shortSid(r.sid)}${r.sid === sid ? " (this session)" : ""}${stale}${skill ? ` skill=skill://${skill}` : ""}`;
 	});
 	return [statusLines(), ...runs].join("\n");
 }
@@ -1573,8 +1598,9 @@ function renderFooter(run: Run, evs: Ev[], running: boolean, el: number, bk: num
 	return pad >= 2 ? `${line}${"\u00a0".repeat(pad)}\x1b[2m${hint}\x1b[22m` : line;
 }
 
-export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple?: CompleteSimple } = {}) {
+export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple?: CompleteSimple; skillRoots?: SkillRoots } = {}) {
 	const spawn: Spawn = deps.spawn ?? Bun.spawn;
+	const roots = deps.skillRoots ?? defaultSkillRoots();
 	// Imported on the first real call, not at load: the extension and its tests never pull pi-ai in otherwise (omp resolves the bare name to its bundled copy).
 	const completeSimple: CompleteSimple = deps.completeSimple ?? (async (model, context, options) => (await import("@oh-my-pi/pi-ai")).completeSimple(model, context, options));
 	const z = pi.zod;
@@ -2222,7 +2248,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		};
 		writeRun(begun);
 		vaultEvent(ctx, begun, "begin", "run begun");
-		return statusLines();
+		const skill = resolveTheatre(theatre, roots).skill;
+		return `${statusLines()}${skill ? `\nTHEATRE ${theatre} skill://${skill}` : ""}`;
 	}
 
 	/** End the session's run. When it was its own, the tools come back and the Strategium theme plays; a takeover end does neither. */
@@ -2401,7 +2428,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						if (!params.key) throw new Error("begin needs key");
 						const bad = viaError(params.via, params.booked);
 						if (bad) return text(bad);
-						return text(await beginRun(sid, params.key, params.theatre ?? "none", params.booked, params.spent, params.takeover, params.archmagos, ctx, undefined, cleanVia(params.via)));
+						const t = resolveTheatre(params.theatre ?? "none", roots);
+						if (t.error) return text(t.error);
+						return text(await beginRun(sid, params.key, t.name, params.booked, params.spent, params.takeover, params.archmagos, ctx, undefined, cleanVia(params.via)));
 					}
 					case "repo": {
 						const run = ownRun(sid);
@@ -2509,7 +2538,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 						);
 					}
 					case "status":
-						return text(`${fullStatus(sid)}\nARCHMAGOS ${archmagosState(sid)}\nCOMMIT ${commitState(sid)}\nTIERS ${tiersState()}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}\nNAMES ${namesState()}`);
+						return text(`${fullStatus(sid, roots)}\nARCHMAGOS ${archmagosState(sid)}\nCOMMIT ${commitState(sid)}\nTIERS ${tiersState()}\nNOTIFY ${notifyState(sid)}\nSOUND ${soundState(sid)}\nTOAST ${toastState(sid)}\nNAMES ${namesState()}`);
 					case "report":
 						return text(report(params.date));
 					case "end":
@@ -2698,7 +2727,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			}
 			const objective = raw.startsWith('"') ? `"${parsed[1]}"` : parsed[1];
 			const named = parsed[2] ?? (process.env.STRATEGIUM_THEATRE?.trim() || undefined);
-			const theatre = (named ?? "none").replace(/^strategium-/, "");
+			const resolved = resolveTheatre(named ?? "none", roots);
+			if (resolved.error) return notify(ctx, `Strategium could not begin: ${end(resolved.error)}`, "warning");
+			const theatre = resolved.name;
 			const key = keyOf(objective);
 			const sid = sidOf(ctx);
 			// Begin the run now, untimed, so the clock counts from the command; a key this session already holds is left as it is.
@@ -2719,7 +2750,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 					? `Read skill://strategium and run it for the objective ${objective}; no theatre was named: take the default theatre from the skill's Theatre section.`
 					: theatre === "none"
 						? `Read skill://strategium and run it for the objective ${objective} with no theatre.`
-						: `Read skill://strategium and run it for the objective ${objective} with theatre skill://strategium-${theatre}.`} ${note}`,
+						: `Read skill://strategium and run it for the objective ${objective} with theatre skill://${resolved.skill}.`} ${note}`,
 			);
 		},
 	});
@@ -2756,7 +2787,8 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 			notify(ctx, end(up(shift(run, bk))));
 		} catch (err) {
 			if (!(err instanceof NewShift)) throw err;
-			const skill = run.theatre.startsWith("strategium-") ? run.theatre : `strategium-${run.theatre}`;
+			const theatreName = resolveTheatre(run.theatre, roots);
+			const skill = theatreName.skill ?? `strategium-${theatreName.name}`;
 			pi.sendUserMessage(
 				run.theatre === "none"
 					? `New Strategium shift for ${run.key}: ask me today's booked minutes, then call strategium start with booked.`
@@ -2803,7 +2835,7 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 		}
 	});
 
-	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => notify(ctx, fullStatus(sid)));
+	subcommand("status", "Every Strategium run and its time", (_arg, ctx, sid) => notify(ctx, fullStatus(sid, roots)));
 
 	subcommand("config", "Show the Strategium settings; notify on|off sets this session's sounds and notifications; sound on|off and toast on|off pick the alarm's channels; volume <0-100> [preview] sets the alarm's volume (preview plays it); idle <min> sets the idle pause; archmagos on|off lets runs use the Archmagos Dominus; commit on|off asks before each commit in this session's runs; cockpit-key <key> sets the cockpit key from the next omp start; cockpit-theme <name> sets the cockpit's colours; relic on|off|default sets the worn relic look; servo-skull on|off|default sets the cockpit's model commentator; names on|off|default sets whether the plugin hands out and checks agent names; vault <absolute folder>|off|default sets the vault whose daily note records run events", (arg, ctx, sid) => {
 		let conflict: { key: string; c: NonNullable<ReturnType<ExtensionAPI["getShortcutConflict"]>> } | undefined;
@@ -3109,8 +3141,9 @@ export default function (pi: ExtensionAPI, deps: { spawn?: Spawn; completeSimple
 	// One line at startup, like other plugins print, so the user sees the plugin is on and how it is set.
 	pi.on("session_start", (_e: unknown, ctx: SessionCtx) => {
 		if (ctx.agent?.kind === "sub") return;
-		const theatre = process.env.STRATEGIUM_THEATRE?.trim().replace(/^strategium-/, "") || "none";
-		notify(ctx, `Strategium loaded with theatre ${theatre}, notifications ${notifyOn(sidOf(ctx)) ? "on" : "off"}.`);
+		const t = resolveTheatre(process.env.STRATEGIUM_THEATRE?.trim() || "none", roots);
+		notify(ctx, `Strategium loaded with theatre ${t.name}${t.skill ? ` (skill://${t.skill})` : ""}, notifications ${notifyOn(sidOf(ctx)) ? "on" : "off"}.`);
+		if (t.error) notify(ctx, t.error, "warning");
 		const c = pi.getShortcutConflict(cockpitKey.key as KeyId);
 		if (c) notify(ctx, keyConflict(cockpitKey.key, c), "warning");
 		const rawKey = process.env.STRATEGIUM_COCKPIT_KEY?.trim();
