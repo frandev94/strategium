@@ -421,18 +421,90 @@ describe("the /strategium command", () => {
 		}
 	});
 
+	// Skill roots of a fake host: the plugin's skills dir and one user dir, each holding the named skill folders.
+	const skillRoots = (plugin: string[], user: string[]) => {
+		const root = mkdtempSync(join(tmpdir(), "st-skills-"));
+		dirs.push(root);
+		const make = (base: string, names: string[]) => {
+			for (const n of names) {
+				mkdirSync(join(base, n), { recursive: true });
+				writeFileSync(join(base, n, "SKILL.md"), `---\nname: ${n}\ndescription: x\n---\n`);
+			}
+			return base;
+		};
+		return { plugin: make(join(root, "plugin"), plugin), user: [make(join(root, "user"), user)] };
+	};
+
 	test("a file is the objective, and a theatre may follow", async () => {
-		const { command, sent, call } = setup();
+		const { command, sent, call } = setup("sess-0001", undefined, { skillRoots: skillRoots(["strategium-acme"], []) });
 		await command("@docs/spec.md acme");
 		expect(sent[0]).toContain("for the objective @docs/spec.md with theatre skill://strategium-acme");
 		expect(await call({ action: "status" })).toContain("RUN spec theatre=acme");
 	});
 
 	test("a theatre named with its prefix is not doubled", async () => {
-		const { command, sent } = setup();
+		const { command, sent } = setup("sess-0001", undefined, { skillRoots: skillRoots(["strategium-acme"], []) });
 		await command("PROJ-1 strategium-acme");
 		expect(sent[0]).toContain("theatre skill://strategium-acme.");
 		expect(sent[0]).not.toContain("strategium-strategium-");
+	});
+
+	describe("a theatre name resolves to a plugin or a user skill (#187)", () => {
+		test("personal loads the user's theatre-personal; begin and status say so", async () => {
+			const { call } = setup("sess-0001", undefined, { skillRoots: skillRoots([], ["theatre-personal"]) });
+			const begun = await call({ action: "begin", key: "K-1", theatre: "personal" });
+			expect(begun).toContain("THEATRE personal skill://theatre-personal");
+			const status = await call({ action: "status" });
+			expect(status).toContain("RUN K-1 theatre=personal repo=none");
+			expect(status).toContain("skill=skill://theatre-personal");
+		});
+
+		test("github still loads the plugin's strategium-github", async () => {
+			const { call } = setup("sess-0001", undefined, { skillRoots: skillRoots(["strategium-github"], []) });
+			expect(await call({ action: "begin", key: "K-1", theatre: "github" })).toContain("THEATRE github skill://strategium-github");
+		});
+
+		test("the plugin wins when both skills exist", async () => {
+			const { command, sent } = setup("sess-0001", undefined, { skillRoots: skillRoots(["strategium-both"], ["theatre-both"]) });
+			await command("K-2 both");
+			expect(sent[0]).toContain("theatre skill://strategium-both.");
+		});
+
+		test("theatre-<name> spelled out resolves the same as <name>", async () => {
+			const { command, sent, call } = setup("sess-0001", undefined, { skillRoots: skillRoots([], ["theatre-personal"]) });
+			await command("K-3 theatre-personal");
+			expect(sent[0]).toContain("theatre skill://theatre-personal.");
+			expect(await call({ action: "status" })).toContain("RUN K-3 theatre=personal");
+		});
+
+		test("STRATEGIUM_THEATRE=personal resolves the same", async () => {
+			process.env.STRATEGIUM_THEATRE = "personal";
+			try {
+				const { command, sent } = setup("sess-0001", undefined, { skillRoots: skillRoots([], ["theatre-personal"]) });
+				await command('"do a thing"');
+				expect(sent[0]).toContain("theatre skill://theatre-personal.");
+			} finally {
+				delete process.env.STRATEGIUM_THEATRE;
+			}
+		});
+
+		test("an unknown theatre is an ERROR that lists where it looked, and nothing begins", async () => {
+			const roots = skillRoots(["strategium-github"], []);
+			const { call, command, sent, notes } = setup("sess-0001", undefined, { skillRoots: roots });
+			const out = await call({ action: "begin", key: "K-1", theatre: "nope" });
+			expect(out).toBe(`ERROR unknown theatre nope: no ${join(roots.plugin, "strategium-nope", "SKILL.md")}, no ${join(roots.user[0], "theatre-nope", "SKILL.md")}`);
+			await command("K-4 nope");
+			expect(sent).toEqual([]);
+			expect(notes.join("\n")).toContain("unknown theatre nope");
+			expect(await call({ action: "status" })).not.toContain("RUN ");
+		});
+
+		test("none stays valid with no skill roots at all", async () => {
+			const { call } = setup("sess-0001", undefined, { skillRoots: skillRoots([], []) });
+			const begun = await call({ action: "begin", key: "K-1", theatre: "none" });
+			expect(begun).not.toContain("ERROR");
+			expect(begun).not.toContain("THEATRE");
+		});
 	});
 
 	test("unquoted free text is refused: it would read as a key and a theatre", async () => {
