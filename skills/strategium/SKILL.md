@@ -27,7 +27,7 @@ Without ticketing the run is untimed: its time is still counted (`status`, `repo
 
 ## Theatre
 
-The prompt names a theatre skill (e.g. `skill://strategium-<name>`), or says "no theatre". Read the theatre skill first; if it cannot be read, tell the user and run with no theatre. The theatre supplies the steps marked **[theatre]**:
+The prompt names a theatre skill (e.g. `skill://strategium-<name>`, or a user's `skill://theatre-<name>`), or says "no theatre". The plugin resolves the name: its own `strategium-<name>` first, then a user skill `theatre-<name>`; `begin` answers `THEATRE <name> skill://<skill>` and `status` shows `skill=skill://<skill>`; an unknown name is an `ERROR` listing where it looked, and nothing begins. Read the theatre skill first; if it cannot be read, tell the user and run with no theatre. The theatre supplies the steps marked **[theatre]**:
 - **Muster:** the work source, ticket text and acceptance criteria, the booked minutes, status changes, chat language.
 - **Repo:** where repos live.
 - **Delivery:** commit, MR and pipeline conventions.
